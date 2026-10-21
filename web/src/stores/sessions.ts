@@ -11,6 +11,8 @@ export interface SessionsStore {
 
     setSessions: (workspaceId: string, sessions: SessionState[]) => void;
     upsertSession: (session: SessionState) => void;
+    /** Re-key a session after the plugin migrates `tmp-N` → the real id. */
+    renameSessionId: (from: string, to: string) => void;
     removeSession: (sessionId: string) => void;
     selectSession: (sessionId: string | null) => void;
     listFor: (workspaceId: string) => SessionState[];
@@ -42,6 +44,33 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
             const index = list.findIndex((s) => s.sessionId === session.sessionId);
             const next = index === -1 ? [...list, session] : list.map((s, i) => (i === index ? session : s));
             return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: next } };
+        }),
+
+    renameSessionId: (from, to) =>
+        set((state) => {
+            if (!from || !to || from === to) return state;
+            const byWorkspace: Record<string, SessionState[]> = {};
+            let moved = false;
+            for (const [workspaceId, list] of Object.entries(state.byWorkspace)) {
+                const index = list.findIndex((session) => session.sessionId === from);
+                if (index === -1) {
+                    byWorkspace[workspaceId] = list;
+                    continue;
+                }
+                moved = true;
+                byWorkspace[workspaceId] = list
+                    .map((session, position) =>
+                        position === index ? { ...session, sessionId: to } : session,
+                    )
+                    // A row already cached under the new id would now duplicate the
+                    // migrated one (the REST list can be ahead of the event).
+                    .filter((session, position) => position === index || session.sessionId !== to);
+            }
+            if (!moved) return state;
+            return {
+                byWorkspace,
+                selectedSessionId: state.selectedSessionId === from ? to : state.selectedSessionId,
+            };
         }),
 
     removeSession: (sessionId) =>

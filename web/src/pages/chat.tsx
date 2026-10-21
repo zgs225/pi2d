@@ -7,7 +7,7 @@ import type {
     ThinkingLevel,
 } from "@protocol/types";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -24,17 +24,18 @@ import { useConnectionStore } from "@/stores/connection";
 import { useSessionsStore } from "@/stores/sessions";
 import { AttentionDialog } from "@/features/chat/attention";
 import { Composer } from "@/features/chat/composer";
-import { chatCommands, runCommand, type ChatCommand, type PromptImage } from "@/features/chat/commands";
+import { chatCommands, runCommand, type AttentionResponse, type ChatCommand, type PromptImage, type PromptMode } from "@/features/chat/commands";
 import {
-    useActiveSession,
     useChatModels,
     useChatSessions,
     useChatSocket,
     useChatWorkspaces,
+    useSessionLookup,
 } from "@/features/chat/data";
 import { useSessionHistory } from "@/features/chat/history";
 import { ChatLayout } from "@/features/chat/layout";
 import { MessageStream } from "@/features/chat/message-stream";
+import { onSessionMigration, replaceChatUrl } from "@/features/chat/migration";
 import { DispatchModal, RenameDialog, SubagentModal, TaskOutputModal, type DispatchInput } from "@/features/chat/modals";
 import { flattenSubagents, emptySessionState, sessionDot, sessionStatusKey } from "@/features/chat/session-state";
 import { SessionTree } from "@/features/chat/session-tree";
@@ -91,10 +92,17 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         workspaces.find((workspace) => workspace.instance)?.workspaceId ??
         workspaces[0]?.workspaceId;
 
-    const sessions = useChatSessions(workspaceId, paired);
+    const sessionsQuery = useChatSessions(workspaceId, paired);
+    const sessions = sessionsQuery.sessions;
     const sessionIds = useMemo(() => sessions.map((session) => session.sessionId), [sessions]);
     useChatSocket(workspaceId, sessionIds, paired);
-    const active = useActiveSession(sessionId, sessions);
+    // An unknown deep link resolves to nothing (never to another session);
+    // `missing` stays false until the list has loaded, so no error flash.
+    const { session: active, missing: sessionMissing } = useSessionLookup(
+        sessionId,
+        sessions,
+        sessionsQuery.loaded,
+    );
     const history = useSessionHistory(active?.sessionId, active?.entries ?? NO_ENTRIES, paired);
     const models = useChatModels(workspaceId, paired);
     const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
@@ -133,9 +141,9 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     );
 
     useEffect(() => {
-        const title = active?.name?.trim() || t("nav.chat");
+        const title = active?.name?.trim() || (sessionMissing ? t("errors.sessionNotFound") : t("nav.chat"));
         document.title = `${title} — pi2.nvim`;
-    }, [active?.name, t]);
+    }, [active?.name, sessionMissing, t]);
 
     // The optimistic "sending" chip disappears when the authoritative user
     // entry arrives (via entry_appended) or after a safety timeout.
@@ -160,6 +168,24 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         return () => clearTimeout(timer);
     }, [sending, setSending]);
 
+    // A `tmp-N` → real-id migration re-keys the stores and the socket; the router
+    // still addresses the old id, so swap the URL in place and refresh the tree.
+    useEffect(
+        () =>
+            onSessionMigration((migration) => {
+                if (replaceChatUrl(migration.from, migration.to, workspaceId)) {
+                    void navigate({
+                        to: "/chat/$sessionId",
+                        params: { sessionId: migration.to },
+                        search: workspaceId ? { workspace: workspaceId } : {},
+                        replace: true,
+                    });
+                }
+                void queryClient.invalidateQueries({ queryKey: ["chat-sessions", migration.workspaceId] });
+            }),
+        [navigate, queryClient, workspaceId],
+    );
+
     async function exec(
         command: ChatCommand,
         successKey?: string,
@@ -167,7 +193,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     ): Promise<Record<string, unknown> | undefined> {
         try {
             const result = await runCommand(command);
-            if (successKey) toast(t(successKey, params));
+            if (successKey) toast.success(t(successKey, params));
             return result;
         } catch (error) {
             toast.error(t("chat.commandFailed", { error: errorText(error, t) }));
@@ -189,14 +215,30 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         void navigate({ to: "/chat", search: { workspace: id } });
     }
 
-    async function handleSend(text: string, images: PromptImage[]) {
+    async function handleSend(text: string, images: PromptImage[], mode?: PromptMode) {
         if (!active) return;
         setSending({ sessionId: active.sessionId, text });
         try {
-            await runCommand(chatCommands.sendPrompt(active.sessionId, text, images));
+            await runCommand(chatCommands.sendPrompt(active.sessionId, text, images, mode));
         } catch (error) {
             setSending(null);
             toast.error(t("chat.sendFailed", { error: errorText(error, t) }));
+        }
+    }
+
+    /**
+     * Steering is a session-wide mode (`queue.setSteer {mode}`), so the toast
+     * names the mode instead of implying a per-message flag.
+     */
+    async function setSteerMode(steer: boolean) {
+        const sessionId = active?.sessionId;
+        if (!sessionId) return;
+        const mode = steer ? "all" : "one-at-a-time";
+        try {
+            await runCommand(chatCommands.setQueueSteer(sessionId, steer));
+            toast.success(`${t("chat.steer")}: ${mode}`);
+        } catch (error) {
+            toast.error(t("chat.commandFailed", { error: errorText(error, t) }));
         }
     }
 
@@ -212,7 +254,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                     : typeof (result.session as Record<string, unknown> | undefined)?.sessionId === "string"
                       ? String((result.session as Record<string, unknown>).sessionId)
                       : undefined;
-            toast(t("chat.newSessionCreated"));
+            toast.success(t("chat.newSessionCreated"));
             if (created) navigateSession(created);
         } catch (error) {
             toast.error(t("chat.newSessionFailed", { error: errorText(error, t) }));
@@ -224,43 +266,49 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     async function dispatchSubagent(input: DispatchInput) {
         if (!active) return;
         const result = await exec(chatCommands.dispatchSubagent(active.sessionId, input));
-        if (result !== undefined) toast(t("chat.dispatched", { name: input.name ?? "-" }));
+        if (result !== undefined) toast.success(t("chat.dispatched", { name: input.name ?? "-" }));
     }
 
     async function saveRename(value: string) {
         if (!renaming) return;
         if (renaming.kind === "session") {
+            const target = renaming.session;
+            const previous = useSessionsStore.getState().getSession(target.sessionId)?.name ?? target.name;
             try {
-                await runCommand(chatCommands.renameSession(renaming.session.sessionId, value));
-                useSessionsStore.getState().upsertSession({ ...renaming.session, name: value });
-                toast(t("chat.renamed", { name: value }));
+                // The plugin owns the name: apply it only after the ack.
+                await runCommand(chatCommands.renameSession(target.sessionId, value));
+                useSessionsStore.getState().upsertSession({ ...target, name: value });
+                toast.success(t("chat.renamed", { name: value }));
             } catch (error) {
+                // Roll back so the tree never keeps an unconfirmed name.
+                useSessionsStore.getState().upsertSession({ ...target, name: previous });
                 toast.error(t("chat.commandFailed", { error: errorText(error, t) }));
                 throw error;
             }
             return;
         }
         if (!active) return;
+        // Subagent names are local display only (the plugin has no rename command).
         useSessionsStore.getState().upsertSession({
             ...active,
             subagents: renameInTree(active.subagents, renaming.subagent.id, value) ?? [],
         });
-        toast(t("chat.renamed", { name: value }));
+        toast.success(t("chat.renamed", { name: value }));
     }
 
     async function closeSession(session: SessionState) {
-        const result = await exec(chatCommands.closeSession(session.sessionId));
-        if (result !== undefined) toast.error(t("chat.closedProcess", { name: session.name ?? session.sessionId }));
+        await exec(chatCommands.closeSession(session.sessionId), "chat.closedProcess", {
+            name: session.name ?? session.sessionId,
+        });
         setClosing(null);
     }
 
     async function stopTask(task: TaskItem) {
-        const result = await exec(chatCommands.stopTask(active?.sessionId ?? "", task.id));
-        if (result !== undefined) toast.error(t("chat.taskStopped", { id: task.id }));
+        await exec(chatCommands.stopTask(active?.sessionId ?? "", task.id), "chat.taskStopped", { id: task.id });
         setStoppingTask(null);
     }
 
-    async function respondAttention(item: AttentionItem, response: unknown) {
+    async function respondAttention(item: AttentionItem, response: AttentionResponse | string) {
         if (!active) return;
         await exec(chatCommands.respondAttention(active.sessionId, item.requestId, response));
     }
@@ -364,7 +412,35 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 stream={
                     <>
                         {streamHead}
-                        {active ? (
+                        {sessionMissing ? (
+                            <div className="stream-body stream-blank">
+                                <div className="stream-status stream-status--err" data-testid="session-not-found">
+                                    <Empty
+                                        icon={<Icon name="alert" size={28} />}
+                                        title={t("errors.sessionNotFound")}
+                                        description={`${t("errors.notFound")}: ${sessionId ?? ""}`}
+                                        action={
+                                            <div className="row">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn--sm btn--primary"
+                                                    data-testid="session-not-found-retry"
+                                                    onClick={sessionsQuery.refetch}
+                                                    disabled={sessionsQuery.fetching}
+                                                >
+                                                    <Icon name="refresh" />
+                                                    {t("common.retry")}
+                                                </button>
+                                                <Link to="/workspaces" className="btn btn--sm">
+                                                    <Icon name="folder" />
+                                                    {t("connect.backToWorkspaces")}
+                                                </Link>
+                                            </div>
+                                        }
+                                    />
+                                </div>
+                            </div>
+                        ) : active ? (
                             <MessageStream
                                 session={active}
                                 entries={history.entries}
@@ -401,41 +477,38 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                                 )}
                             </div>
                         )}
-                        <Composer
-                            session={active ?? null}
-                            models={models}
-                            connected={connected}
-                            paired={paired}
-                            sending={sending}
-                            onSend={(text, images) => void handleSend(text, images)}
-                            onAbort={() => {
-                                setSending(null);
-                                void exec(chatCommands.abort(active?.sessionId ?? ""));
-                            }}
-                            onRemoveQueue={(id) =>
-                                void exec(chatCommands.removeQueued(active?.sessionId ?? "", id), "chat.queueRemoved")
-                            }
-                            onSetSteer={(id, steer) =>
-                                void exec(
-                                    chatCommands.setQueueSteer(active?.sessionId ?? "", id, steer),
-                                    steer ? "chat.steerOn" : "chat.steerOff",
-                                )
-                            }
-                            onSetModel={(model: ModelRef) =>
-                                void exec(
-                                    chatCommands.setModel(active?.sessionId ?? "", model),
-                                    "chat.modelSwitched",
-                                    { model: model.id },
-                                )
-                            }
-                            onSetThinking={(level: ThinkingLevel) =>
-                                void exec(
-                                    chatCommands.setThinking(active?.sessionId ?? "", level),
-                                    "chat.thinkingSet",
-                                    { level },
-                                )
-                            }
-                        />
+                        {sessionMissing ? null : (
+                            <Composer
+                                session={active ?? null}
+                                models={models}
+                                connected={connected}
+                                paired={paired}
+                                sending={sending}
+                                onSend={(text, images, mode) => void handleSend(text, images, mode)}
+                                onAbort={() => {
+                                    setSending(null);
+                                    void exec(chatCommands.abort(active?.sessionId ?? ""));
+                                }}
+                                onRemoveQueue={(id) =>
+                                    void exec(chatCommands.removeQueued(active?.sessionId ?? "", id), "chat.queueRemoved")
+                                }
+                                onSetSteer={(steer) => void setSteerMode(steer)}
+                                onSetModel={(model: ModelRef) =>
+                                    void exec(
+                                        chatCommands.setModel(active?.sessionId ?? "", model),
+                                        "chat.modelSwitched",
+                                        { model: model.id },
+                                    )
+                                }
+                                onSetThinking={(level: ThinkingLevel) =>
+                                    void exec(
+                                        chatCommands.setThinking(active?.sessionId ?? "", level),
+                                        "chat.thinkingSet",
+                                        { level },
+                                    )
+                                }
+                            />
+                        )}
                     </>
                 }
                 panel={
@@ -478,7 +551,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 onBack={() => {
                     if (preview) {
                         navigateSession(preview.session.sessionId);
-                        toast(t("chat.returnedParent", { name: preview.session.name ?? preview.session.sessionId }));
+                        toast.success(t("chat.returnedParent", { name: preview.session.name ?? preview.session.sessionId }));
                     }
                     setPreview(null);
                 }}

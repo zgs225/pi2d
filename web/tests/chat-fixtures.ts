@@ -1,4 +1,4 @@
-import type { Batch, Entry, SessionState, Subagent, TodoItem } from "@protocol/types";
+import type { Batch, Entry, SessionState, Subagent, TaskItem, TodoItem } from "@protocol/types";
 
 import { emptySessionState } from "@/features/chat/session-state";
 
@@ -23,6 +23,31 @@ export function subagentFixture(overrides: Partial<Subagent> = {}): Subagent {
         task: "Research the auth flow",
         createdAt: Date.now() - 60_000,
         lastActiveAt: Date.now() - 5_000,
+        ...overrides,
+    };
+}
+
+export function taskFixture(overrides: Partial<TaskItem> = {}): TaskItem {
+    return {
+        id: "t1",
+        command: "pnpm test",
+        status: "completed",
+        startTime: Date.now() - 5_000,
+        durationMs: 4_200,
+        exitCode: 0,
+        outputFile: "/tmp/pi2-task-t1.log",
+        ...overrides,
+    };
+}
+
+/** `task.output` ack for `taskFixture()`. */
+export function taskOutputFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        output: "$ pnpm test\n42 passed",
+        outputFile: "/tmp/pi2-task-t1.log",
+        status: "completed",
+        exitCode: 0,
+        durationMs: 4_200,
         ...overrides,
     };
 }

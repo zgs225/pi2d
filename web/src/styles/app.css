@@ -129,6 +129,22 @@ code, pre, .mono { font-family: var(--font-mono); font-size: .8125em; }
 .tabbar .nav-item.active { color: var(--primary); background: none; }
 
 .main { flex: 1; min-width: 0; padding: var(--space-6); padding-bottom: calc(var(--tabbar-h) + var(--space-6)); }
+
+/* ---------- connection banner (paired but the socket is down) ---------- */
+.reconnect-banner {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in oklch, var(--warn) 12%, var(--card));
+  border-bottom: 1px solid color-mix(in oklch, var(--warn) 45%, var(--border));
+  color: var(--foreground);
+  font-size: .8125rem;
+}
+.reconnect-banner .ico { color: var(--warn); flex: none; }
+.reconnect-banner__text { flex: 1; min-width: 0; }
+.reconnect-banner .btn { flex: none; }
+@media (max-width: 599px) {
+  .reconnect-banner { padding: var(--space-2) var(--space-3); font-size: .75rem; }
+}
 @media (min-width: 840px) { .sidebar { display: block; } }
 @media (min-width: 600px) and (max-width: 839px) { .rail { display: flex; } }
 @media (min-width: 600px) { .main { padding-bottom: var(--space-6); } }
@@ -367,12 +383,16 @@ code, pre, .mono { font-family: var(--font-mono); font-size: .8125em; }
 .modal-backdrop.open { opacity: 1; pointer-events: auto; }
 .modal-backdrop[data-state="open"] { opacity: 1; pointer-events: auto; }
 .modal {
+  /* Sits above the .modal-backdrop scrim (z-index 60) so its buttons are clickable. */
+  position: relative; z-index: 61;
   width: min(26rem, 100%); max-height: 88dvh; overflow: auto;
   background: var(--popover); color: var(--popover-foreground);
   border-radius: var(--radius-xl); box-shadow: var(--shadow-lg);
   padding: var(--space-6);
   transform: translateY(10px); transition: transform .18s ease;
 }
+/* pointer-events is reset on the scrim when closed; keep the panel interactive when it is nested. */
+.modal-content { pointer-events: auto; }
 .modal--wide { width: max(60vw, 26rem); max-width: 100%; }
 .modal-backdrop.open .modal,
 .modal-backdrop[data-state="open"] .modal,
@@ -400,8 +420,7 @@ code, pre, .mono { font-family: var(--font-mono); font-size: .8125em; }
 }
 .sheet-handle { width: 2.5rem; height: .3125rem; border-radius: 999px; background: var(--border); margin: 0 auto var(--space-4); flex: none; }
 
-.toasts { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--tabbar-h)); z-index: 80; display: flex; flex-direction: column; gap: var(--space-2); }
-@media (min-width: 600px) { .toasts { bottom: var(--space-4); } }
+.toasts { position: fixed; right: var(--space-4); bottom: calc(var(--space-4) + var(--tabbar-h)); z-index: 80; display: flex; flex-direction: column; gap: var(--space-2); }@media (min-width: 600px) { .toasts { bottom: var(--space-4); } }
 .toast {
   display: flex; align-items: center; gap: var(--space-2);
   background: var(--popover); color: var(--popover-foreground);

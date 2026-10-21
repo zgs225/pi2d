@@ -8,7 +8,7 @@ import { Chip } from "@/components/ui/chip";
 import { Modal } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { promptImage, type PromptImage } from "./commands";
+import { promptImage, type PromptImage, type PromptMode } from "./commands";
 import type { ModelGroup } from "./data";
 import { withCurrentModel } from "./data";
 import { THINKING_LEVELS } from "./format";
@@ -20,10 +20,12 @@ export interface ComposerProps {
     connected: boolean;
     paired?: boolean;
     sending?: { text: string } | null;
-    onSend: (text: string, images: PromptImage[]) => void;
+    /** `mode` is `follow_up` when the run is busy (queued) and `steer` for an interrupt. */
+    onSend: (text: string, images: PromptImage[], mode?: PromptMode) => void;
     onAbort: () => void;
     onRemoveQueue: (id: string) => void;
-    onSetSteer: (id: string, steer: boolean) => void;
+    /** Steering is a session-wide mode, not a per-message flag. */
+    onSetSteer: (steer: boolean) => void;
     onSetModel: (model: ModelRef) => void;
     onSetThinking: (level: ThinkingLevel) => void;
     disabled?: boolean;
@@ -80,13 +82,14 @@ export function Composer({
         textareaRef.current?.focus({ preventScroll: true });
     }, [enabled]);
 
-    function submit() {
+    function submit(mode?: PromptMode) {
         const trimmed = text.trim();
         if (!trimmed || !enabled) return;
         const images = attachments.map(({ mimeType, data }) => ({ mimeType, data }));
         setText("");
         setAttachments([]);
-        onSend(trimmed, images);
+        // A busy session queues the message as a follow-up; idle sends a plain prompt.
+        onSend(trimmed, images, mode ?? (busy ? "follow_up" : undefined));
     }
 
     async function addFiles(files: FileList | File[] | null) {
@@ -136,7 +139,7 @@ export function Composer({
                                     className="q-steer"
                                     checked={item.steer}
                                     aria-label={t("chat.steer")}
-                                    onChange={(event) => onSetSteer(item.id, event.target.checked)}
+                                    onChange={(event) => onSetSteer(event.target.checked)}
                                 />
                                 <span>{t("chat.steer")}</span>
                             </label>
@@ -185,6 +188,7 @@ export function Composer({
                     value={text}
                     placeholder={t("chat.composerPlaceholder")}
                     aria-label={t("chat.composerAria")}
+                    data-testid="composer-input"
                     disabled={!enabled}
                     onChange={(event) => setText(event.target.value)}
                     onKeyDown={(event) => {
@@ -207,6 +211,7 @@ export function Composer({
                     <select
                         className="select composer__sel"
                         aria-label={t("chat.model")}
+                        data-testid="composer-model"
                         value={model ? `${model.provider}/${model.id}` : ""}
                         disabled={!enabled || !groups.length}
                         onChange={(event) => {
@@ -234,6 +239,7 @@ export function Composer({
                     <select
                         className="select composer__sel"
                         aria-label={t("chat.thinkingAria")}
+                        data-testid="composer-thinking"
                         value={thinking}
                         disabled={!enabled}
                         onChange={(event) => onSetThinking(event.target.value as ThinkingLevel)}
@@ -246,28 +252,42 @@ export function Composer({
                     </select>
                     <div className="spacer" />
                     {busy ? (
-                        <Button
-                            variant="danger"
-                            className="composer__send"
-                            title={t("chat.abortTitle")}
-                            disabled={!connected}
-                            onClick={onAbort}
-                        >
-                            <Icon name="stop" />
-                            {t("chat.abort")}
-                        </Button>
-                    ) : (
-                        <Button
-                            variant="primary"
-                            className="composer__send"
-                            title={t("chat.sendTitle")}
-                            disabled={!enabled || !text.trim()}
-                            onClick={submit}
-                        >
-                            <Icon name="send" />
-                            {t("chat.send")}
-                        </Button>
-                    )}
+                        <>
+                            <Button
+                                variant="ghost"
+                                className="composer__steer"
+                                title={t("chat.steer")}
+                                data-testid="composer-steer"
+                                disabled={!enabled || !text.trim()}
+                                onClick={() => submit("steer")}
+                            >
+                                <Icon name="alert" />
+                                {t("chat.steer")}
+                            </Button>
+                            <Button
+                                variant="danger"
+                                className="composer__abort"
+                                title={t("chat.abortTitle")}
+                                data-testid="composer-abort"
+                                disabled={!connected}
+                                onClick={onAbort}
+                            >
+                                <Icon name="stop" />
+                                {t("chat.abort")}
+                            </Button>
+                        </>
+                    ) : null}
+                    <Button
+                        variant="primary"
+                        className="composer__send"
+                        title={t("chat.sendTitle")}
+                        data-testid="composer-send"
+                        disabled={!enabled || !text.trim()}
+                        onClick={() => submit()}
+                    >
+                        <Icon name="send" />
+                        {t("chat.send")}
+                    </Button>
                 </div>
             </div>
             {hint ? (
@@ -312,7 +332,6 @@ export function Composer({
                     >
                         <Icon name="plus" />
                         <div>{t("chat.dropHint")}</div>
-                        <div className="muted">{t("chat.dropNote")}</div>
                     </div>
                     <input
                         ref={fileRef}
@@ -348,7 +367,6 @@ export function Composer({
                             ))}
                         </div>
                     ) : null}
-                    <div className="muted composer__note">{t("chat.attachNote")}</div>
                 </div>
             </Modal>
         </div>

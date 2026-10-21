@@ -1,14 +1,12 @@
 import { useTranslation } from "react-i18next";
 
 import { StatusDot, type DotStatus } from "@/components/ui/status-dot";
-import type { TaskItem } from "@/lib/protocol";
+import type { StatusTask } from "@/features/status/queries";
 import { formatDuration } from "@/features/status/server";
 
-import { StatusCard, StatusEmpty } from "./card-parts";
+import { ErrorBlock, LoadingBlock, StatusCard, StatusEmpty } from "./card-parts";
 
-export interface StatusTask extends TaskItem {
-    sessionId: string;
-}
+export type { StatusTask };
 
 const TASK_DOT: Record<string, DotStatus> = {
     running: "busy",
@@ -19,10 +17,13 @@ const TASK_DOT: Record<string, DotStatus> = {
 
 export interface TasksCardProps {
     tasks: StatusTask[];
+    loading?: boolean;
+    error?: string | null;
+    onRetry?: () => void;
 }
 
-/** Card 5 — background task summary from the live session store. */
-export function TasksCard({ tasks }: TasksCardProps) {
+/** Card 5 — background tasks from the live session store plus every workspace's sessions. */
+export function TasksCard({ tasks, loading = false, error = null, onRetry }: TasksCardProps) {
     const { t } = useTranslation();
     return (
         <StatusCard
@@ -30,7 +31,11 @@ export function TasksCard({ tasks }: TasksCardProps) {
             icon="terminal"
             headExtra={<span className="card__sub">{t("status.taskCount", { n: tasks.length })}</span>}
         >
-            {tasks.length === 0 ? (
+            {error ? (
+                <ErrorBlock message={error} onRetry={onRetry} />
+            ) : loading ? (
+                <LoadingBlock rows={3} />
+            ) : tasks.length === 0 ? (
                 <StatusEmpty icon="terminal" title={t("status.noTasksTitle")} text={t("status.noTasksText")} />
             ) : (
                 <div className="task-list">

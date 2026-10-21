@@ -48,17 +48,13 @@
 .cn .input { min-height: 2.5rem; }
 .cn-field .input { transition: border-color .15s ease, box-shadow .15s ease; }
 
-/* token: password + reveal toggle */
-.cn-token { position: relative; display: flex; align-items: center; }
-.cn-token .input { padding-right: 2.875rem; }
-.cn-token .cn-eye {
-  position: absolute;
-  right: var(--space-1);
-  color: var(--muted-foreground);
-  min-width: 2.5rem;
-  min-height: 2.5rem;
+/* pairing code: 8 uppercase alphanumerics, monospace + tracked so it reads like the server */
+.cn-code {
+  font-family: var(--font-mono);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
 }
-.cn-token .cn-eye.is-on { color: var(--foreground); }
 
 /* error rail — the only structural color block allowed by the design */
 .cn-error {

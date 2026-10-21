@@ -5,7 +5,7 @@ import process from "node:process";
 import type { SessionEvent } from "@protocol/types";
 import { describe, expect, it } from "vitest";
 
-import { applySessionEvent, emptySessionState } from "@/features/chat/session-state";
+import { applySessionEvent, emptySessionState, normalizeSnapshotState } from "@/features/chat/session-state";
 
 function append(state: ReturnType<typeof emptySessionState>, event: SessionEvent) {
     return applySessionEvent(state, event);
@@ -53,6 +53,59 @@ describe("canonical reducer integration", () => {
         expect(state.entries[0]?.blocks[0]).toEqual({ type: "text", text: "Hello world" });
         expect(state.entries[0]?.done).toBe(true);
         expect(state.usage).toMatchObject({ input: 10, output: 2, cost: 0.01 });
+    });
+
+    it("renders exactly one assistant entry with the exact streamed text", () => {
+        let state = emptySessionState({ sessionId: "s1", workspaceId: "w1" });
+        state = append(state, { type: "agent_start", ts: 1 });
+        state = append(state, { type: "message_start", ts: 2, message: { role: "assistant", content: [] } });
+        for (const delta of ["P", "O", "N", "G"]) {
+            state = append(state, {
+                type: "message_update",
+                ts: 3,
+                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
+            });
+        }
+        state = append(state, {
+            type: "message_end",
+            ts: 4,
+            message: { role: "assistant", content: [{ type: "text", text: "PONG" }] },
+        });
+
+        expect(state.entries).toHaveLength(1);
+        expect(state.entries[0]?.blocks).toEqual([{ type: "text", text: "PONG" }]);
+        expect(state.entries[0]?.done).toBe(true);
+
+        // The bridge coalesces deltas and stamps their seq when the frame is
+        // written, so the tail of the message can arrive after `message_end`.
+        // Replaying it must not append the tail a second time (`PONGONG`).
+        state = append(state, {
+            type: "message_update",
+            ts: 5,
+            assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ONG" },
+        });
+        expect(state.entries).toHaveLength(1);
+        expect(state.entries[0]?.blocks).toEqual([{ type: "text", text: "PONG" }]);
+    });
+
+    it("ignores stale deltas after a snapshot took over a settled session", () => {
+        const ts = Date.now();
+        const snapshot = normalizeSnapshotState("s1", "w1", {
+            state: {
+                status: "idle",
+                entries: [
+                    { id: "m1", role: "user", ts, done: true, blocks: [{ type: "text", text: "ping" }] },
+                    { id: "m2", role: "assistant", ts, done: true, blocks: [{ type: "text", text: "PONG" }] },
+                ],
+            },
+        });
+        const next = append(snapshot, {
+            type: "message_update",
+            ts: ts + 10,
+            assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ONG" },
+        });
+        expect(next.entries.filter((entry) => entry.role === "assistant")).toHaveLength(1);
+        expect(next.entries[1]?.blocks).toEqual([{ type: "text", text: "PONG" }]);
     });
 
     it("applies entry_appended for user messages and folds tool results into the tool block", () => {
@@ -119,6 +172,32 @@ describe("canonical reducer integration", () => {
         state = append(state, event);
         state = append(state, { ...event, entry: { ...(event.entry as object), id: "u2" } });
         expect(state.entries.filter((entry) => entry.role === "user")).toHaveLength(1);
+    });
+
+    it("tracks an attention request and closes it when the plugin resolves it", () => {
+        let state = emptySessionState({ sessionId: "s1", workspaceId: "w1" });
+        state = append(state, {
+            type: "pi2:attention_request",
+            ts: 10,
+            requestId: "att-1",
+            method: "select",
+            title: "Run this command?",
+            options: [{ id: "allow-once", label: "Allow once" }],
+            timeoutSec: 30,
+        });
+        expect(state.attention).toHaveLength(1);
+        expect(state.attention[0]).toMatchObject({
+            requestId: "att-1",
+            method: "select",
+            title: "Run this command?",
+            options: [{ id: "allow-once", label: "Allow once" }],
+            timeoutSec: 30,
+        });
+        expect(state.flags.attention).toBe(true);
+
+        state = append(state, { type: "pi2:attention_resolved", ts: 11, requestId: "att-1" });
+        expect(state.attention).toHaveLength(0);
+        expect(state.flags.attention).toBe(false);
     });
 
     it("replays the pi2d basic-turn fixture through the shared reducer", () => {

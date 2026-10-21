@@ -1,7 +1,17 @@
 import { ApiError, apiRequest, type InfoResponse } from "@/lib/api";
+import { NEXT_FALLBACK, safeNext } from "@/lib/routing";
 
 export const PAIR_META_KEY = "pi2-pair-meta";
 export const PAIR_SCOPES = ["read", "steer", "apply"] as const;
+
+/** Public redeem endpoint: no bearer token required (docs/protocol.md §3.2). */
+export const PAIR_REDEEM_PATH = "/api/v1/pair";
+/** The daemon mints 8-character uppercase alphanumeric pairing codes. */
+export const PAIR_CODE_LENGTH = 8;
+export const PAIR_CODE_PATTERN = /^[A-Z0-9]{8}$/;
+export const DEFAULT_PAIR_PORT = 4321;
+/** Scope assumed when a paired device did not report any (older daemons). */
+export const DEFAULT_DEVICE_SCOPES = ["read"] as const;
 
 export type DeviceKind = "phone" | "laptop" | "tablet";
 
@@ -25,6 +35,8 @@ export interface RedeemResult {
     token: string;
     scopes: string[];
     deviceId?: string;
+    deviceName?: string;
+    kind?: DeviceKind;
     server?: PairMeta["server"];
     raw: unknown;
 }
@@ -49,6 +61,22 @@ function firstString(...values: unknown[]): string | undefined {
 
 function stringList(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * Uppercase and drop everything that is not `[A-Z0-9]` — pairing codes are
+ * printed in small groups (`ABCD-1234`) but the daemon only accepts 8 chars.
+ */
+export function normalizePairCode(value: string | null | undefined): string {
+    return String(value ?? "")
+        .replace(/[^a-z0-9]/gi, "")
+        .toUpperCase()
+        .slice(0, PAIR_CODE_LENGTH + 8);
+}
+
+/** True when the (normalized) value is a well-formed pairing code. */
+export function isPairCode(value: string | null | undefined): boolean {
+    return PAIR_CODE_PATTERN.test(normalizePairCode(value));
 }
 
 /**
@@ -104,68 +132,104 @@ function endpointFrom(value: string | null | undefined): ParsedEndpoint | null {
     }
 }
 
+function browserOrigin(): string | null {
+    if (typeof window === "undefined") return null;
+    return window.location?.origin ?? null;
+}
+
+function pairTarget(target: ParsedEndpoint, code: string, name?: string | null): PairTarget {
+    return {
+        endpoint: target.endpoint,
+        code,
+        name: name?.trim() || target.hostname,
+        hostname: target.hostname,
+        port: target.port,
+    };
+}
+
+/** First non-empty pairing code among the query/hash/path candidates. */
+function extractPairCode(url: URL): string {
+    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+    const pathCode = /^\/pair\/([^/?#]+)\/?$/i.exec(url.pathname)?.[1];
+    const raw =
+        hash.get("pair") ??
+        hash.get("code") ??
+        url.searchParams.get("pair") ??
+        url.searchParams.get("code") ??
+        pathCode;
+    return normalizePairCode(raw ?? "");
+}
+
+/** `pi2://pair?host=…&port=…&code=…` (design prototype / QR deep link). */
+function parsePi2PairLink(text: string, fallbackEndpoint?: string | null): PairTarget | null {
+    let url: URL;
+    try {
+        url = new URL(text);
+    } catch {
+        return null;
+    }
+    if (url.protocol !== "pi2:") return null;
+
+    const params = url.searchParams;
+    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+    const pathCode = /^\/+([^/]+)$/.exec(url.pathname)?.[1];
+    const code = normalizePairCode(
+        params.get("code") ?? params.get("token") ?? hash.get("code") ?? hash.get("pair") ?? pathCode ?? "",
+    );
+    if (!code) return null;
+
+    const hostParam = firstString(params.get("host"), params.get("hostname"), params.get("endpoint"));
+    const proto = firstString(params.get("proto"), params.get("protocol"))?.toLowerCase();
+    const portParam = firstString(params.get("port")) ?? String(DEFAULT_PAIR_PORT);
+
+    let target: ParsedEndpoint | null = null;
+    if (hostParam) {
+        const hostText =
+            proto === "https" && !/^https?:\/\//i.test(hostParam) ? `https://${hostParam}` : hostParam;
+        const parsed = parseEndpoint(hostText, portParam);
+        target = "error" in parsed ? null : parsed;
+    }
+    // A pi2:// link without a host only makes sense against a known endpoint
+    // (the scan dialog passes the stored one); never guess from the browser origin.
+    target ??= endpointFrom(fallbackEndpoint);
+    if (!target) return null;
+
+    return pairTarget(target, code, params.get("name") ?? hash.get("name"));
+}
+
 /**
- * Parse the QR payload. Supported forms:
+ * Parse a pairing payload. Supported forms:
+ *   `pi2://pair?host=…&port=…&code=…` (also `proto=https` and `host=host:port`)
+ *   `https://host:port/pair/CODE`
  *   `https://host:port/#pair=CODE`
- *   `#pair=CODE` (resolved against the current/typed endpoint)
- *   `pi2://pair?host=…&port=…&code=…` (design prototype compatibility)
+ *   `https://host:port/?pair=CODE` / `?code=CODE`
+ *   `#pair=CODE` / `?code=CODE` / `/pair/CODE` (resolved against the current/typed endpoint)
  */
 export function parsePairLink(raw: string, fallbackEndpoint?: string | null): PairTarget | null {
     const text = String(raw || "").trim();
     if (!text) return null;
 
-    if (/^pi2:\/\/pair\b/i.test(text)) {
-        let url: URL;
-        try {
-            url = new URL(text);
-        } catch {
-            return null;
-        }
-        if (url.protocol !== "pi2:") return null;
-        const params = url.searchParams;
-        const hostname = (params.get("host") || "").trim();
-        if (!hostname) return null;
-        const portNum = Number(params.get("port"));
-        const port = Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535 ? portNum : 4321;
-        const protocol = (params.get("proto") || "").toLowerCase() === "https" ? "https" : "http";
-        const code = (params.get("code") || params.get("token") || "").trim();
-        if (!code) return null;
-        return {
-            endpoint: `${protocol}://${hostname}:${port}`,
-            code,
-            name: params.get("name") || hostname,
-            hostname,
-            port,
-        };
-    }
+    if (/^pi2:/i.test(text)) return parsePi2PairLink(text, fallbackEndpoint);
 
     let url: URL;
     try {
-        const base =
-            endpointFrom(fallbackEndpoint)?.endpoint ||
-            (typeof window !== "undefined" ? window.location.origin : "http://localhost");
+        const base = endpointFrom(fallbackEndpoint)?.endpoint ?? browserOrigin() ?? "http://localhost";
         url = new URL(text, base);
     } catch {
         return null;
     }
 
-    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
-    const code = (hash.get("pair") || hash.get("code") || url.searchParams.get("pair") || "").trim();
+    const code = extractPairCode(url);
     if (!code) return null;
 
-    const base = endpointFrom(fallbackEndpoint) ?? endpointFrom(url.origin);
-    if (!base) return null;
     const isAbsolute = /^https?:\/\//i.test(text);
-    const endpoint = isAbsolute ? endpointFrom(url.origin) : base;
+    const endpoint = isAbsolute
+        ? (endpointFrom(url.origin) ?? endpointFrom(fallbackEndpoint) ?? endpointFrom(browserOrigin()))
+        : (endpointFrom(fallbackEndpoint) ?? endpointFrom(url.origin) ?? endpointFrom(browserOrigin()));
     if (!endpoint) return null;
 
-    return {
-        endpoint: endpoint.endpoint,
-        code,
-        name: hash.get("name") || url.searchParams.get("name") || endpoint.hostname,
-        hostname: endpoint.hostname,
-        port: endpoint.port,
-    };
+    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+    return pairTarget(endpoint, code, hash.get("name") ?? url.searchParams.get("name"));
 }
 
 export function maskSecret(value: string): string {
@@ -184,7 +248,24 @@ export function detectDeviceKind(): DeviceKind {
     return "laptop";
 }
 
-/** POST /api/v1/cmd pair.redeem against the selected origin. */
+/** Origin (scheme + host + port) of a stored endpoint; the redeem path is appended to it. */
+export function pairingOrigin(endpoint: string): string {
+    const parsed = endpointFrom(String(endpoint || "").trim());
+    if (parsed) return parsed.endpoint;
+    return String(endpoint || "")
+        .trim()
+        .replace(/\/+$/, "");
+}
+
+function normalizeScopes(values: string[]): string[] {
+    const unique = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+    return unique.length ? unique : [...DEFAULT_DEVICE_SCOPES];
+}
+
+/**
+ * Redeem a pairing code against the public `POST <origin>/api/v1/pair`
+ * endpoint: `{code,kind,deviceName}` → `{token,device}`.
+ */
 export async function redeemPairing(input: {
     endpoint: string;
     code: string;
@@ -192,43 +273,49 @@ export async function redeemPairing(input: {
     kind?: DeviceKind;
     signal?: AbortSignal;
 }): Promise<RedeemResult> {
-    const endpoint = input.endpoint.replace(/\/+$/, "");
-    const response = await apiRequest<Record<string, unknown>>("/api/v1/cmd", {
+    const origin = pairingOrigin(input.endpoint);
+    const code = normalizePairCode(input.code);
+    const deviceName = input.deviceName.trim();
+    const kind = input.kind ?? detectDeviceKind();
+
+    const response = await apiRequest<Record<string, unknown>>(PAIR_REDEEM_PATH, {
         method: "POST",
-        baseUrl: endpoint,
-        body: {
-            method: "pair.redeem",
-            params: {
-                code: input.code,
-                deviceName: input.deviceName,
-                kind: input.kind ?? detectDeviceKind(),
-            },
-        },
+        baseUrl: origin,
+        body: { code, kind, deviceName },
+        skipAuthReset: true,
         signal: input.signal,
     });
 
     const payload = asRecord(response.payload);
     const result = asRecord(response.result);
-    const device = asRecord(response.device);
-    const token = firstString(response.token, response.deviceToken, payload?.token, result?.token, device?.token);
+    const body = asRecord(response) ?? {};
+    const device =
+        asRecord(body.device) ?? asRecord(result?.device) ?? asRecord(payload?.device) ?? asRecord(payload);
+    // `{token,device}` is the documented shape; keep the older aliases as a fallback.
+    const token = firstString(body.token, body.deviceToken, device?.token, result?.token, payload?.token);
     if (!token) {
         throw new ApiError({
             code: "E_UNAUTHORIZED",
-            message: "pair.redeem returned no device token",
+            message: "pair redeem returned no device token",
             status: 401,
         });
     }
 
-    const server = asRecord(response.server) as PairMeta["server"] | undefined;
+    const scopes = normalizeScopes([
+        ...stringList(body.scopes),
+        ...stringList(device?.scopes),
+        ...stringList(result?.scopes),
+    ]);
+
     return {
         token,
-        scopes: stringList(response.scopes).length
-            ? stringList(response.scopes)
-            : stringList(result?.scopes).length
-              ? stringList(result?.scopes)
-              : ["read"],
-        deviceId: firstString(response.deviceId, result?.deviceId, device?.deviceId),
-        server,
+        scopes,
+        deviceId: firstString(device?.id, body.deviceId, device?.deviceId, result?.deviceId),
+        deviceName: firstString(device?.name, deviceName),
+        kind: (firstString(device?.kind) as DeviceKind | undefined) ?? kind,
+        server:
+            (asRecord(body.server) as PairMeta["server"] | undefined) ??
+            (asRecord(result?.server) as PairMeta["server"] | undefined),
         raw: response,
     };
 }
@@ -268,22 +355,23 @@ export function clearPairMeta(): void {
     }
 }
 
-/** The connection redirect may target only the three navigation pages. */
+/**
+ * Post-pairing redirect target. Shares `safeNext`'s allow-list so a paired deep
+ * link such as `/chat/<sid>?workspace=…` survives the round trip.
+ */
 export function safePairNext(raw: string | null | undefined): string {
-    if (!raw) return "/workspaces";
-    try {
-        const url = new URL(String(raw), "http://pi2.local");
-        if (url.pathname === "/workspaces" || url.pathname === "/chat" || url.pathname === "/status") {
-            return `${url.pathname}${url.search}`;
-        }
-    } catch {
-        /* fall through */
-    }
-    return "/workspaces";
+    return safeNext(raw, NEXT_FALLBACK);
 }
 
-export function scopesForIdentity(meta: PairMeta | null, info: InfoResponse | null | undefined): string[] {
+/** Ordered scope list for the paired summary: stored device scopes win over /info capabilities. */
+export function scopesForIdentity(
+    meta: PairMeta | null,
+    info: InfoResponse | null | undefined,
+    storedScopes?: string[] | null,
+): string[] {
+    if (storedScopes?.length) return storedScopes;
     if (meta?.scopes.length) return meta.scopes;
     const capabilities = Array.isArray(info?.capabilities) ? info.capabilities : [];
-    return capabilities.filter((capability) => (PAIR_SCOPES as readonly string[]).includes(capability));
+    const derived = capabilities.filter((capability) => (PAIR_SCOPES as readonly string[]).includes(capability));
+    return derived.length ? derived : [...DEFAULT_DEVICE_SCOPES];
 }

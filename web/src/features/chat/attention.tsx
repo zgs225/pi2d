@@ -8,52 +8,59 @@ import { Modal } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import {
+    cancelResponse,
+    confirmResponse,
+    diffAnswer,
+    selectResponse,
+    type AttentionResponse,
+} from "./commands";
 import { diffFilesFromPayload } from "./diff";
 import { DiffView } from "./diff-view";
 
 export interface AttentionDialogProps {
     session: SessionState;
-    onRespond: (item: AttentionItem, response: unknown) => void;
+    onRespond: (item: AttentionItem, response: AttentionResponse | string) => void;
     /** Fired when the request vanished because another client answered it. */
     onRemoteResolved: (requestId: string) => void;
-}
-
-function diffResponse(result: "Accepted" | "Rejected", path?: string): string {
-    return JSON.stringify({ result, ...(path ? { path } : {}) });
 }
 
 /**
  * Blocking extension attention request.
  *
- * One dialog per session: title/options/countdown, or the pre-execution diff
- * review variant. A request resolved by another client disappears from
- * `session.attention` (reducer) and we close immediately + toast.
+ * One dialog per session: title/options/countdown from the server (nothing is
+ * invented locally), or the pre-execution diff review variant. The dialog closes
+ * when the plugin resolves the request — our own answer
+ * (`pi2:attention_resolved` echoes the winner), another client's answer, or the
+ * timeout it advertises.
  */
 export function AttentionDialog({ session, onRespond, onRemoteResolved }: AttentionDialogProps) {
     const { t } = useTranslation();
     const [current, setCurrent] = useState<AttentionItem | null>(null);
     const [remaining, setRemaining] = useState<number | null>(null);
-    const responded = useRef(false);
-    const dismissed = useRef<string | null>(null);
-    const timedOut = useRef<Set<string>>(new Set());
+    /** Answered here, waiting for the plugin to confirm. */
+    const answered = useRef(false);
+    /** Timed out locally: the plugin cancels it too, so never show it again. */
+    const settled = useRef<Set<string>>(new Set());
+    /** The request currently on screen, to report a remote resolution once. */
+    const shown = useRef<string | null>(null);
 
     useEffect(() => {
-        const next = session.attention[0] ?? null;
-        if (next && dismissed.current === next.requestId) return;
-        if (next) {
-            if (!current || current.requestId !== next.requestId) {
-                responded.current = false;
-                setCurrent(next);
-            }
+        const next = session.attention.find((item) => !settled.current.has(item.requestId)) ?? null;
+        if (!next) {
+            // `pi2:attention_resolved` (or a cancelled request) removed it.
+            if (shown.current !== null && !answered.current) onRemoteResolved(shown.current);
+            shown.current = null;
+            answered.current = false;
+            setCurrent(null);
             return;
         }
-        if (current) {
-            if (!responded.current) onRemoteResolved(current.requestId);
-            responded.current = false;
-            dismissed.current = null;
-            setCurrent(null);
+        if (shown.current !== next.requestId) {
+            shown.current = next.requestId;
+            answered.current = false;
         }
-    }, [session.attention, current, onRemoteResolved]);
+        setCurrent(next);
+    }, [session.attention, onRemoteResolved]);
 
     useEffect(() => {
         const timeoutSec = current?.timeoutSec;
@@ -66,13 +73,12 @@ export function AttentionDialog({ session, onRespond, onRemoteResolved }: Attent
         const tick = () => {
             const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1_000));
             setRemaining(left);
-            if (left <= 0 && !timedOut.current.has(item.requestId)) {
-                timedOut.current.add(item.requestId);
-                responded.current = true;
-                dismissed.current = item.requestId;
-                setCurrent(null);
-                toast.error(t("chat.attentionTimedOut"));
-            }
+            if (left > 0 || settled.current.has(item.requestId)) return;
+            settled.current.add(item.requestId);
+            shown.current = null;
+            answered.current = false;
+            setCurrent(null);
+            toast.error(t("chat.attentionTimedOut"));
         };
         tick();
         const timer = setInterval(tick, 500);
@@ -82,27 +88,35 @@ export function AttentionDialog({ session, onRespond, onRemoteResolved }: Attent
     const files = useMemo(() => diffFilesFromPayload(current?.payload), [current]);
     const isDiff = current?.method === "diff" || files.length > 0;
 
-    function respond(response: unknown, message: string, kind: "success" | "error" | "info" = "success") {
+    /** Answer, optionally with a confirmation toast (diff decisions). */
+    function respond(answer: AttentionResponse, message?: string, kind: "success" | "error" = "success") {
         if (!current) return;
-        responded.current = true;
-        onRespond(current, response);
+        answered.current = true;
+        onRespond(current, answer);
+        if (!message) return;
         if (kind === "error") toast.error(message);
-        else if (kind === "info") toast.info(message);
         else toast.success(message);
     }
 
+    // `confirm` has no server-side option list; the plugin expects
+    // `{confirmed}` and expresses a dismissal as `{cancelled}`.
+    const confirmMode = current?.method === "confirm" && !current.options?.length;
     const options = current?.options?.length
         ? current.options
-        : current?.method === "confirm"
+        : confirmMode
           ? [
-                { id: "confirm", label: t("chat.allowOnce") },
-                { id: "deny", label: t("chat.deny") },
+                { id: "confirm", label: t("common.confirm") },
+                { id: "cancel", label: t("common.cancel") },
             ]
-          : [
-                { id: "allow-once", label: t("chat.allowOnce") },
-                { id: "always", label: t("chat.always") },
-                { id: "deny", label: t("chat.deny") },
-            ];
+          : [];
+
+    function choose(id: string) {
+        if (confirmMode) {
+            respond(id === "confirm" ? confirmResponse(true) : cancelResponse());
+            return;
+        }
+        respond(selectResponse(id));
+    }
 
     return (
         <Modal
@@ -123,7 +137,10 @@ export function AttentionDialog({ session, onRespond, onRemoteResolved }: Attent
                                     files={files}
                                     onDecision={(decision, path) =>
                                         respond(
-                                            diffResponse(decision === "accept" ? "Accepted" : "Rejected", path),
+                                            diffAnswer(
+                                                decision === "accept" ? "Accepted" : "Rejected",
+                                                path,
+                                            ),
                                             decision === "accept"
                                                 ? t("chat.acceptedAll", { n: files.length })
                                                 : t("chat.rejected", { path: path ?? "" }),
@@ -141,22 +158,21 @@ export function AttentionDialog({ session, onRespond, onRemoteResolved }: Attent
                                 <Button
                                     key={option.id}
                                     variant={index === 0 ? "primary" : option.id === "deny" ? "danger" : "ghost"}
-                                    onClick={() => {
-                                        const ok = option.id !== "deny";
-                                        respond(
-                                            option.id,
-                                            option.id === "deny"
-                                                ? t("chat.denied")
-                                                : option.id === "always"
-                                                  ? t("chat.alwaysAllowed")
-                                                  : t("chat.allowedOnce"),
-                                            ok ? "success" : "error",
-                                        );
-                                    }}
+                                    data-option-id={option.id}
+                                    onClick={() => choose(option.id)}
                                 >
                                     {option.label}
                                 </Button>
                             ))}
+                            {options.length ? null : (
+                                <Button
+                                    variant="ghost"
+                                    data-option-id="cancel"
+                                    onClick={() => respond(cancelResponse())}
+                                >
+                                    {t("common.cancel")}
+                                </Button>
+                            )}
                         </div>
                     )}
                     {current.timeoutSec ? (

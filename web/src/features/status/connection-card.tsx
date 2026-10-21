@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { KV, KVList } from "@/components/ui/kv";
 import { toast } from "@/components/ui/toast";
 import { drawQr } from "@/features/status/qr";
+import type { PairCodeResponse } from "@/features/status/queries";
 import type { ServerIdentity } from "@/features/status/server";
 
 import { ErrorBlock, LoadingBlock, StatusCard } from "./card-parts";
@@ -86,6 +87,64 @@ export interface ConnectionCardProps {
     error: string | null;
     onRetry: () => void;
     onDisconnect: () => void;
+    /** Fresh pairing code minted by the daemon (`POST /api/v1/pair`). */
+    pairCode: PairCodeResponse | undefined;
+    pairLoading: boolean;
+    pairError: string | null;
+    onRetryPair: () => void;
+}
+
+/** Minutes left before the minted code expires (never negative). */
+export function pairMinutesLeft(expiresAt: number | null | undefined, now = Date.now()): number | null {
+    if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return null;
+    return Math.max(0, Math.ceil((expiresAt - now) / 60_000));
+}
+
+/**
+ * The live pairing code block: code, expiry, pairing URL and the QR drawn from
+ * that URL. Failures are retried in place instead of showing `—`.
+ */
+function PairingBlock({
+    pairCode,
+    loading,
+    error,
+    fallbackUrl,
+    onRetry,
+}: {
+    pairCode: PairCodeResponse | undefined;
+    loading: boolean;
+    error: string | null;
+    fallbackUrl: string;
+    onRetry: () => void;
+}) {
+    const { t } = useTranslation();
+    const code = String(pairCode?.code ?? "").trim();
+    const url = String(pairCode?.url ?? "").trim() || (code ? `${fallbackUrl}/#pair=${code}` : "");
+    const minutes = pairMinutesLeft(pairCode?.expiresAt);
+
+    if (error) return <ErrorBlock message={error} onRetry={onRetry} />;
+    if (loading) return <LoadingBlock rows={3} />;
+    if (!code) return <ErrorBlock message={t("connect.pairFailed")} onRetry={onRetry} />;
+
+    return (
+        <div className="qr-wrap">
+            <QrCanvas seed={url || code} label={t("status.qrAria")} />
+            <div className="pair-code" data-testid="pairing-code">
+                {code}
+            </div>
+            {minutes != null ? <div className="pair-expiry muted">{t("status.securityExpiry", { n: minutes })}</div> : null}
+            {url ? (
+                <div className="addr-row" data-testid="pairing-url">
+                    <code className="mono truncate grow">{url}</code>
+                    <CopyButton value={url} label={t("connect.pairingLink")} />
+                </div>
+            ) : null}
+            <div className="pair-hint muted">
+                <Icon name="phone" />
+                <span>{t("status.pairHint")}</span>
+            </div>
+        </div>
+    );
 }
 
 /** Card 7 — addresses, mDNS, pairing code/QR, scopes, last connection, actions. */
@@ -98,10 +157,13 @@ export function ConnectionCard({
     error,
     onRetry,
     onDisconnect,
+    pairCode,
+    pairLoading,
+    pairError,
+    onRetryPair,
 }: ConnectionCardProps) {
     const { t } = useTranslation();
     const [confirmOpen, setConfirmOpen] = useState(false);
-    const qrSeed = `${server.networkAddress}/#pair=${server.pairingCode}`;
 
     return (
         <StatusCard title={t("status.connection")} icon="qr">
@@ -141,14 +203,13 @@ export function ConnectionCard({
                             </KV>
                         </div>
 
-                        <div className="qr-wrap">
-                            <QrCanvas seed={qrSeed} label={t("status.qrAria")} />
-                            <div className="pair-code">{server.pairingCode}</div>
-                            <div className="pair-hint muted">
-                                <Icon name="phone" />
-                                <span>{t("status.pairHint")}</span>
-                            </div>
-                        </div>
+                        <PairingBlock
+                            pairCode={pairCode}
+                            loading={pairLoading}
+                            error={pairError}
+                            fallbackUrl={server.networkAddress}
+                            onRetry={onRetryPair}
+                        />
                     </div>
 
                     <KVList className="security-note">

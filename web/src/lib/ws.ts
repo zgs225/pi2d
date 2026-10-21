@@ -3,8 +3,8 @@
  *
  * Frame flow (docs/protocol.md §1/§3.3):
  *   connect → socket open → auth frame → hello_ack → open (subscriptions flush)
- *   snapshot replaces the render cache and establishes `seq`
- *   event increments `seq`; reconnect resubscribes with `sinceSeq` for a lossless resume
+ *   snapshot replaces the render cache and establishes `(epoch, seq)`
+ *   event increments `seq`; reconnect resubscribes with `since` for a lossless resume
  *
  * The frame envelope is shared with the daemon (`v`, `type`, `id`, `payload`).
  * The auth frame is the first frame on every socket, before any subscribe.
@@ -76,6 +76,26 @@ export interface PiWsOptions {
 }
 
 const AUTH_FRAME_TYPE = "auth";
+
+/** `Authorization: Bearer <token>` prefix, the shape `setDeviceToken()` stores. */
+const BEARER_PREFIX = /^bearer(?:\s+|$)/i;
+
+/**
+ * Unwrap an `Authorization: Bearer` style token for the WS auth frame.
+ *
+ * `setDeviceToken()` persists the token as `Bearer <token>` (the HTTP client
+ * strips the prefix in `authHeader()`), but the daemon hashes the auth-frame
+ * string verbatim in `verifyToken()` and does not understand the prefix. Sending
+ * it unchanged makes every authenticated socket fail with `E_UNAUTHORIZED`.
+ *
+ * @param token Token as stored (`abc` or `Bearer abc`).
+ * @returns The bare token, or `undefined` when there is nothing to send.
+ */
+export function normalizeDeviceToken(token: string | null | undefined): string | undefined {
+    if (typeof token !== "string") return undefined;
+    const stripped = token.trim().replace(BEARER_PREFIX, "").trim();
+    return stripped.length ? stripped : undefined;
+}
 
 function defaultFactory(url: string): WebSocketLike {
     return new WebSocket(url) as unknown as WebSocketLike;
@@ -216,7 +236,9 @@ export class PiWsClient {
         socket.onopen = () => {
             if (this.socket !== socket) return;
             this.setState("authenticating");
-            this.send({ v: 1, type: AUTH_FRAME_TYPE, token: this.token ?? undefined });
+            // Normalized on every socket (not cached) so a re-partnered token is
+            // picked up by the next reconnect too.
+            this.send({ v: 1, type: AUTH_FRAME_TYPE, token: normalizeDeviceToken(this.token) });
             this.authTimer = setTimeout(() => {
                 if (this.state !== "authenticating" || this.socket !== socket) return;
                 this.handlers.onError?.(new Error("WebSocket auth timed out"));
@@ -314,19 +336,25 @@ export class PiWsClient {
 
     private sendSubscribe(sessionIds: string[]): void {
         if (!sessionIds.length) return;
-        const sinceSeq: Record<string, number> = {};
+        // The daemon accepts one `since` cursor per frame (protocol §3.3), so a
+        // resumable session gets its own subscribe frame; the rest are batched.
+        const fresh: string[] = [];
         for (const id of sessionIds) {
             const seq = this.lastSeq.get(id);
-            if (seq !== undefined) sinceSeq[id] = seq;
+            const epoch = this.epochs.get(id);
+            if (seq === undefined || epoch === undefined) {
+                fresh.push(id);
+                continue;
+            }
+            this.send({
+                v: 1,
+                type: "subscribe",
+                payload: { sessionIds: [id], since: { sessionId: id, epoch, seq } },
+            });
         }
-        this.send({
-            v: 1,
-            type: "subscribe",
-            payload: {
-                sessionIds,
-                ...(Object.keys(sinceSeq).length ? { sinceSeq } : {}),
-            },
-        });
+        if (fresh.length) {
+            this.send({ v: 1, type: "subscribe", payload: { sessionIds: fresh } });
+        }
     }
 
     private flushSubscriptions(): void {

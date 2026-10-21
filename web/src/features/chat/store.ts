@@ -83,6 +83,12 @@ export interface ChatStore {
     historyError: (sessionId: string, error: string) => void;
     bumpResync: (sessionId: string) => void;
     clearHistory: (sessionId: string) => void;
+    /**
+     * Re-key every per-session slice after the plugin migrates `tmp-N` → the
+     * real id: history (so an in-flight prompt and its page are not lost),
+     * the optimistic `sending` chip and the preview target.
+     */
+    migrateSession: (from: string, to: string) => void;
 }
 
 function updateHistory(
@@ -186,5 +192,22 @@ export const useChatStore = create<ChatStore>((set) => ({
             const history = { ...state.history };
             delete history[sessionId];
             return { history };
+        }),
+    migrateSession: (from, to) =>
+        set((state) => {
+            if (!from || !to || from === to) return state;
+            const history = { ...state.history };
+            const moved = history[from];
+            delete history[from];
+            if (moved) {
+                const existing = history[to];
+                // Keep whichever side already rendered more of the transcript.
+                history[to] = !existing || moved.entries.length >= existing.entries.length ? moved : existing;
+            }
+            return {
+                history,
+                sending: state.sending?.sessionId === from ? { ...state.sending, sessionId: to } : state.sending,
+                preview: state.preview?.sessionId === from ? { ...state.preview, sessionId: to } : state.preview,
+            };
         }),
 }));

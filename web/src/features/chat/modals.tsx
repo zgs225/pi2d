@@ -1,4 +1,4 @@
-import type { Entry, ModelRef, SessionState, Subagent, TaskItem, ThinkingLevel } from "@protocol/types";
+import type { ModelRef, SessionState, Subagent, TaskItem, ThinkingLevel } from "@protocol/types";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -9,13 +9,31 @@ import { Modal } from "@/components/ui/dialog";
 import { KV } from "@/components/ui/kv";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
-import { projectEntries } from "@/lib/entry-projection";
-import { EntryBlock } from "./blocks";
+import { ApiError, errorI18nKey } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { chatCommands, runCommand } from "./commands";
 import type { ModelGroup } from "./data";
 import { withCurrentModel } from "./data";
 import { formatDuration, THINKING_LEVELS } from "./format";
 import { flattenSubagents } from "./session-state";
+
+function rec(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function str(value: unknown): string | undefined {
+    return typeof value === "string" ? value : undefined;
+}
+
+function num(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Human-readable text for a failed command (`ApiError.code` → `errors.*`). */
+function commandErrorText(error: unknown, translate: (key: string) => string): string {
+    if (error instanceof ApiError) return translate(errorI18nKey(error.code));
+    return error instanceof Error ? error.message : String(error);
+}
 
 /* ------------------------------------------------------------------ */
 /* dispatch                                                            */
@@ -197,21 +215,36 @@ const SUB_DOT: Record<Subagent["status"], string> = {
     dormant: "dot--exited",
 };
 
-function statusTail(subagent: Subagent, t: (key: string) => string): Entry[] {
-    const ts = subagent.lastActiveAt ?? subagent.createdAt ?? Date.now();
-    if (subagent.status === "failed") {
-        return [{ id: `preview-${subagent.id}-err`, role: "notice", ts, done: true, blocks: [{ type: "error", text: t("chat.previewFailed") }] }];
-    }
-    if (subagent.status === "interrupted") {
-        return [{ id: `preview-${subagent.id}-int`, role: "assistant", ts, done: true, blocks: [{ type: "text", text: t("chat.previewInterrupted") }] }];
-    }
-    if (subagent.status === "completed") {
-        return [{ id: `preview-${subagent.id}-done`, role: "assistant", ts, done: true, blocks: [{ type: "text", text: t("chat.previewCompleted") }] }];
-    }
-    if (subagent.status === "dormant") {
-        return [{ id: `preview-${subagent.id}-dorm`, role: "assistant", ts, done: true, blocks: [{ type: "text", text: t("chat.previewDormant") }] }];
-    }
-    return [];
+/**
+ * One projected line of a sub-session file.
+ *
+ * `subagent.read` returns `{sessionFile, lines}` where each line is the plugin's
+ * text projection of a raw pi entry (`"[12] user: please fix it"`, see
+ * `pi.subsessions.read.project_entry`).
+ */
+export interface SubagentEntry {
+    id: string;
+    role: string;
+    text: string;
+}
+
+const SUB_ROLES = new Set(["user", "assistant", "system", "notice", "toolResult", "toolUse"]);
+
+/** Parse `[<index>] <role>: <text>` back into role + text rows. */
+export function parseSubagentLines(lines: unknown): SubagentEntry[] {
+    if (!Array.isArray(lines)) return [];
+    const out: SubagentEntry[] = [];
+    lines.forEach((value, position) => {
+        const line = typeof value === "string" ? value : JSON.stringify(value);
+        if (!line) return;
+        const match = /^\[(\d+)\]\s*([A-Za-z_]+):\s?([\s\S]*)$/.exec(line);
+        if (match && SUB_ROLES.has(match[2] ?? "")) {
+            out.push({ id: `sub-${match[1]}`, role: match[2] ?? "system", text: match[3] ?? "" });
+            return;
+        }
+        out.push({ id: `sub-line-${position}`, role: "system", text: line });
+    });
+    return out;
 }
 
 export interface SubagentModalProps {
@@ -226,48 +259,40 @@ export interface SubagentModalProps {
 export function SubagentModal({ open, session, subagent, onClose, onBack, onSteer }: SubagentModalProps) {
     const { t } = useTranslation();
     const [steer, setSteer] = useState("");
-    const [tail, setTail] = useState<Entry[] | null>(null);
+    const [feed, setFeed] = useState<SubagentEntry[]>([]);
+    const [sessionFile, setSessionFile] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const badge = subagent ? (SUB_BADGE[subagent.status] ?? { tone: "default" as const, key: subagent.status }) : null;
 
     useEffect(() => {
         if (!open || !subagent) return;
-        setTail(null);
+        let cancelled = false;
+        setFeed([]);
+        setSessionFile(null);
+        setError(null);
         setLoading(true);
         const target = subagent.name ?? subagent.id;
         void runCommand(chatCommands.readSubagent(session.sessionId, target))
             .then((response) => {
-                const raw = response as Record<string, unknown>;
-                const entries = Array.isArray(raw.entries)
-                    ? raw.entries
-                    : Array.isArray(raw.messages)
-                      ? raw.messages
-                      : [];
-                if (entries.length) setTail(projectEntries(entries));
-                else setTail(statusTail(subagent, t));
+                if (cancelled) return;
+                const raw = rec(response) ?? {};
+                setSessionFile(str(raw.sessionFile) ?? null);
+                setFeed(parseSubagentLines(raw.lines ?? raw.entries));
             })
-            .catch(() => {
-                if (subagent) setTail(statusTail(subagent, t));
+            .catch((cause: unknown) => {
+                if (cancelled) return;
+                setError(commandErrorText(cause, t));
             })
-            .finally(() => setLoading(false));
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [open, session.sessionId, subagent, t]);
 
-    const feed = useMemo(() => {
-        if (!subagent) return [];
-        if (tail && tail.length) return tail;
-        return [
-            {
-                id: `preview-${subagent.id}-task`,
-                role: "user" as const,
-                ts: subagent.createdAt ?? Date.now(),
-                done: true,
-                blocks: [{ type: "text" as const, text: subagent.task ?? t("chat.task") }],
-            },
-            ...statusTail(subagent, t),
-        ];
-    }, [subagent, t, tail]);
-
-    const children = subagent ? flattenSubagents(subagent.children) : [];
+    const children = useMemo(() => (subagent ? flattenSubagents(subagent.children) : []), [subagent]);
 
     function sendSteer() {
         if (!steer.trim()) {
@@ -340,10 +365,35 @@ export function SubagentModal({ open, session, subagent, onClose, onBack, onStee
                             <div className="row muted">
                                 <Spinner /> {t("chat.loading")}
                             </div>
+                        ) : error ? (
+                            <div className="msg__error" role="alert">
+                                <div className="msg__error-meta">
+                                    <span className="who who--err">{t("chat.error")}</span>
+                                </div>
+                                <div className="msg__text">{error}</div>
+                            </div>
+                        ) : feed.length ? (
+                            feed.map((entry) => (
+                                <article
+                                    key={entry.id}
+                                    className={cn("msg", `msg--${entry.role === "user" ? "user" : "assistant"}`)}
+                                    data-entry-id={entry.id}
+                                    data-role={entry.role}
+                                >
+                                    <div className="msg__meta">
+                                        <span className={cn("who", entry.role === "user" ? "who--user" : "who--agent")}>
+                                            {entry.role}
+                                        </span>
+                                        <span className="muted msg__time mono">{entry.id}</span>
+                                    </div>
+                                    <div className="msg__text">{entry.text}</div>
+                                </article>
+                            ))
                         ) : (
-                            feed.map((entry) => <EntryBlock key={entry.id} entry={entry} />)
+                            <div className="muted">{t("chat.noOutput")}</div>
                         )}
                     </div>
+                    {sessionFile ? <div className="muted mono truncate">{sessionFile}</div> : null}
                     <div className="muted sub-preview__note">{t("chat.previewNote")}</div>
                     <div className="row sub-steer">
                         <input
@@ -373,10 +423,28 @@ export function SubagentModal({ open, session, subagent, onClose, onBack, onStee
 /* task output                                                         */
 /* ------------------------------------------------------------------ */
 
-function fakePid(task: TaskItem): number {
-    let hash = 0;
-    for (const char of task.id) hash = (hash * 31 + char.charCodeAt(0)) % 100_000;
-    return 10_000 + (hash % 8_000);
+/** `task.output` response payload (plugin handler, `docs/protocol.md` §3.2). */
+export interface TaskOutputResult {
+    output?: string;
+    outputFile?: string;
+    status?: TaskItem["status"];
+    exitCode?: number | null;
+    durationMs?: number;
+}
+
+/** Read the fields the modal renders, ignoring anything the daemon added. */
+export function normalizeTaskOutput(raw: unknown): TaskOutputResult {
+    const record = rec(raw) ?? {};
+    const status = str(record.status);
+    return {
+        ...(str(record.output) !== undefined ? { output: str(record.output) } : {}),
+        ...(str(record.outputFile) !== undefined ? { outputFile: str(record.outputFile) } : {}),
+        ...(status ? { status: status as TaskItem["status"] } : {}),
+        ...(record.exitCode === null || num(record.exitCode) !== undefined
+            ? { exitCode: record.exitCode === null ? null : num(record.exitCode) }
+            : {}),
+        ...(num(record.durationMs) !== undefined ? { durationMs: num(record.durationMs) } : {}),
+    };
 }
 
 export interface TaskOutputModalProps {
@@ -389,33 +457,39 @@ export interface TaskOutputModalProps {
 
 export function TaskOutputModal({ open, session, task, onClose, onStop }: TaskOutputModalProps) {
     const { t } = useTranslation();
-    const [output, setOutput] = useState<string | null>(null);
+    const [result, setResult] = useState<TaskOutputResult | null>(null);
+    const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
         if (!open || !task) return;
-        setOutput(null);
+        let cancelled = false;
+        setResult(null);
+        setError(null);
         setLoading(true);
         void runCommand(chatCommands.taskOutput(session.sessionId, task.id))
             .then((response) => {
-                const record = response as Record<string, unknown>;
-                const text =
-                    typeof record.output === "string"
-                        ? record.output
-                        : typeof record.text === "string"
-                          ? record.text
-                          : typeof record.data === "string"
-                            ? record.data
-                            : null;
-                setOutput(text);
+                if (!cancelled) setResult(normalizeTaskOutput(response));
             })
-            .catch(() => setOutput(null))
-            .finally(() => setLoading(false));
-    }, [open, session.sessionId, task]);
+            .catch((cause: unknown) => {
+                // A real failure (e.g. E_UNSUPPORTED on an older plugin) is shown
+                // as-is; it must not look like an empty output file.
+                if (!cancelled) setError(commandErrorText(cause, t));
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [open, session.sessionId, task, t]);
 
     if (!task) return null;
-    const running = task.status === "running";
-    const duration = running ? Date.now() - task.startTime : (task.durationMs ?? 0);
+    const status = result?.status ?? task.status;
+    const running = status === "running";
+    const duration = result?.durationMs ?? (running ? Date.now() - task.startTime : (task.durationMs ?? 0));
+    const exitCode = result?.exitCode !== undefined ? result.exitCode : (task.exitCode ?? null);
+    const outputFile = result?.outputFile ?? task.outputFile;
 
     return (
         <Modal
@@ -438,21 +512,24 @@ export function TaskOutputModal({ open, session, task, onClose, onStop }: TaskOu
             }
         >
             <div className="stack">
-                <pre className="mono tool__pre">{loading ? t("chat.loading") : (output ?? t("chat.noOutput"))}</pre>
-                {task.outputFile ? <div className="muted mono truncate">{task.outputFile}</div> : null}
+                <pre className="mono tool__pre" data-testid="task-output">
+                    {loading
+                        ? t("chat.loading")
+                        : error
+                          ? t("chat.commandFailed", { error })
+                          : (result?.output ?? t("chat.noOutput"))}
+                </pre>
+                {outputFile ? <div className="muted mono truncate">{outputFile}</div> : null}
                 <div>
-                    <KV label="pid" mono>
-                        {fakePid(task)}
-                    </KV>
                     <KV label={t("chat.status")}>
                         <span className="row">
-                            <span className={`dot ${running ? "dot--busy" : task.status === "completed" ? "dot--ok" : task.status === "failed" ? "dot--err" : "dot--idle"}`} />
-                            {t(`state.${task.status}`)}
+                            <span className={`dot ${running ? "dot--busy" : status === "completed" ? "dot--ok" : status === "failed" ? "dot--err" : "dot--idle"}`} />
+                            {t(`state.${status}`)}
                         </span>
                     </KV>
                     <KV label={t("chat.duration")}>{formatDuration(duration)}</KV>
                     <KV label="exit code" mono>
-                        {task.exitCode == null ? "—" : task.exitCode}
+                        {exitCode == null ? "—" : exitCode}
                     </KV>
                     <KV label={t("chat.command")} mono>
                         {task.command}

@@ -6,6 +6,20 @@ export interface PromptImage {
     data: string;
 }
 
+/**
+ * `prompt.send` mode. The plugin maps it to pi's RPC command
+ * (`follow_up` → queue, `steer` → interrupt the run); omit it for a plain
+ * `prompt`.
+ */
+export type PromptMode = "follow_up" | "steer";
+
+/**
+ * `attention.respond` answer, forwarded verbatim to the plugin
+ * (`pi.attention.resolve`): `{value}` for select/input/editor, `{confirmed}`
+ * for confirm, `{cancelled}` for a dismissal.
+ */
+export type AttentionResponse = { value: unknown } | { confirmed: boolean } | { cancelled: true };
+
 export interface ChatCommand extends CommandRequest {
     method: string;
 }
@@ -32,26 +46,30 @@ function command(method: string, sessionId: string | undefined, params?: Record<
 /**
  * Command payload builders for `POST /api/v1/cmd`.
  *
- * Parameter names follow the daemon/plugin contract
- * (`docs/protocol.md`, design `explore/web-server-round2-contract.md` §4).
+ * Parameter names follow the plugin handlers
+ * (`pi2.nvim-web/lua/pi/web/commands.lua`), which are the authority for every
+ * payload shape here.
  */
 export const chatCommands = {
-    sendPrompt: (sessionId: string, text: string, images: PromptImage[] = []): ChatCommand =>
+    /** `mode` omitted → a plain prompt; `follow_up` queues, `steer` interrupts. */
+    sendPrompt: (sessionId: string, text: string, images: PromptImage[] = [], mode?: PromptMode): ChatCommand =>
         command("prompt.send", sessionId, {
             text,
-            mode: "queue",
+            ...(mode ? { mode } : {}),
             ...(images.length ? { images } : {}),
         }),
 
     abort: (sessionId: string): ChatCommand => command("prompt.abort", sessionId, {}),
 
-    removeQueued: (sessionId: string, queueId: string): ChatCommand => command("queue.remove", sessionId, { queueId }),
+    /** Queue entries are addressed by pi's queue id (`queue[i].id`). */
+    removeQueued: (sessionId: string, id: string): ChatCommand => command("queue.remove", sessionId, { id }),
 
-    setQueueSteer: (sessionId: string, queueId: string, steer: boolean): ChatCommand =>
-        command("queue.setSteer", sessionId, { queueId, steer }),
+    /** Steering is a session-wide mode, not a per-message flag. */
+    setQueueSteer: (sessionId: string, steer: boolean): ChatCommand =>
+        command("queue.setSteer", sessionId, { mode: steer ? "all" : "one-at-a-time" }),
 
     setModel: (sessionId: string, model: ModelRef): ChatCommand =>
-        command("session.setModel", sessionId, { provider: model.provider, id: model.id }),
+        command("session.setModel", sessionId, { model: { provider: model.provider, id: model.id } }),
 
     setThinking: (sessionId: string, level: ThinkingLevel): ChatCommand =>
         command("session.setThinking", sessionId, { level }),
@@ -62,9 +80,10 @@ export const chatCommands = {
 
     createSession: (workspaceId: string): ChatCommand => command("session.create", undefined, { workspaceId }),
 
-    respondAttention: (sessionId: string, requestIdValue: string, response: unknown): ChatCommand =>
+    respondAttention: (sessionId: string, requestIdValue: string, response: AttentionResponse | string): ChatCommand =>
         command("attention.respond", sessionId, { requestId: requestIdValue, response }),
 
+    /** One batch item per dispatch; the plugin's snake_case params are literal. */
     dispatchSubagent: (
         sessionId: string,
         input: {
@@ -77,14 +96,16 @@ export const chatCommands = {
         },
     ): ChatCommand =>
         command("subagent.dispatch", sessionId, {
-            task: input.task,
-            ...(input.name ? { name: input.name } : {}),
-            ...(input.model ? { model: input.model } : {}),
-            ...(input.thinking ? { thinking: input.thinking } : {}),
-            ...(input.wait !== undefined ? { wait: input.wait } : {}),
-            ...(input.cancelSiblingsOnFail !== undefined
-                ? { cancelSiblingsOnFail: input.cancelSiblingsOnFail }
-                : {}),
+            items: [
+                {
+                    task: input.task,
+                    ...(input.name ? { name: input.name } : {}),
+                    ...(input.model ? { model: input.model } : {}),
+                    ...(input.thinking ? { thinking_level: input.thinking } : {}),
+                },
+            ],
+            wait: input.wait === true,
+            cancel_siblings_on_fail: input.cancelSiblingsOnFail === true,
         }),
 
     steerSubagent: (sessionId: string, target: string, message: string): ChatCommand =>
@@ -105,9 +126,32 @@ export async function runCommand(command: ChatCommand, signal?: AbortSignal): Pr
     return api.command(command, signal) as Promise<CommandResult>;
 }
 
-/** Response value for the diff-review attention variant (matches the plugin's JSON payload). */
-export function diffResponse(result: "Accepted" | "Rejected"): string {
-    return JSON.stringify({ result });
+/** `select` / `input` / `editor` answer: the chosen option id (or typed value). */
+export function selectResponse(value: string): AttentionResponse {
+    return { value };
+}
+
+/** `confirm` answer: an explicit yes/no. */
+export function confirmResponse(confirmed: boolean): AttentionResponse {
+    return { confirmed };
+}
+
+/** Dismiss/deny without choosing anything (the plugin's `cancelled` path). */
+export function cancelResponse(): AttentionResponse {
+    return { cancelled: true };
+}
+
+/**
+ * Diff review answer: `pi.ui.diff` decodes the **value** as JSON
+ * `{result, path?}`, so the caller wraps it in `{value}` before sending.
+ */
+export function diffResponse(result: "Accepted" | "Rejected", path?: string): string {
+    return JSON.stringify({ result, ...(path ? { path } : {}) });
+}
+
+/** `attention.respond` answer for an accept/reject of the diff review. */
+export function diffAnswer(result: "Accepted" | "Rejected", path?: string): AttentionResponse {
+    return { value: diffResponse(result, path) };
 }
 
 export function promptImage(file: File): Promise<PromptImage> {

@@ -296,7 +296,11 @@ export function EntryBlock({ entry, turnStart }: EntryBlockProps) {
         -1,
     );
     return (
-        <article className={cn("msg", `msg--${entry.role}`, turnStart && "turn-start")}>
+        <article
+            className={cn("msg", `msg--${entry.role}`, turnStart && "turn-start")}
+            data-entry-id={entry.id}
+            data-role={entry.role}
+        >
             <MessageMeta entry={entry} />
             {entry.blocks.map((block, index) => {
                 if (block.type === "text") {

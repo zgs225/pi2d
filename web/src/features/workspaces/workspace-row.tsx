@@ -80,7 +80,7 @@ export function WorkspaceRow({ workspace }: WorkspaceRowProps) {
     const count = Math.max(workspace.liveCount || 0, workspace.sessionCount || 0);
 
     return (
-        <div className="list-row" data-workspace-id={workspace.workspaceId}>
+        <div className="list-row" data-workspace-id={workspace.workspaceId} data-testid="workspace-row">
             <span className="ico list-row__icon">
                 <Icon name="folder" />
             </span>
@@ -95,6 +95,7 @@ export function WorkspaceRow({ workspace }: WorkspaceRowProps) {
             <StatusDot status={dot.status} title={t(dot.labelKey)} />
             <a
                 className="btn btn--sm btn--primary list-row__go"
+                data-testid="workspace-enter"
                 href={`/chat?workspace=${encodeURIComponent(workspace.workspaceId)}`}
             >
                 {t("workspaces.enter")}

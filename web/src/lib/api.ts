@@ -118,10 +118,43 @@ interface RequestOptions {
     /** Absolute URL for pairing (before a device token exists). */
     baseUrl?: string;
     timeoutMs?: number;
+    /**
+     * A 401 on this request must not clear the connection. Pairing requests use
+     * `baseUrl` and may legitimately answer 401 for a wrong code while another
+     * device token is already stored.
+     */
+    skipAuthReset?: boolean;
+}
+
+export type UnauthorizedHandler = (error: ApiError) => void;
+
+const unauthorizedHandlers = new Set<UnauthorizedHandler>();
+
+/**
+ * Subscribe to authenticated-request 401s (`E_UNAUTHORIZED`) so the shell can
+ * clear a stale device token and bounce the user back to `/connect`.
+ */
+export function onUnauthorized(handler: UnauthorizedHandler): () => void {
+    unauthorizedHandlers.add(handler);
+    return () => {
+        unauthorizedHandlers.delete(handler);
+    };
+}
+
+function notifyUnauthorized(error: ApiError): void {
+    for (const handler of [...unauthorizedHandlers]) {
+        try {
+            handler(error);
+        } catch {
+            /* a listener must never break the request path */
+        }
+    }
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { method = "GET", body, signal, headers = {}, baseUrl = "", timeoutMs = 20_000 } = options;
+    const { method = "GET", body, signal, headers = {}, baseUrl = "", timeoutMs = 20_000, skipAuthReset } = options;
+    // Only same-origin API calls authenticate as the stored device token.
+    const resetsAuthOn401 = skipAuthReset ? false : baseUrl === "";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs);
     const onAbort = () => controller.abort(signal?.reason);
@@ -148,13 +181,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
         if (!response.ok) {
             const errorBody = extractErrorBody(payload);
-            throw new ApiError({
+            const error = new ApiError({
                 code: errorBody?.code ?? statusCode(response.status),
                 message: errorBody?.message ?? (response.statusText || `HTTP ${response.status}`),
                 status: response.status,
                 retryable: errorBody?.retryable ?? response.status >= 500,
                 details: errorBody?.details,
             });
+            if (resetsAuthOn401 && (response.status === 401 || error.code === "E_UNAUTHORIZED")) {
+                notifyUnauthorized(error);
+            }
+            throw error;
         }
 
         return payload as T;
@@ -217,6 +254,9 @@ export interface InfoResponse {
     pluginVersion?: string;
     host?: string;
     port?: number;
+    /** Additive identity fields (daemon ≥ 0.2): OS label and process uptime. */
+    os?: string;
+    uptimeMs?: number;
     status?: "online" | "degraded" | "offline";
 }
 
@@ -309,8 +349,9 @@ export const api = {
         request<{ accepted: boolean; disposition?: string }>("/api/v1/cmd", { method: "POST", body, signal }),
     pairCreate: (baseUrl?: string, signal?: AbortSignal) =>
         request<PairResponse>("/api/v1/pair", { method: "POST", body: {}, baseUrl, signal }),
+    /** Public redeem endpoint (no bearer required): `{code,kind,deviceName}` → `{token,device}`. */
     pairRedeem: (body: PairRequest, baseUrl?: string, signal?: AbortSignal) =>
-        request<PairResponse>("/api/v1/pair/redeem", { method: "POST", body, baseUrl, signal }),
+        request<PairResponse>("/api/v1/pair", { method: "POST", body, baseUrl, signal, skipAuthReset: true }),
 };
 
 export { request as apiRequest };

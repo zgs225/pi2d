@@ -247,23 +247,157 @@ export function projectEntries(rawEntries: unknown[]): ProjectedEntry[] {
     return out;
 }
 
-/** Live snapshot entries win over the same id from a historical page. */
+/** Normalized plain text of an entry (the identity fallback below). */
+function entryText(entry: Entry): string {
+    const parts: string[] = [];
+    for (const block of entry.blocks) {
+        if (block.type === "text" || block.type === "error" || block.type === "thinking") parts.push(block.text);
+    }
+    return parts.join("\n").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Exact identity: role, second-bucketed timestamp and normalized text.
+ *
+ * Kept for callers that want a cheap map key, but *not* used as the only
+ * cross-source identity: the two sources derive `ts` from different clocks
+ * (snapshot entries carry the plugin's event timestamp, projected pi entries
+ * carry the message timestamp), so the same message can land in adjacent
+ * buckets or seconds apart (see `matchIndex`).
+ */
+export function entrySignature(entry: Entry): string | null {
+    const text = entryText(entry);
+    if (!text) return null;
+    return `${entry.role}|${Math.round(entry.ts / 1_000)}|${text}`;
+}
+
+/**
+ * Timestamp distance as a ranking tie-break well below one tier step, so a
+ * looser identity tier never outranks a tighter one.
+ */
+function skewScore(a: Entry, b: Entry): number {
+    return Math.min(Math.abs(a.ts - b.ts), 60_000) / 120_000;
+}
+
+/**
+ * Identity index over one side of a merge: exact id, exact `(role, ts, text)`
+ * signature and `(role, text)`. Built once per merge so a re-render stays cheap.
+ */
+interface PoolIndex {
+    items: Entry[];
+    byId: Map<string, number[]>;
+    bySignature: Map<string, number[]>;
+    byText: Map<string, number[]>;
+}
+
+function indexPool(items: Entry[]): PoolIndex {
+    const index: PoolIndex = { items, byId: new Map(), bySignature: new Map(), byText: new Map() };
+    const add = (bucket: Map<string, number[]>, key: string, at: number) => {
+        const list = bucket.get(key);
+        if (list) list.push(at);
+        else bucket.set(key, [at]);
+    };
+    items.forEach((entry, at) => {
+        add(index.byId, entry.id, at);
+        const signature = entrySignature(entry);
+        if (signature !== null) add(index.bySignature, signature, at);
+        const text = entryText(entry);
+        if (text) add(index.byText, `${entry.role}|${text}`, at);
+    });
+    return index;
+}
+
+/**
+ * Index of the entry in `index` that is the same message as `candidate`, or -1.
+ *
+ * The snapshot tail (synthetic `m<N>` ids, plugin event clock) and the REST
+ * pages (pi's raw ids, message clock) describe the same transcript under
+ * different ids *and* slightly different timestamps, so identity falls back to
+ * `(role, normalized text)` with the closest timestamp winning. `isTaken` keeps
+ * the pairing one-to-one, so two genuinely repeated messages never collapse
+ * into one.
+ */
+function matchIndex(index: PoolIndex, candidate: Entry, isTaken: (at: number) => boolean): number {
+    const signature = entrySignature(candidate);
+    const text = entryText(candidate);
+
+    // Collect every identity tier a pool entry reaches; the tightest one wins.
+    const tiers = new Map<number, number>();
+    const offer = (at: number, tier: number) => {
+        const current = tiers.get(at);
+        if (current === undefined || tier < current) tiers.set(at, tier);
+    };
+    for (const at of index.byId.get(candidate.id) ?? []) offer(at, 0);
+    if (signature !== null) {
+        for (const at of index.bySignature.get(signature) ?? []) offer(at, 1);
+    }
+    if (text) {
+        for (const at of index.byText.get(`${candidate.role}|${text}`) ?? []) offer(at, 2);
+    }
+
+    let best = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const [at, tier] of tiers) {
+        if (isTaken(at)) continue;
+        const entry = index.items[at];
+        if (!entry || entry.role !== candidate.role) continue;
+        const score = tier + skewScore(entry, candidate);
+        if (score < bestScore) {
+            bestScore = score;
+            best = at;
+        }
+    }
+    return best;
+}
+
+/**
+ * Live entries win over the same message from a historical page: by id first,
+ * then by `(role, text)` when the ids differ (the snapshot carries synthetic
+ * `m<N>` ids while the pages carry pi's raw entry ids). The historical position
+ * is kept so the transcript never re-orders, and each message renders once.
+ */
 export function mergeEntries(history: Entry[], live: Entry[]): Entry[] {
     if (!history.length) return live;
     if (!live.length) return history;
-    const liveById = new Map(live.map((entry) => [entry.id, entry]));
-    const merged: Entry[] = history.map((entry) => liveById.get(entry.id) ?? entry);
-    const historical = new Set(history.map((entry) => entry.id));
+
+    // Match from the live side so a live entry always claims its closest page
+    // counterpart, even when the page holds several identical texts.
+    const historyIndex = indexPool(history);
+    const claimed = new Set<number>();
+    const replaces = new Map<number, Entry>();
     for (const entry of live) {
-        if (!historical.has(entry.id)) merged.push(entry);
+        const match = matchIndex(historyIndex, entry, (at) => claimed.has(at));
+        if (match < 0) continue;
+        claimed.add(match);
+        replaces.set(match, entry);
+    }
+
+    const merged: Entry[] = history.map((entry, index) => replaces.get(index) ?? entry);
+    const rendered = new Set<Entry>(replaces.values());
+    for (const entry of live) {
+        if (!rendered.has(entry)) merged.push(entry);
     }
     return merged;
 }
 
-/** Prepend an older page while never duplicating an id already rendered. */
+/**
+ * Prepend an older page while never duplicating an entry already rendered —
+ * by id, then by `(role, text)` — and keeping the page's own order.
+ */
 export function prependUnique(existing: Entry[], older: Entry[]): Entry[] {
-    const seen = new Set(existing.map((entry) => entry.id));
-    const fresh = older.filter((entry) => !seen.has(entry.id));
+    if (!older.length) return existing;
+    // Each already-rendered entry absorbs at most one match from the page.
+    const existingIndex = indexPool(existing);
+    const claimed = new Set<number>();
+    const fresh: Entry[] = [];
+    for (const entry of older) {
+        const match = matchIndex(existingIndex, entry, (at) => claimed.has(at));
+        if (match >= 0) {
+            claimed.add(match);
+            continue;
+        }
+        fresh.push(entry);
+    }
     return fresh.length ? [...fresh, ...existing] : existing;
 }
 

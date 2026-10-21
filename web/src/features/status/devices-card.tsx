@@ -27,6 +27,12 @@ export function deviceKey(device: DeviceEntry): string {
     return device.id || device.deviceId || device.name;
 }
 
+/** The daemon reports `lastSeenAt`; older builds reported `lastActiveAt`. */
+export function deviceLastActive(device: DeviceEntry): number | null {
+    const ts = device.lastSeenAt ?? device.lastActiveAt;
+    return typeof ts === "number" && Number.isFinite(ts) ? ts : null;
+}
+
 export interface DevicesCardProps {
     devices: DeviceEntry[];
     loading: boolean;
@@ -64,7 +70,7 @@ export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: Devi
                     {visible.map((device) => {
                         const scopes = Array.isArray(device.scopes) ? device.scopes : [];
                         return (
-                            <div className="device-row" key={deviceKey(device)}>
+                            <div className="device-row" key={deviceKey(device)} data-device-id={deviceKey(device)}>
                                 <span className="device-icon">
                                     <Icon name={KIND_ICON[device.kind] ?? "phone"} />
                                 </span>
@@ -79,12 +85,13 @@ export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: Devi
                                     </div>
                                 </div>
                                 <span className="device-time muted">
-                                    <RelativeTime ts={device.lastActiveAt} />
+                                    <RelativeTime ts={deviceLastActive(device)} />
                                 </span>
                                 <Button
                                     variant="ghost"
                                     size="sm"
                                     className="status-revoke"
+                                    aria-label={`${t("status.revoke")} ${device.name}`}
                                     onClick={() => setTarget(device)}
                                 >
                                     <Icon name="revoke" />

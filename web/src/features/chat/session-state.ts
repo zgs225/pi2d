@@ -181,8 +181,39 @@ function applyEntryAppended(state: SessionState, rawEntry: unknown): void {
     state.entries = [...state.entries, projected];
 }
 
+/**
+ * The assistant entry streaming `message_update` events apply to: the reducer
+ * tracks it as `ctx.assistantEntryId`, which `reducerForState` rebuilds as the
+ * newest assistant entry of the current state.
+ */
+function streamingAssistantEntry(state: SessionState): Entry | undefined {
+    for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+        const entry = state.entries[index];
+        if (entry?.role === "assistant") return entry;
+    }
+    return undefined;
+}
+
+/**
+ * A streaming update for an assistant message that is already finalized.
+ *
+ * The bridge coalesces `text_delta`/`thinking_delta` frames (protocol §2) and
+ * assigns their `seq` when the frame is finally written, so a coalesced delta
+ * can reach the browser *after* the `message_end` (or the snapshot) that owns
+ * the final text. Applying it appends the tail of the message a second time
+ * (`PONG` → `PONGONG`), and — because the resulting text no longer matches the
+ * authoritative session entry — the history page then renders as a second,
+ * duplicate assistant message. `message_end`/snapshots carry the full content,
+ * so a delta for a `done` entry is always stale.
+ */
+function isStaleStreamUpdate(state: SessionState, event: SessionEvent): boolean {
+    if (event.type !== "message_update") return false;
+    return streamingAssistantEntry(state)?.done === true;
+}
+
 /** Apply one live session event to an immutable copy of the render state. */
 export function applySessionEvent(state: SessionState, event: SessionEvent): SessionState {
+    if (isStaleStreamUpdate(state, event)) return state;
     const next = cloneSessionState(state);
     const normalized: SessionEvent = { ...event, ts: typeof event.ts === "number" ? event.ts : Date.now() };
 

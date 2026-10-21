@@ -10,10 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/dialog";
 import { KV } from "@/components/ui/kv";
 import { toast } from "@/components/ui/toast";
-import { ManualConnectForm, type ManualConnectInput } from "@/features/connect/manual-form";
+import { ManualConnectForm, pairErrorMessage, type ManualConnectInput } from "@/features/connect/manual-form";
 import {
     clearPairMeta,
+    isPairCode,
     maskSecret,
+    normalizePairCode,
     readPairMeta,
     redeemPairing,
     safePairNext,
@@ -23,9 +25,9 @@ import {
     type PairTarget,
 } from "@/features/connect/pairing";
 import { ScanDialog } from "@/features/connect/scan-dialog";
-import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
+import { deriveServerIdentity, formatUptime, type InfoExtras } from "@/features/status/server";
 import { useInfoQuery } from "@/features/status/queries";
-import { ApiError, errorI18nKey } from "@/lib/api";
+import { setDeviceToken } from "@/lib/api";
 import { useConnectionStore } from "@/stores/connection";
 
 import "@/styles/pages/connect.css";
@@ -37,19 +39,16 @@ function scopeTone(scope: string): "default" | "info" | "ok" {
     return "default";
 }
 
-function messageFor(error: unknown, t: (key: string) => string): string {
-    if (error instanceof ApiError) return t(errorI18nKey(error.code));
-    return t("connect.pairFailed");
-}
-
 export function ConnectPage() {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const searchStr = useRouterState({ select: (state) => state.location.searchStr });
-    const next = useMemo(
-        () => safePairNext(new URLSearchParams(searchStr).get("next")),
-        [searchStr],
-    );
+    const search = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
+    const next = useMemo(() => safePairNext(search.get("next")), [search]);
+    const codeParam = useMemo(() => {
+        const raw = normalizePairCode(search.get("code"));
+        return isPairCode(raw) ? raw : "";
+    }, [search]);
 
     const refreshFromStorage = useConnectionStore((state) => state.refreshFromStorage);
     const paired = useConnectionStore((state) => state.paired);
@@ -60,6 +59,7 @@ export function ConnectPage() {
     const connectedAt = useConnectionStore((state) => state.connectedAt);
     const wsState = useConnectionStore((state) => state.wsState);
     const storedServer = useConnectionStore((state) => state.server);
+    const storedScopes = useConnectionStore((state) => state.scopes);
 
     const [meta, setMeta] = useState<PairMeta | null>(() => readPairMeta());
     const [scanOpen, setScanOpen] = useState(false);
@@ -86,9 +86,17 @@ export function ConnectPage() {
         fetchedAt: info.dataUpdatedAt || null,
         nameFallback: storedServer?.name || meta?.server?.name,
     });
-    const scopes = scopesForIdentity(meta, info.data);
+    const scopes = scopesForIdentity(meta, info.data, storedScopes);
     const defaultDeviceName = t("connect.defaultDeviceName");
+    const osLabel = info.data?.os || info.data?.platform || server.os || "—";
+    const uptimeSeconds =
+        typeof info.data?.uptimeMs === "number" ? info.data.uptimeMs / 1000 : server.uptimeSec;
 
+    /**
+     * One pairing path for the scan/confirm dialog and the manual form:
+     * redeem against the public endpoint, persist token + scopes, then follow
+     * the allow-listed `next`.
+     */
     const finishPairing = useCallback(
         async (target: PairTarget, deviceName: string) => {
             const result = await redeemPairing({
@@ -96,10 +104,12 @@ export function ConnectPage() {
                 code: target.code,
                 deviceName,
             });
-            connect({ endpoint: target.endpoint, deviceName, token: result.token });
+            setDeviceToken(result.token);
+            connect({ endpoint: target.endpoint, deviceName, token: result.token, scopes: result.scopes });
             const nextMeta: PairMeta = {
                 scopes: result.scopes,
                 deviceName,
+                kind: result.kind,
                 server: result.server,
                 pairedAt: Date.now(),
             };
@@ -112,15 +122,17 @@ export function ConnectPage() {
     );
 
     async function handleManual(input: ManualConnectInput) {
-        const url = new URL(input.endpoint);
+        let hostname = "";
+        let port = 4321;
+        try {
+            const url = new URL(input.endpoint);
+            hostname = url.hostname;
+            port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+        } catch {
+            /* validate host/port above guarantees a parseable endpoint */
+        }
         await finishPairing(
-            {
-                endpoint: input.endpoint,
-                code: input.code,
-                name: url.hostname,
-                hostname: url.hostname,
-                port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
-            },
+            { endpoint: input.endpoint, code: input.code, name: hostname, hostname, port },
             input.deviceName,
         );
     }
@@ -138,7 +150,7 @@ export function ConnectPage() {
             await finishPairing(pending, defaultDeviceName);
             setPending(null);
         } catch (error) {
-            const message = messageFor(error, t);
+            const message = t(pairErrorMessage(error));
             setPairError(message);
             toast.error(message);
         } finally {
@@ -187,24 +199,30 @@ export function ConnectPage() {
                     <div className="cn-kvs">
                         <KV label={t("connect.server")}>{server.name || "—"}</KV>
                         <KV label={t("connect.hostname")} mono>
-                            {server.hostname || "—"}
+                            {info.data?.hostname || server.hostname || "—"}
                         </KV>
                         <KV label={t("connect.endpoint")} mono>
                             {storedEndpoint || server.endpoint || "—"}
                         </KV>
+                        <KV label={t("connect.os")}>{osLabel}</KV>
                         <KV label={t("connect.version")}>
                             {info.data?.version || meta?.server?.version || "—"}
                         </KV>
                         <KV label={t("connect.pluginVersion")}>
                             {info.data?.pluginVersion || meta?.server?.pluginVersion || "—"}
                         </KV>
+                        <KV label={t("connect.uptime")}>{formatUptime(uptimeSeconds)}</KV>
                         <KV label={t("connect.device")}>{storedDeviceName || meta?.deviceName || "—"}</KV>
                         <KV label={t("connect.scopes")} className="cn-kv--badges">
                             {scopes.length ? (
                                 <span className="cn-scopes">
                                     {scopes.map((scope) => (
-                                        <Badge key={scope} tone={scopeTone(scope)}>
-                                            {scope}
+                                        <Badge
+                                            key={scope}
+                                            tone={scopeTone(scope)}
+                                            title={t("connect.scopeHint", { scope })}
+                                        >
+                                            {t(`connect.scope.${scope}`, { defaultValue: scope })}
                                         </Badge>
                                     ))}
                                 </span>
@@ -235,13 +253,19 @@ export function ConnectPage() {
             ) : (
                 <>
                     <div className="cn-actions">
-                        <Button variant="primary" className="cn-action" onClick={() => setScanOpen(true)}>
+                        <Button
+                            variant="primary"
+                            className="cn-action"
+                            data-testid="connect-scan"
+                            onClick={() => setScanOpen(true)}
+                        >
                             <Icon name="scan" />
                             {t("connect.scan")}
                         </Button>
                         <Button
                             variant="ghost"
                             className="cn-action"
+                            data-testid="connect-manual"
                             onClick={() => hostInputRef.current?.focus()}
                         >
                             <Icon name="server" />
@@ -252,6 +276,7 @@ export function ConnectPage() {
                         onConnect={handleManual}
                         hostInputRef={hostInputRef}
                         defaultDeviceName={defaultDeviceName}
+                        initialCode={codeParam}
                     />
                 </>
             )}
@@ -271,10 +296,23 @@ export function ConnectPage() {
                 title={t("connect.confirmTitle")}
                 footer={
                     <>
-                        <Button variant="ghost" onClick={() => setPending(null)} disabled={redeeming}>
+                        <Button
+                            variant="ghost"
+                            data-testid="connect-confirm-cancel"
+                            onClick={() => {
+                                setPairError(null);
+                                setPending(null);
+                            }}
+                            disabled={redeeming}
+                        >
                             {t("common.cancel")}
                         </Button>
-                        <Button variant="primary" onClick={() => void confirmPending()} disabled={redeeming}>
+                        <Button
+                            variant="primary"
+                            data-testid="connect-confirm-connect"
+                            onClick={() => void confirmPending()}
+                            disabled={redeeming}
+                        >
                             {redeeming ? t("connect.connecting") : t("connect.connect")}
                         </Button>
                     </>
@@ -288,7 +326,7 @@ export function ConnectPage() {
                             <KV label={t("connect.endpoint")} mono>
                                 {pending.hostname}:{pending.port}
                             </KV>
-                            <KV label={t("connect.token")} mono>
+                            <KV label={t("connect.pairCode")} mono>
                                 {maskSecret(pending.code)}
                             </KV>
                         </div>

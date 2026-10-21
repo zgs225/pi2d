@@ -99,6 +99,7 @@ function SubagentRow({
                 role="button"
                 tabIndex={0}
                 aria-label={name}
+                data-subagent-id={subagent.id}
                 onClick={() => onOpenSubagent?.(session, subagent)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -201,6 +202,7 @@ function SessionRow({
                 tabIndex={0}
                 aria-label={name}
                 aria-current={selected ? "true" : undefined}
+                data-session-id={session.sessionId}
                 onClick={() => onSelectSession(session.sessionId)}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {

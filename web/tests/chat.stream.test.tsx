@@ -47,6 +47,37 @@ describe("chat message stream", () => {
         expect(screen.getByText("agent aborted").closest(".msg__error")).not.toBeNull();
     });
 
+    it("exposes data-entry-id / data-role on every message", () => {
+        renderStream();
+        const user = screen.getByText("Fix the auth bug").closest("article");
+        expect(user).toHaveAttribute("data-entry-id", "u1");
+        expect(user).toHaveAttribute("data-role", "user");
+
+        const assistant = screen.getByText("Looking at the auth path now.").closest("article");
+        expect(assistant).toHaveAttribute("data-entry-id", "a1");
+        expect(assistant).toHaveAttribute("data-role", "assistant");
+    });
+
+    it("exposes the load-older selector only while older pages exist", () => {
+        const session = fullStreamSession();
+        const props = {
+            session,
+            entries: session.entries,
+            loadingOlder: false,
+            error: null,
+            onLoadOlder: vi.fn(),
+            onRetry: vi.fn(),
+            onOpenSubagent: vi.fn(),
+        };
+        const { rerender } = render(<MessageStream {...props} hasMore />);
+        const button = screen.getByTestId("load-older");
+        fireEvent.click(button);
+        expect(props.onLoadOlder).toHaveBeenCalledTimes(1);
+
+        rerender(<MessageStream {...props} hasMore={false} />);
+        expect(screen.queryByTestId("load-older")).not.toBeInTheDocument();
+    });
+
     it("expands a tool card to show output and an edit diff", () => {
         renderStream();
 

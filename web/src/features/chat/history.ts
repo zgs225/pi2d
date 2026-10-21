@@ -26,6 +26,14 @@ export function setSessionMeta(
     sessionMeta.set(sessionId, { ...sessionMeta.get(sessionId), ...meta });
 }
 
+/** Carry the paging metadata over to the migrated session id. */
+export function remapSessionMeta(from: string, to: string): void {
+    if (!from || !to || from === to) return;
+    const meta = sessionMeta.get(from);
+    sessionMeta.delete(from);
+    if (meta) sessionMeta.set(to, { ...sessionMeta.get(to), ...meta });
+}
+
 /** `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` → raw pi entries + cursor. */
 export async function fetchEntriesPage(
     sessionId: string,

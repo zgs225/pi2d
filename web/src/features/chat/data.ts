@@ -16,6 +16,7 @@ import {
     normalizeSnapshotState,
 } from "./session-state";
 import { setSessionMeta } from "./history";
+import { migrateSessionId } from "./migration";
 import { useChatStore } from "./store";
 
 export const EMPTY_SESSIONS: SessionState[] = [];
@@ -129,8 +130,26 @@ export function useChatWorkspaces(enabled: boolean): { workspaces: WorkspaceInfo
     return { workspaces, loading: query.isLoading, error: query.error };
 }
 
+/**
+ * One workspace's session list plus the query state the page must gate on.
+ *
+ * `loaded` is the "the list is authoritative" flag: an unknown deep link may
+ * only be reported as missing once the first REST/WS answer has landed, so the
+ * page does not flash a not-found state while the list is still in flight.
+ */
+export interface ChatSessions {
+    /** Sessions of the workspace, merged into the shared store (live state wins). */
+    sessions: SessionState[];
+    /** False until the session list has answered once (REST or live store). */
+    loaded: boolean;
+    /** True while a (Re)fetch of the REST list is in flight. */
+    fetching: boolean;
+    /** Refetch the REST session list — the unknown-session Retry button. */
+    refetch: () => void;
+}
+
 /** Sessions of one workspace, merged into the shared store (live state wins). */
-export function useChatSessions(workspaceId: string | undefined, enabled: boolean): SessionState[] {
+export function useChatSessions(workspaceId: string | undefined, enabled: boolean): ChatSessions {
     const query = useQuery({
         queryKey: ["chat-sessions", workspaceId],
         queryFn: ({ signal }) =>
@@ -158,7 +177,20 @@ export function useChatSessions(workspaceId: string | undefined, enabled: boolea
         current.setSessions(workspaceId, next);
     }, [workspaceId, query.data]);
 
-    return useSessionsStore((state) => (workspaceId ? (state.byWorkspace[workspaceId] ?? EMPTY_SESSIONS) : EMPTY_SESSIONS));
+    const sessions = useSessionsStore((state) =>
+        workspaceId ? (state.byWorkspace[workspaceId] ?? EMPTY_SESSIONS) : EMPTY_SESSIONS,
+    );
+
+    return {
+        sessions,
+        // A cached row (WS snapshot, another page) already proves the list is
+        // known even when this query has not settled yet.
+        loaded: query.isFetched || sessions.length > 0,
+        fetching: query.isFetching,
+        refetch: () => {
+            void query.refetch();
+        },
+    };
 }
 
 /** Model list for the composer and dispatch modal. */
@@ -172,6 +204,24 @@ export function useChatModels(workspaceId: string | undefined, enabled: boolean)
         retry: 1,
     });
     return useMemo(() => normalizeModels(query.data), [query.data]);
+}
+
+/**
+ * `pi2:session` doubles as the id-migration announcement: it is emitted on the
+ * **old** id while `event.session.sessionId` carries the new one
+ * (`pi2.nvim-web` `Instance:_migrate_session`).
+ */
+export function sessionMigration(
+    sessionId: string,
+    event: Record<string, unknown>,
+): { from: string; to: string } | undefined {
+    if (event.type !== "pi2:session") return undefined;
+    const session = rec(event.session);
+    const to = str(session?.sessionId);
+    if (!to || to === sessionId) return undefined;
+    const previous = str(session?.previousSessionId) ?? str(event.previousSessionId);
+    if (previous && previous !== sessionId) return undefined;
+    return { from: sessionId, to };
 }
 
 /**
@@ -206,7 +256,15 @@ export function useChatSocket(workspaceId: string | undefined, sessionIds: strin
                     const payload = rec(message.payload);
                     const event = rec(payload?.event) ?? payload;
                     if (!event || typeof event.type !== "string") return;
-                    const sessionId = message.sessionId;
+                    const migration = sessionMigration(message.sessionId, event);
+                    const sessionId = migration?.to ?? message.sessionId;
+                    if (migration) {
+                        // Move the render cache to the real id, then move the
+                        // subscription: the daemon and plugin track the old id.
+                        migrateSessionId(migration.from, migration.to, workspaceId);
+                        client.unsubscribe(migration.from);
+                        client.subscribe(migration.to);
+                    }
                     const store = useSessionsStore.getState();
                     const current = store.getSession(sessionId) ?? emptySessionState({ sessionId, workspaceId });
                     const next = applySessionEvent(current, event as unknown as SessionEvent);
@@ -215,9 +273,9 @@ export function useChatSocket(workspaceId: string | undefined, sessionIds: strin
                 onResyncRequired: (frame) => {
                     const sessionId = str(frame.sessionId);
                     if (!sessionId) return;
+                    // `PiWsClient` already dropped the cached `(epoch, seq)`; the
+                    // history hook refetches the REST page for this generation.
                     useChatStore.getState().bumpResync(sessionId);
-                    // Drop the seq cache and ask for a fresh snapshot; the history
-                    // hook refetches the REST page for the same session.
                     client.unsubscribe(sessionId);
                     client.subscribe(sessionId);
                 },
@@ -242,18 +300,39 @@ export function useChatSocket(workspaceId: string | undefined, sessionIds: strin
     }, [idsKey, workspaceId]);
 }
 
-/** The selected session, falling back to the first session of the workspace. */
-export function useActiveSession(
+export interface SessionLookup {
+    /** The routed session; `undefined` for `/chat` with no sessions at all. */
+    session: SessionState | undefined;
+    /**
+     * True only once the list has loaded and the route id is still absent. The
+     * page renders its not-found state then, never another session's entries.
+     */
+    missing: boolean;
+}
+
+/**
+ * Resolve the session the route addresses.
+ *
+ * A non-empty `sessionId` that the loaded list does not contain resolves to
+ * `undefined` — falling back to `sessions[0]` would silently show a different
+ * session for an unknown deep link. The first-session fallback stays for the
+ * `/chat` index (no id), which means "the workspace's most recent session".
+ *
+ * @param sessionId Route session id (`undefined` on `/chat`).
+ * @param sessions Sessions of the active workspace.
+ * @param loaded Whether `sessions` has answered at least once.
+ */
+export function useSessionLookup(
     sessionId: string | null | undefined,
     sessions: SessionState[],
-): SessionState | undefined {
+    loaded: boolean,
+): SessionLookup {
     return useMemo(() => {
-        if (sessionId) {
-            const match = sessions.find((session) => session.sessionId === sessionId);
-            if (match) return match;
-        }
-        return sessions[0];
-    }, [sessions, sessionId]);
+        if (!sessionId) return { session: sessions[0], missing: false };
+        const match = sessions.find((session) => session.sessionId === sessionId);
+        if (match) return { session: match, missing: false };
+        return { session: undefined, missing: loaded };
+    }, [sessions, sessionId, loaded]);
 }
 
 export function mergeSessionSummaries(existing: SessionState | undefined, raw: unknown, workspaceId: string): SessionState {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PiWsClient, type WebSocketLike, type WsFrame } from "@/lib/ws";
+import { PiWsClient, normalizeDeviceToken, type WebSocketLike, type WsFrame } from "@/lib/ws";
 
 class FakeSocket implements WebSocketLike {
     readyState = 0;
@@ -91,7 +91,34 @@ describe("PiWsClient", () => {
         ]);
     });
 
-    it("reconnects with exponential backoff and resumes with sinceSeq", () => {
+    it("strips the `Bearer ` prefix the token store adds before the auth frame", () => {
+        vi.useFakeTimers();
+        // `setDeviceToken()` persists `Bearer <token>`; the daemon hashes the
+        // frame verbatim, so the prefix must not reach the wire.
+        const { client, sockets } = createClient("Bearer abc");
+        client.connect();
+        sockets[0]!.open();
+        expect(sockets[0]!.frames("auth")).toEqual([{ v: 1, type: "auth", token: "abc" }]);
+
+        // The same normalization applies to every reconnect.
+        sockets[0]!.receive({ type: "hello_ack" });
+        sockets[0]!.serverClose(1006);
+        vi.advanceTimersByTime(200);
+        expect(sockets).toHaveLength(2);
+        sockets[1]!.open();
+        expect(sockets[1]!.frames("auth")).toEqual([{ v: 1, type: "auth", token: "abc" }]);
+    });
+
+    it("normalizes case, whitespace and a prefix-only token", () => {
+        expect(normalizeDeviceToken("bearer   abc \n")).toBe("abc");
+        expect(normalizeDeviceToken("  Bearer\tabc")).toBe("abc");
+        expect(normalizeDeviceToken("abc")).toBe("abc");
+        expect(normalizeDeviceToken("Bearer ")).toBeUndefined();
+        expect(normalizeDeviceToken("")).toBeUndefined();
+        expect(normalizeDeviceToken(null)).toBeUndefined();
+    });
+
+    it("reconnects with exponential backoff and resumes with the `since` cursor", () => {
         vi.useFakeTimers();
         const { client, sockets, states, snapshots } = createClient();
         client.connect();
@@ -115,7 +142,11 @@ describe("PiWsClient", () => {
         sockets[1]!.receive({ type: "hello_ack" });
         expect(client.getState()).toBe("open");
         expect(sockets[1]!.frames("subscribe")).toEqual([
-            { v: 1, type: "subscribe", payload: { sessionIds: ["s1"], sinceSeq: { s1: 10 } } },
+            {
+                v: 1,
+                type: "subscribe",
+                payload: { sessionIds: ["s1"], since: { sessionId: "s1", epoch: "e1", seq: 10 } },
+            },
         ]);
 
         // A successful hello_ack resets the backoff, so the next retry is 200ms again.

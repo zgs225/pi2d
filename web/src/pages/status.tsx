@@ -16,19 +16,24 @@ import { deviceKey, DevicesCard } from "@/features/status/devices-card";
 import { HealthCard } from "@/features/status/health-card";
 import { ModelsCard } from "@/features/status/models-card";
 import {
+    mergeTasks,
+    sessionTasks,
     useDevicesQuery,
     useHealthQuery,
     useInfoQuery,
     useModelsQuery,
+    usePairCodeQuery,
     useResourcesQuery,
+    useWorkspaceSessionsQueries,
     useWorkspacesQuery,
     type DeviceEntry,
     type DevicesResponse,
+    type StatusTask,
 } from "@/features/status/queries";
 import { ResourcesCard } from "@/features/status/resources-card";
 import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
 import { ServerInfoCard } from "@/features/status/server-info-card";
-import { TasksCard, type StatusTask } from "@/features/status/tasks-card";
+import { TasksCard } from "@/features/status/tasks-card";
 import { ApiError, api, errorI18nKey } from "@/lib/api";
 import { useConnectionStore } from "@/stores/connection";
 import { useSessionsStore } from "@/stores/sessions";
@@ -50,6 +55,7 @@ export function StatusPage() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
 
+    const paired = useConnectionStore((state) => state.paired);
     const endpoint = useConnectionStore((state) => state.endpoint);
     const wsState = useConnectionStore((state) => state.wsState);
     const storedServer = useConnectionStore((state) => state.server);
@@ -62,6 +68,8 @@ export function StatusPage() {
     const resources = useResourcesQuery();
     const workspacesQuery = useWorkspacesQuery();
     const devices = useDevicesQuery();
+    // The card shows the daemon's live code, not a cached one: mint on mount.
+    const pairCode = usePairCodeQuery(paired);
 
     const workspaces = workspacesQuery.data ?? [];
     const visibleWorkspaces = workspaces.filter((workspace) => !workspace.hidden);
@@ -83,8 +91,12 @@ export function StatusPage() {
         status: info.isError ? "offline" : healthOk === false ? "degraded" : undefined,
     });
 
+    // Background tasks: the live store covers open sessions, the REST session
+    // lists cover everything else (a hard reload empties the store). Only
+    // workspaces with a live instance are asked: `/sessions` relays through
+    // `instances.ensure()`, which would spawn a Neovim for every idle workspace.
     const byWorkspace = useSessionsStore((state) => state.byWorkspace);
-    const tasks = useMemo<StatusTask[]>(
+    const liveTasks = useMemo<StatusTask[]>(
         () =>
             Object.values(byWorkspace).flatMap((sessions) =>
                 sessions.flatMap((session) =>
@@ -94,10 +106,25 @@ export function StatusPage() {
         [byWorkspace],
     );
 
+    const workspaceIds = visibleWorkspaces
+        .filter((workspace) => workspace.instance != null)
+        .map((workspace) => workspace.workspaceId);
+    const sessionQueries = useWorkspaceSessionsQueries(workspaceIds);
+    const fetchedTasks = sessionQueries.flatMap((query) => (query.data ? sessionTasks(query.data) : []));
+    const tasks = mergeTasks(liveTasks, fetchedTasks);
+    const tasksLoading = tasks.length === 0 && sessionQueries.some((query) => query.isPending);
+    const tasksFailed = sessionQueries.find((query) => query.isError);
+    const tasksError = tasksFailed ? translatedError(tasksFailed.error, "status.tasksError", t) : null;
+
+    function retryTasks() {
+        for (const query of sessionQueries) void query.refetch();
+    }
+
     async function revokeDevice(device: DeviceEntry) {
         const key = deviceKey(device);
         try {
-            await api.command({ method: "device.revoke", params: { deviceId: key } });
+            // DELETE /api/v1/devices/:id — the daemon marks the token revoked.
+            await api.revokeDevice(key);
             queryClient.setQueryData<DevicesResponse>(["devices"], (previous) =>
                 previous
                     ? { ...previous, devices: previous.devices.filter((item) => deviceKey(item) !== key) }
@@ -137,6 +164,7 @@ export function StatusPage() {
             <div className="status-grid">
                 <ServerInfoCard
                     server={server}
+                    resources={resources.data}
                     loading={info.isPending}
                     error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
                     onRetry={() => void info.refetch()}
@@ -167,7 +195,12 @@ export function StatusPage() {
                     onRetry={() => void models.refetch()}
                 />
 
-                <TasksCard tasks={tasks} />
+                <TasksCard
+                    tasks={tasks}
+                    loading={tasksLoading}
+                    error={tasks.length === 0 ? tasksError : null}
+                    onRetry={retryTasks}
+                />
 
                 <DevicesCard
                     devices={devices.data?.devices ?? []}
@@ -186,6 +219,10 @@ export function StatusPage() {
                     error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
                     onRetry={() => void info.refetch()}
                     onDisconnect={handleDisconnect}
+                    pairCode={pairCode.data}
+                    pairLoading={pairCode.isPending}
+                    pairError={pairCode.isError ? translatedError(pairCode.error, "connect.pairFailed", t) : null}
+                    onRetryPair={() => void pairCode.refetch()}
                 />
             </div>
         </div>

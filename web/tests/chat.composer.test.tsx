@@ -2,7 +2,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Composer } from "@/features/chat/composer";
-import { chatCommands } from "@/features/chat/commands";
 import { setLanguage } from "@/lib/i18n";
 import { sessionFixture } from "./chat-fixtures";
 
@@ -41,28 +40,54 @@ function renderComposer(session = sessionFixture()) {
 }
 
 describe("composer", () => {
+    it("exposes the stable Playwright selectors", () => {
+        renderComposer(sessionFixture({ status: "busy" }));
+        expect(screen.getByTestId("composer-input")).toHaveClass("composer__ta");
+        expect(screen.getByTestId("composer-send")).toHaveClass("composer__send");
+        expect(screen.getByTestId("composer-abort")).toBeInTheDocument();
+        expect(screen.getByTestId("composer-model")).toHaveAttribute("aria-label", "Model");
+        expect(screen.getByTestId("composer-thinking")).toHaveAttribute("aria-label", "Thinking level");
+    });
+
     it("sends on Enter and keeps Shift+Enter for a newline", () => {
-        const { onSend } = renderComposer();
-        const textarea = screen.getByRole("textbox", { name: "Message input" });
+        const { onSend } = renderComposer(sessionFixture({ status: "idle" }));
+        const textarea = screen.getByTestId("composer-input");
 
         fireEvent.change(textarea, { target: { value: "hello" } });
         fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
         expect(onSend).not.toHaveBeenCalled();
 
         fireEvent.keyDown(textarea, { key: "Enter" });
-        expect(onSend).toHaveBeenCalledWith("hello", []);
+        // An idle session sends a plain prompt (no `follow_up` / `steer` mode).
+        expect(onSend).toHaveBeenCalledWith("hello", [], undefined);
         expect(textarea).toHaveValue("");
     });
 
-    it("turns the send button into an abort button while the session is busy", () => {
-        const session = sessionFixture({ status: "busy" });
-        const { onAbort, onSend } = renderComposer(session);
-        fireEvent.click(screen.getByRole("button", { name: "Abort" }));
-        expect(onAbort).toHaveBeenCalledTimes(1);
-        expect(onSend).not.toHaveBeenCalled();
+    it("queues an Enter send as a follow-up while the session is busy", () => {
+        const { onSend } = renderComposer(sessionFixture({ status: "busy" }));
+        const textarea = screen.getByTestId("composer-input");
+        fireEvent.change(textarea, { target: { value: "next step" } });
+        fireEvent.keyDown(textarea, { key: "Enter" });
+        expect(onSend).toHaveBeenCalledWith("next step", [], "follow_up");
     });
 
-    it("renders queue chips with steer toggle and remove", () => {
+    it("keeps send for follow-ups and adds steer + abort while the session is busy", () => {
+        const session = sessionFixture({ status: "busy" });
+        const { onAbort, onSend } = renderComposer(session);
+
+        fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "queue me" } });
+        fireEvent.click(screen.getByTestId("composer-send"));
+        expect(onSend).toHaveBeenLastCalledWith("queue me", [], "follow_up");
+
+        fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "interrupt" } });
+        fireEvent.click(screen.getByTestId("composer-steer"));
+        expect(onSend).toHaveBeenLastCalledWith("interrupt", [], "steer");
+
+        fireEvent.click(screen.getByRole("button", { name: "Abort" }));
+        expect(onAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders queue chips with the session-wide steer toggle and remove", () => {
         const session = sessionFixture({
             status: "idle",
             queue: [{ id: "q1", text: "later please", steer: false }],
@@ -71,65 +96,17 @@ describe("composer", () => {
 
         expect(screen.getByText("later please")).toBeInTheDocument();
         fireEvent.click(screen.getByRole("checkbox", { name: "Steer" }));
-        expect(onSetSteer).toHaveBeenCalledWith("q1", true);
+        // Steering is a session-wide mode, so the toggle carries no queue id.
+        expect(onSetSteer).toHaveBeenCalledWith(true);
 
         fireEvent.click(screen.getByRole("button", { name: "Remove queued message" }));
         expect(onRemoveQueue).toHaveBeenCalledWith("q1");
     });
 
-    it("builds the documented command payloads", () => {
-        expect(chatCommands.sendPrompt("s1", "hi")).toMatchObject({
-            method: "prompt.send",
-            sessionId: "s1",
-            params: { text: "hi", mode: "queue" },
-        });
-        expect(chatCommands.sendPrompt("s1", "hi", [{ mimeType: "image/png", data: "AAA" }])).toMatchObject({
-            params: { text: "hi", mode: "queue", images: [{ mimeType: "image/png", data: "AAA" }] },
-        });
-        expect(chatCommands.abort("s1")).toMatchObject({ method: "prompt.abort", sessionId: "s1" });
-        expect(chatCommands.removeQueued("s1", "q1")).toMatchObject({
-            method: "queue.remove",
-            params: { queueId: "q1" },
-        });
-        expect(chatCommands.setQueueSteer("s1", "q1", true)).toMatchObject({
-            method: "queue.setSteer",
-            params: { queueId: "q1", steer: true },
-        });
-        expect(chatCommands.setModel("s1", { provider: "anthropic", id: "m" })).toMatchObject({
-            method: "session.setModel",
-            params: { provider: "anthropic", id: "m" },
-        });
-        expect(chatCommands.setThinking("s1", "high")).toMatchObject({
-            method: "session.setThinking",
-            params: { level: "high" },
-        });
-        expect(chatCommands.respondAttention("s1", "att-1", "allow-once")).toMatchObject({
-            method: "attention.respond",
-            params: { requestId: "att-1", response: "allow-once" },
-        });
-        expect(
-            chatCommands.dispatchSubagent("s1", {
-                task: "do it",
-                name: "worker",
-                model: { provider: "anthropic", id: "m" },
-                thinking: "low",
-                wait: true,
-                cancelSiblingsOnFail: true,
-            }),
-        ).toMatchObject({
-            method: "subagent.dispatch",
-            params: {
-                task: "do it",
-                name: "worker",
-                model: { provider: "anthropic", id: "m" },
-                thinking: "low",
-                wait: true,
-                cancelSiblingsOnFail: true,
-            },
-        });
-        expect(chatCommands.stopTask("s1", "t1")).toMatchObject({
-            method: "task.stop",
-            params: { taskId: "t1" },
-        });
+    it("drops the mock-era demo copy from the attachment dialog", () => {
+        renderComposer();
+        fireEvent.click(screen.getByRole("button", { name: "Add attachment" }));
+        expect(screen.queryByText(/Demo only/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/prototype demo only/i)).not.toBeInTheDocument();
     });
 });

@@ -85,6 +85,8 @@ export function DiffView({ files, onDecision, className }: DiffViewProps) {
                                         <Button
                                             size="sm"
                                             variant="primary"
+                                            data-decision="accept"
+                                            data-path={file.path}
                                             onClick={() => onDecision("accept", file.path)}
                                         >
                                             {t("chat.accept")}
@@ -92,6 +94,8 @@ export function DiffView({ files, onDecision, className }: DiffViewProps) {
                                         <Button
                                             size="sm"
                                             variant="danger"
+                                            data-decision="reject"
+                                            data-path={file.path}
                                             onClick={() => onDecision("reject", file.path)}
                                         >
                                             {t("chat.reject")}
@@ -106,10 +110,20 @@ export function DiffView({ files, onDecision, className }: DiffViewProps) {
             {onDecision ? (
                 <div className="diff__foot diff__foot--all">
                     <span className="muted grow">{t("chat.diffReview")}</span>
-                    <Button size="sm" variant="ghost" onClick={() => onDecision("reject")}>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        data-decision="reject"
+                        onClick={() => onDecision("reject")}
+                    >
                         {t("chat.rejectAll")}
                     </Button>
-                    <Button size="sm" variant="primary" onClick={() => onDecision("accept")}>
+                    <Button
+                        size="sm"
+                        variant="primary"
+                        data-decision="accept"
+                        onClick={() => onDecision("accept")}
+                    >
                         {t("chat.acceptAll")}
                     </Button>
                 </div>

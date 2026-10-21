@@ -3,11 +3,11 @@ import type { WsConnectionState } from "@/lib/ws";
 
 /**
  * Optional identity fields the daemon may expose beyond the minimal /info
- * contract. The status page degrades to `—` when they are missing: the wire
- * contract only guarantees `{v,daemonId,machineId,platform,capabilities,limits}`.
+ * contract (`{v,daemonId,machineId,platform,hostname,os,version,uptimeMs,
+ * capabilities,limits}`). The status page degrades to `—` when they are missing.
  */
 export interface InfoExtras extends InfoResponse {
-    os?: string;
+    pid?: number;
     kernel?: string;
     uptimeSec?: number;
     lastHeartbeat?: number;
@@ -23,6 +23,9 @@ export interface InfoExtras extends InfoResponse {
 export interface ServerIdentity {
     name: string;
     hostname: string;
+    daemonId: string;
+    machineId: string;
+    platform: string;
     port: number | null;
     endpoint: string;
     bindAddress: string;
@@ -31,6 +34,8 @@ export interface ServerIdentity {
     pluginVersion: string;
     kernel: string;
     uptimeSec: number | null;
+    uptimeMs: number | null;
+    pid: number | null;
     status: "online" | "degraded" | "offline";
     wsConnected: boolean;
     wsProto: string;
@@ -42,6 +47,15 @@ export interface ServerIdentity {
     cpu: number | null;
     mem: number | null;
     disk: number | null;
+}
+
+function text(value: string | null | undefined, fallback = "—"): string {
+    const trimmed = String(value ?? "").trim();
+    return trimmed || fallback;
+}
+
+function finite(value: number | null | undefined): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function parseUrl(value: string | null | undefined): URL | null {
@@ -97,29 +111,37 @@ export function deriveServerIdentity({
     const localAddress = extras.addresses?.local || `http://127.0.0.1:${port}`;
     const networkAddress = extras.addresses?.network || endpointOrigin;
     const resolvedStatus = status ?? extras.status ?? (info ? "online" : "offline");
+    const uptimeMs = finite(extras.uptimeMs);
+    const uptimeSec =
+        uptimeMs != null ? Math.floor(uptimeMs / 1000) : typeof extras.uptimeSec === "number" ? extras.uptimeSec : null;
 
     return {
         name,
         hostname,
+        daemonId: text(extras.daemonId),
+        machineId: text(extras.machineId),
+        platform: text(extras.platform),
         port,
         endpoint: endpointOrigin,
-        bindAddress: extras.host?.trim() || hostname,
-        os: extras.os || extras.platform || "—",
-        piVersion: extras.version || "—",
-        pluginVersion: extras.pluginVersion || "—",
-        kernel: extras.kernel || "—",
-        uptimeSec: typeof extras.uptimeSec === "number" ? extras.uptimeSec : null,
+        bindAddress: text(extras.host, hostname),
+        os: text(extras.os || extras.platform),
+        piVersion: text(extras.version),
+        pluginVersion: text(extras.pluginVersion),
+        kernel: text(extras.kernel),
+        uptimeSec,
+        uptimeMs,
+        pid: finite(extras.pid),
         status: resolvedStatus,
         wsConnected: wsState === "open",
         wsProto: info?.v ? `v${info.v}` : "v1",
         lastHeartbeatAt: extras.lastHeartbeat ?? fetchedAt ?? null,
         localAddress,
         networkAddress,
-        mdns: extras.mdns || `${hostname}.local`,
+        mdns: text(extras.mdns, `${hostname}.local`),
         pairingCode: extras.pairingCode || extras.pairing?.code || "—",
-        cpu: typeof extras.cpu === "number" ? extras.cpu : null,
-        mem: typeof extras.mem === "number" ? extras.mem : null,
-        disk: typeof extras.disk === "number" ? extras.disk : null,
+        cpu: finite(extras.cpu),
+        mem: finite(extras.mem),
+        disk: finite(extras.disk),
     };
 }
 

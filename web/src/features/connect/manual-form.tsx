@@ -7,7 +7,7 @@ import { Field, Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { ApiError, errorI18nKey } from "@/lib/api";
 
-import { parseEndpoint } from "./pairing";
+import { PAIR_CODE_LENGTH, isPairCode, normalizePairCode, parseEndpoint } from "./pairing";
 
 export interface ManualConnectInput {
     endpoint: string;
@@ -19,22 +19,27 @@ export interface ManualConnectFormProps {
     onConnect: (input: ManualConnectInput) => Promise<void>;
     hostInputRef: RefObject<HTMLInputElement | null>;
     defaultDeviceName: string;
+    /** Prefill from `/connect?code=…` or the `/pair/$code` redirect. */
+    initialCode?: string;
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-    if (error instanceof ApiError) return errorI18nKey(error.code);
-    return fallback;
+/** Wrong/expired codes come back as 401 `E_UNAUTHORIZED`; the code rail is the useful message. */
+export function pairErrorMessage(error: unknown): string {
+    if (error instanceof ApiError) {
+        if (error.code === "E_UNAUTHORIZED" || error.status === 401) return "connect.pairCodeRejected";
+        return errorI18nKey(error.code);
+    }
+    return "connect.pairFailed";
 }
 
-/** Inline manual pairing form: host/port, token-or-code, optional device name. */
-export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }: ManualConnectFormProps) {
+/** Inline manual pairing form: host/port, 8-character pairing code, optional device name. */
+export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, initialCode }: ManualConnectFormProps) {
     const { t } = useTranslation();
     const id = useId();
     const [host, setHost] = useState("");
     const [port, setPort] = useState("4321");
-    const [code, setCode] = useState("");
+    const [code, setCode] = useState(() => normalizePairCode(initialCode ?? ""));
     const [deviceName, setDeviceName] = useState("");
-    const [showCode, setShowCode] = useState(false);
     const [hostError, setHostError] = useState<string | null>(null);
     const [portError, setPortError] = useState<string | null>(null);
     const [codeError, setCodeError] = useState<string | null>(null);
@@ -66,8 +71,14 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
             toast.error(message);
             return;
         }
-        if (!code.trim()) {
-            setCodeError(t("connect.tokenRequired"));
+
+        const normalized = normalizePairCode(code);
+        if (!normalized) {
+            setCodeError(t("connect.pairCodeRequired"));
+            return;
+        }
+        if (!isPairCode(normalized)) {
+            setCodeError(t("connect.pairCodeInvalid"));
             return;
         }
 
@@ -76,11 +87,11 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
         try {
             await onConnect({
                 endpoint: parsed.endpoint,
-                code: code.trim(),
+                code: normalized,
                 deviceName: deviceName.trim() || defaultDeviceName,
             });
         } catch (error) {
-            const message = t(errorMessage(error, "connect.failed"));
+            const message = t(pairErrorMessage(error));
             setFormError(message);
             toast.error(message);
         } finally {
@@ -103,6 +114,7 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
                         <Input
                             ref={hostInputRef}
                             id={`${id}-host`}
+                            data-testid="connect-host"
                             type="text"
                             inputMode="url"
                             autoCapitalize="off"
@@ -119,6 +131,7 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
                     <Field label={t("connect.port")} htmlFor={`${id}-port`} error={portError}>
                         <Input
                             id={`${id}-port`}
+                            data-testid="connect-port"
                             type="text"
                             inputMode="numeric"
                             autoComplete="off"
@@ -132,36 +145,36 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
                     </Field>
                 </div>
 
-                <Field label={t("connect.token")} htmlFor={`${id}-token`} hint={t("connect.tokenHint")} error={codeError}>
-                    <div className="cn-token">
-                        <Input
-                            id={`${id}-token`}
-                            type={showCode ? "text" : "password"}
-                            autoComplete="current-password"
-                            placeholder={t("connect.tokenPlaceholder")}
-                            value={code}
-                            onChange={(event) => {
-                                setCode(event.target.value);
-                                setCodeError(null);
-                            }}
-                        />
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className={showCode ? "cn-eye is-on" : "cn-eye"}
-                            aria-pressed={showCode}
-                            aria-label={t("connect.token")}
-                            title={t("connect.token")}
-                            onClick={() => setShowCode((value) => !value)}
-                        >
-                            <Icon name="eye" />
-                        </Button>
-                    </div>
+                <Field
+                    label={t("connect.pairCode")}
+                    htmlFor={`${id}-pair-code`}
+                    hint={t("connect.pairCodeHint")}
+                    error={codeError}
+                >
+                    <Input
+                        id={`${id}-pair-code`}
+                        data-testid="connect-pair-code"
+                        className="cn-code"
+                        type="text"
+                        inputMode="text"
+                        autoCapitalize="characters"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        maxLength={PAIR_CODE_LENGTH}
+                        placeholder={t("connect.pairCodePlaceholder")}
+                        value={code}
+                        onChange={(event) => {
+                            setCode(normalizePairCode(event.target.value).slice(0, PAIR_CODE_LENGTH));
+                            setCodeError(null);
+                        }}
+                    />
                 </Field>
 
                 <Field label={t("connect.deviceName")} htmlFor={`${id}-device`} hint={t("common.optional")}>
                     <Input
                         id={`${id}-device`}
+                        data-testid="connect-device"
                         type="text"
                         autoComplete="nickname"
                         placeholder={t("connect.deviceNamePlaceholder")}
@@ -180,7 +193,13 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName }
                 ) : null}
 
                 <div className="cn-form__foot">
-                    <Button variant="primary" type="submit" className="cn-submit" disabled={busy}>
+                    <Button
+                        variant="primary"
+                        type="submit"
+                        className="cn-submit"
+                        disabled={busy}
+                        data-testid="connect-submit"
+                    >
                         <Icon name={busy ? "refresh" : "chevron-right"} />
                         {busy ? t("connect.connecting") : t("connect.connect")}
                     </Button>

@@ -174,7 +174,12 @@ export function MessageStream({
                     <Spinner /> {t("chat.loadingOlder")}
                 </span>
             ) : hasMore ? (
-                <button type="button" className="stream-older muted" onClick={onLoadOlder}>
+                <button
+                    type="button"
+                    className="stream-older muted"
+                    data-testid="load-older"
+                    onClick={onLoadOlder}
+                >
                     {t("chat.loadOlder")}
                 </button>
             ) : null}

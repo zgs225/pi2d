@@ -40,6 +40,31 @@ describe("i18n catalogs", () => {
         }
     });
 
+    it("defines every shipped UI string", () => {
+        // Regression guard: these were referenced by src/pages/status.tsx and the
+        // chat task renderers but missing from both catalogs.
+        for (const key of [
+            "status.infoError",
+            "status.healthError",
+            "status.resourcesError",
+            "status.modelsError",
+            "status.devicesError",
+            "status.tasksError",
+            "chat.steerMode",
+            "chat.taskExitCode",
+        ]) {
+            expect(enFlat[key], `en ${key}`).toBeTruthy();
+            expect(zhFlat[key], `zh ${key}`).toBeTruthy();
+        }
+    });
+
+    it("keeps interpolation params aligned across catalogs", () => {
+        const params = (value: string) => [...value.matchAll(/\{(\w+)\}/g)].map((match) => match[1] ?? "").sort();
+        for (const [key, value] of Object.entries(enFlat)) {
+            expect(params(zhFlat[key] ?? ""), key).toEqual(params(value));
+        }
+    });
+
     it("covers every prototype namespace", () => {
         for (const prefix of [
             "common.",

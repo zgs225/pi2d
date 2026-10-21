@@ -38,10 +38,17 @@ export function Modal({
     return (
         <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
             <DialogPrimitive.Portal>
-                <DialogPrimitive.Overlay className={cn("modal-backdrop", className)} />
-                <DialogPrimitive.Content
-                    className={cn("modal", size === "wide" && "modal--wide", "modal-content", contentClassName)}
-                >
+                {/*
+                 * The content is a child of the backdrop: the backdrop is
+                 * `position: fixed; z-index: 60`, so a sibling rendered after it
+                 * still paints underneath and swallows every pointer event
+                 * ("modal-backdrop intercepts pointer events"). Nesting keeps the
+                 * flex centering and puts the panel above the scrim.
+                 */}
+                <DialogPrimitive.Overlay className={cn("modal-backdrop", className)}>
+                    <DialogPrimitive.Content
+                        className={cn("modal", "modal-content", size === "wide" && "modal--wide", contentClassName)}
+                    >
                     <DialogPrimitive.Title asChild>
                         <h3>
                             <span>{title}</span>
@@ -57,7 +64,8 @@ export function Modal({
                     ) : null}
                     {children}
                     {footer ? <div className="modal-actions">{footer}</div> : null}
-                </DialogPrimitive.Content>
+                    </DialogPrimitive.Content>
+                </DialogPrimitive.Overlay>
             </DialogPrimitive.Portal>
         </DialogPrimitive.Root>
     );

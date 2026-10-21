@@ -75,6 +75,7 @@ export function SidePanel({
                         role="tab"
                         aria-selected={tab === item.id}
                         className={cn("tab", tab === item.id && "active")}
+                        data-testid={`panel-tab-${item.id}`}
                         onClick={() => onTab(item.id)}
                     >
                         {item.label}
@@ -139,8 +140,7 @@ export function SidePanel({
                                                                   ? "dot--attention"
                                                                   : "dot--exited",
                                                     )}
-                                                />
-                                                <span className="sub-item__main">
+                                                />                                                <span className="sub-item__main">
                                                     <span className="sub-item__name truncate">
                                                         {subagent.name ?? subagent.id}
                                                     </span>
@@ -203,6 +203,7 @@ export function SidePanel({
                                         className="task-item"
                                         role="button"
                                         tabIndex={0}
+                                        data-task-id={task.id}
                                         onClick={() => onOpenTask(task)}
                                         onKeyDown={(event) => {
                                             if (event.key === "Enter" || event.key === " ") {

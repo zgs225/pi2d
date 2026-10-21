@@ -63,6 +63,35 @@ describe("WorkspacesPage", () => {
 
         const names = [...container.querySelectorAll(".list-row__name")].map((node) => node.textContent);
         expect(names).toEqual(["Alpha", "Bravo", "Charlie"]);
+
+        // Stable hooks for the e2e/Playwright suite (row + enter link).
+        const rows = screen.getAllByTestId("workspace-row");
+        expect(rows.map((row) => row.getAttribute("data-workspace-id"))).toEqual(["ws-a", "ws-b", "ws-c"]);
+        const enters = screen.getAllByTestId("workspace-enter");
+        expect(enters.map((link) => link.getAttribute("href"))).toEqual([
+            "/chat?workspace=ws-a",
+            "/chat?workspace=ws-b",
+            "/chat?workspace=ws-c",
+        ]);
+    });
+
+    it("opens the new-workspace dialog from the empty state", async () => {
+        const fetchMock = mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            { path: "/api/v1/workspaces", handler: () => ({ body: [] }) },
+        ]);
+
+        await renderPage(routes(), "/workspaces", { paired: true });
+        await screen.findByText("No workspaces yet");
+
+        fireEvent.click(screen.getAllByRole("button", { name: "Open new workspace" })[0]!);
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByLabelText("Path")).toBeInTheDocument();
+
+        // An empty path is rejected inline and issues no command.
+        fireEvent.click(within(dialog).getByRole("button", { name: "Open" }));
+        expect(await within(dialog).findByText("Enter a working directory path")).toBeInTheDocument();
+        expect(commandCalls(fetchMock)).toHaveLength(0);
     });
 
     it("renders the empty state without a server picker", async () => {

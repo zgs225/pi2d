@@ -2,6 +2,7 @@ import { Link, createRootRoute, createRoute, createRouter, redirect } from "@tan
 import { useTranslation } from "react-i18next";
 
 import { AppShell } from "@/components/app-shell";
+import { isPairCode, normalizePairCode } from "@/features/connect/pairing";
 import { CONNECT_PATH, safeNext } from "@/lib/routing";
 import { useConnectionStore } from "@/stores/connection";
 
@@ -81,10 +82,33 @@ const statusRoute = createRoute({
 const connectRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/connect",
+    validateSearch: (search: Record<string, unknown>): { next?: string; code?: string } => ({
+        next: typeof search.next === "string" ? safeNext(search.next) : undefined,
+        // `?code=` prefills the manual pairing field (used by the /pair/$code redirect).
+        code: typeof search.code === "string" ? normalizePairCode(search.code) : undefined,
+    }),
+    component: ConnectPage,
+});
+
+/**
+ * `/#/pair/<CODE>` deep link → the connect page with the pairing code prefilled.
+ * Relative pairing links (`/pair/CODE`) can be pasted into the browser as-is.
+ */
+const pairRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/pair/$code",
     validateSearch: (search: Record<string, unknown>): { next?: string } => ({
         next: typeof search.next === "string" ? safeNext(search.next) : undefined,
     }),
-    component: ConnectPage,
+    beforeLoad: ({ params, search }) => {
+        const code = normalizePairCode(params.code);
+        const query = new URLSearchParams();
+        if (isPairCode(code)) query.set("code", code);
+        if (search.next) query.set("next", safeNext(search.next));
+        const suffix = query.size ? `?${query.toString()}` : "";
+        throw redirect({ href: `${CONNECT_PATH}${suffix}` });
+    },
+    component: () => null,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -95,6 +119,7 @@ const routeTree = rootRoute.addChildren([
     chatRoute,
     statusRoute,
     connectRoute,
+    pairRoute,
 ]);
 
 export const router = createRouter({
