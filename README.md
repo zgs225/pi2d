@@ -35,3 +35,21 @@ The plugin starts the daemon lazily when it is not running; you normally do not 
 | `src/cli/` | `pi2d` (daemon) and `pi2` (attach/status/doctor) |
 | `fixtures/` | golden event streams + expected session state (shared with pi2.nvim tests) |
 | `docs/protocol.md` | the wire contract (browser ↔ daemon ↔ plugin) |
+
+## Testing
+
+Unit contracts are hermetic (`pnpm test` → `vitest run`; `pnpm lint` typechecks). The web-console
+gate is end-to-end and real: a daemon, one headless nvim per workspace, a real `pi --mode rpc`
+behind it and, for the browser layer, Playwright against the built bundle.
+
+```bash
+pnpm test                              # unit: daemon + web (vitest)
+bash scripts/e2e/run-api.sh            # A0–A12: API/WS against a real backend
+bash scripts/e2e/run-ui.sh             # B1–B14, C1–C4: Playwright against web/dist
+bash scripts/e2e/run-all.sh            # both, API first
+```
+
+Every suite runs in its own `mktemp` root with isolated runtime/data/state/agent dirs and
+`pi` sessions redirected away from `~/.pi/agent`; `E2E_SKIP_BUILD=1` reuses an existing build
+and `E2E_KEEP=1` keeps the artifacts (report, logs, screenshots). Scenario ids, isolation
+details, skip conditions and report paths: [docs/e2e.md](docs/e2e.md).
