@@ -38,6 +38,32 @@ export interface DaemonErrorOptions {
     details?: Record<string, unknown>;
 }
 
+/** Shape shared by `WorkspaceError` and `InstanceError` (protocol code, not a Node errno). */
+interface ProtocolErrorLike {
+    code: string;
+    message: string;
+    retryable?: unknown;
+    details?: unknown;
+}
+
+const PROTOCOL_CODE = /^E_[A-Z][A-Z0-9_]*$/;
+
+function isProtocolErrorLike(error: unknown): error is ProtocolErrorLike {
+    if (typeof error !== "object" || error === null) return false;
+    const candidate = error as { code?: unknown; message?: unknown };
+    return (
+        typeof candidate.code === "string" &&
+        PROTOCOL_CODE.test(candidate.code) &&
+        typeof candidate.message === "string"
+    );
+}
+
+function protocolDetails(error: ProtocolErrorLike): Record<string, unknown> | undefined {
+    return typeof error.details === "object" && error.details !== null && !Array.isArray(error.details)
+        ? (error.details as Record<string, unknown>)
+        : undefined;
+}
+
 export class DaemonError extends Error {
     readonly code: string;
     readonly status: number;
@@ -59,6 +85,16 @@ export class DaemonError extends Error {
 
     static from(error: unknown): DaemonError {
         if (error instanceof DaemonError) return error;
+        // The workspace/instance layers raise their own error classes with a
+        // protocol `code`; preserve it (and therefore its HTTP status) instead
+        // of collapsing every non-DaemonError into E_INTERNAL/500.
+        if (isProtocolErrorLike(error)) {
+            const details = protocolDetails(error);
+            return new DaemonError(error.code, error.message, {
+                ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+                ...(details === undefined ? {} : { details }),
+            });
+        }
         if (error instanceof Error) return new DaemonError(ERROR_CODES.INTERNAL, error.message);
         return new DaemonError(ERROR_CODES.INTERNAL, String(error));
     }

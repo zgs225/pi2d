@@ -39,6 +39,15 @@ describe("static file surface", () => {
         expect(await res.text()).toContain("<div id=app>");
     });
 
+    it("serves the SPA shell for pairing deep links", async () => {
+        for (const path of ["/pair/ABCD1234", "/pair"]) {
+            const res = await fetch(`${h.url}${path}`);
+            expect(res.status).toBe(200);
+            expect(res.headers.get("cache-control")).toBe("no-store");
+            expect(await res.text()).toContain("<div id=app>");
+        }
+    });
+
     it("returns 404 for a missing asset with an extension", async () => {
         const res = await fetch(`${h.url}/assets/missing-deadbeef.js`);
         expect(res.status).toBe(404);

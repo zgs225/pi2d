@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_PORT_RETRIES, main, parseDaemonArgs } from "../../src/cli/pi2d.js";
+import { acquireLock } from "../../src/cli/lock.js";
 import { readCliToken, tokenPerms, writeCliToken } from "../../src/cli/token.js";
 import { UsageError } from "../../src/cli/util.js";
-import { removeDir, tempDir } from "./helpers.js";
+import { PROTOCOL_VERSION } from "../../src/protocol/types.js";
+import { clearRuntimeEnv, removeDir, setRuntimeEnv, tempDir } from "./helpers.js";
 
 describe("parseDaemonArgs", () => {
     it("defaults to nothing set (foreground daemon, config defaults)", () => {
@@ -77,7 +79,6 @@ describe("local CLI token", () => {
     });
 
     afterEach(() => removeDir(dir));
-
     it("is 32 bytes of hex, written atomically with mode 0600", () => {
         const path = join(dir, "run", "cli.token");
         const token = writeCliToken(path);
@@ -108,5 +109,59 @@ describe("local CLI token", () => {
         chmodSync(path, 0o644);
         writeCliToken(path);
         expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
+});
+
+describe("pi2d singleton lock vs cli.token", () => {
+    let dir: string;
+    let tokenPath: string;
+
+    beforeEach(() => {
+        dir = tempDir("pi2d-main-lock-");
+        setRuntimeEnv(dir);
+        mkdirSync(join(dir, "web"), { recursive: true });
+        tokenPath = join(dir, "run", "cli.token");
+    });
+
+    afterEach(() => {
+        clearRuntimeEnv();
+        removeDir(dir);
+    });
+
+    function holdLock(): ReturnType<typeof acquireLock> {
+        return acquireLock({
+            payload: {
+                port: 0,
+                daemonId: "d-holder",
+                startedAt: Date.now(),
+                protocolVersion: PROTOCOL_VERSION,
+            },
+        });
+    }
+
+    it("does not rotate cli.token when another daemon holds the lock", async () => {
+        mkdirSync(join(dir, "run"), { recursive: true });
+        const original = writeCliToken(tokenPath);
+        const holder = holdLock();
+        try {
+            const err: string[] = [];
+            const code = await main([], { out: () => undefined, err: (line) => err.push(line) });
+            expect(code).toBe(1);
+            expect(err.join("\n")).toContain("another pi2d is running");
+            expect(readCliToken(tokenPath)).toBe(original);
+        } finally {
+            holder.release();
+        }
+    });
+
+    it("does not create cli.token before the lock is acquired", async () => {
+        const holder = holdLock();
+        try {
+            const code = await main([], { out: () => undefined, err: () => undefined });
+            expect(code).toBe(1);
+            expect(existsSync(tokenPath)).toBe(false);
+        } finally {
+            holder.release();
+        }
     });
 });

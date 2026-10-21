@@ -10,6 +10,7 @@ import { attachWsServer, type WsServerHandle } from "./ws.js";
 export interface WsServerOverrides {
     heartbeatMs?: number;
     authTimeoutMs?: number;
+    snapshotWaitMs?: number;
     maxBufferedBytes?: number;
     closeBufferedBytes?: number;
     maxConnections?: number;
@@ -82,6 +83,7 @@ export async function startServer(config: Config, deps: ServerDeps): Promise<Sta
         now: deps.now,
         heartbeatMs: wsOverrides.heartbeatMs ?? deps.heartbeatMs,
         authTimeoutMs: wsOverrides.authTimeoutMs,
+        snapshotWaitMs: wsOverrides.snapshotWaitMs,
         maxBufferedBytes: wsOverrides.maxBufferedBytes,
         closeBufferedBytes: wsOverrides.closeBufferedBytes,
         maxConnections: wsOverrides.maxConnections,

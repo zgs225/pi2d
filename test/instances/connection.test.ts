@@ -1,6 +1,7 @@
 import type { Socket } from "node:net";
 import { describe, expect, it, afterEach, beforeEach } from "vitest";
 import { daemonSocketPath } from "../../src/core/paths.js";
+import type { Entry } from "../../src/protocol/types.js";
 import { PluginSocketConnection } from "../../src/instances/connection.js";
 import { PluginServer } from "../../src/instances/plugin-server.js";
 import { makeSessionState } from "../daemon/fakes.js";
@@ -177,6 +178,85 @@ describe("PluginSocketConnection", () => {
         expect(asRecord(published.payload).event).toMatchObject({ type: "agent_start" });
         expect(connection.lastSeq("s1")).toBe(7);
         expect(connection.hasSession("s1")).toBe(true);
+    });
+
+    it("publishes snapshots onto the bus for browser fan-out", async () => {
+        const state = makeSessionState("s1", "ws-test");
+        client.send({
+            v: 1,
+            type: "snapshot",
+            sessionId: "s1",
+            epoch: "e1",
+            seq: 3,
+            ts: 1733234400999,
+            payload: { state },
+        });
+
+        const published = await waitFor(() => bus.published.find((record) => record.type === "snapshot"));
+        expect(published.v).toBe(1);
+        expect(published.workspaceId).toBe("ws-test");
+        expect(published.sessionId).toBe("s1");
+        expect(published.epoch).toBe("e1");
+        expect(published.seq).toBe(3);
+        expect(published.ts).toBe(1733234400999);
+        expect(asRecord(asRecord(published.payload).state).sessionId).toBe("s1");
+    });
+
+    it("keeps the plugin's `entries` tail next to the state it belongs to", async () => {
+        const state = makeSessionState("s1", "ws-test");
+        const entries: Entry[] = [
+            { id: "m1", role: "user", ts: 1, blocks: [{ type: "text", text: "hi" }], done: true },
+            { id: "m2", role: "assistant", ts: 2, blocks: [{ type: "text", text: "hello" }], done: true },
+        ];
+        client.send({
+            v: 1,
+            type: "snapshot",
+            sessionId: "s1",
+            epoch: "e1",
+            seq: 4,
+            payload: { state, entries },
+        });
+
+        const cached = await waitFor(() => connection.snapshotEntry("s1"));
+        expect(cached.entries).toEqual(entries);
+        expect(cached.state.sessionId).toBe("s1");
+        expect(connection.snapshot("s1")?.sessionId).toBe("s1");
+
+        const published = await waitFor(() => bus.published.find((record) => record.type === "snapshot"));
+        expect(asRecord(published.payload).entries).toEqual(entries);
+        expect(asRecord(asRecord(published.payload).state).sessionId).toBe("s1");
+    });
+
+    it("does not invent an `entries` tail for state-only snapshots", async () => {
+        const state = makeSessionState("s1", "ws-test");
+        client.send({
+            v: 1,
+            type: "snapshot",
+            sessionId: "s1",
+            epoch: "e1",
+            seq: 5,
+            payload: { state },
+        });
+
+        const cached = await waitFor(() => connection.snapshotEntry("s1"));
+        expect(cached.entries).toBeUndefined();
+        expect("entries" in cached).toBe(false);
+
+        const published = await waitFor(() => bus.published.find((record) => record.type === "snapshot"));
+        expect("entries" in asRecord(published.payload)).toBe(false);
+    });
+
+    it("drops the cached `entries` tail when the epoch changes", async () => {
+        const state = makeSessionState("s1", "ws-test");
+        const entries: Entry[] = [
+            { id: "m1", role: "user", ts: 1, blocks: [{ type: "text", text: "hi" }], done: true },
+        ];
+        client.send({ v: 1, type: "snapshot", sessionId: "s1", epoch: "e1", seq: 6, payload: { state, entries } });
+        await waitFor(() => connection.snapshotEntry("s1")?.entries !== undefined);
+
+        client.send({ v: 1, type: "snapshot", sessionId: "s1", epoch: "e2", seq: 1, payload: { state } });
+        await waitFor(() => connection.snapshotEntry("s1")?.epoch === "e2");
+        expect(connection.snapshotEntry("s1")?.entries).toBeUndefined();
     });
 
     it("tracks sessions reported by instance_state", async () => {

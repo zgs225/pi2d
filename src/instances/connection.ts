@@ -13,7 +13,7 @@
 import type { Socket } from "node:net";
 import type { Bus, Logger, PluginConnection } from "../core/interfaces.js";
 import { ERROR_CODES } from "../protocol/errors.js";
-import { PROTOCOL_VERSION, type SessionState } from "../protocol/types.js";
+import { PROTOCOL_VERSION, type Entry, type SessionState } from "../protocol/types.js";
 import { InstanceError, errorMessage } from "./errors.js";
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 25_000;
@@ -36,6 +36,11 @@ export interface SnapshotCacheEntry {
     epoch: string;
     seq: number;
     state: SessionState;
+    /**
+     * The plugin's `entries` tail sent next to `state` (docs/protocol.md §2).
+     * `undefined` when the plugin omitted it (state-only snapshot).
+     */
+    entries?: Entry[];
 }
 
 export interface PluginSocketConnectionOptions {
@@ -264,6 +269,7 @@ export class PluginSocketConnection implements PluginConnection {
         return this.sessions.has(sessionId);
     }
 
+    /** The full cached snapshot: `state` plus the plugin's optional `entries` tail. */
     snapshotEntry(sessionId: string): SnapshotCacheEntry | undefined {
         return this.snapshots.get(sessionId);
     }
@@ -392,6 +398,9 @@ export class PluginSocketConnection implements PluginConnection {
 
         const payload = isRecord(record.payload) ? record.payload : {};
         const state = isRecord(payload.state) ? (payload.state as unknown as SessionState) : undefined;
+        // docs/protocol.md §2: `snapshot` carries `{state, entries[]}` — the tail is
+        // authoritative plugin data, not something the daemon may drop.
+        const entries = Array.isArray(payload.entries) ? (payload.entries as Entry[]) : undefined;
 
         const cached = this.snapshots.get(sessionId);
         if (cached !== undefined && cached.epoch !== epoch) {
@@ -404,6 +413,20 @@ export class PluginSocketConnection implements PluginConnection {
             epoch,
             seq: previous !== undefined && previous.epoch === epoch ? Math.max(previous.seq, seq) : seq,
             state,
+            ...(entries === undefined ? {} : { entries }),
+        });
+
+        // Forward plugin snapshots so browsers subscribed to the session get the
+        // authoritative state (the WS server fans bus records out to subscribers).
+        this.bus.publish({
+            v: PROTOCOL_VERSION,
+            type: "snapshot",
+            workspaceId: this.workspaceId,
+            sessionId,
+            epoch,
+            seq,
+            ts: asNumber(record.ts) ?? this.now(),
+            payload,
         });
     }
 

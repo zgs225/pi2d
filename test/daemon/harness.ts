@@ -39,6 +39,7 @@ export interface HarnessOptions {
     wsOverrides?: {
         maxBufferedBytes?: number;
         closeBufferedBytes?: number;
+        snapshotWaitMs?: number;
         measureBufferedAmount?: (socket: unknown) => number;
     };
 }

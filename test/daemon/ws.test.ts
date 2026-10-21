@@ -1,10 +1,36 @@
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import type { Entry, SessionState } from "../../src/protocol/types.js";
 import { makeSessionState, makeWorkspaceInfo } from "./fakes.js";
+import type { FakeConnection } from "./fakes.js";
 import { createHarness, type Harness } from "./harness.js";
 
 type Record0 = Record<string, unknown> & { type?: string };
+
+/** A plugin snapshot payload (docs/protocol.md §2: `{state, entries[]}`). */
+type SnapshotPayload = { state: SessionState; entries?: Entry[] };
+
+/**
+ * `PluginSocketConnection` exposes the cached snapshot through `snapshotEntry`;
+ * the test fake only implements the frozen `snapshot` accessor, so the entries
+ * relay is exercised by attaching the richer accessor locally.
+ */
+function withSnapshotEntry(
+    conn: FakeConnection,
+    read: (sessionId: string) => SnapshotPayload | undefined,
+): void {
+    (conn as unknown as { snapshotEntry: (sessionId: string) => SnapshotPayload | undefined }).snapshotEntry =
+        read;
+}
+
+/** A short entries tail, the way the plugin sends one after `state`. */
+function makeEntryTail(): Entry[] {
+    return [
+        { id: "m1", role: "user", ts: 1, blocks: [{ type: "text", text: "hi" }], done: true },
+        { id: "m2", role: "assistant", ts: 2, blocks: [{ type: "text", text: "hello" }], done: true },
+    ];
+}
 
 class WsClient {
     readonly messages: Record0[] = [];
@@ -155,9 +181,155 @@ describe("WebSocket surface", () => {
         expect(snapshot.epoch).toBe("i-ws-1");
         expect(snapshot.seq).toBe(7);
         expect((snapshot.payload as { state: { sessionId: string } }).state.sessionId).toBe("s1");
+        // State-only plugin snapshots stay state-only: no invented `entries` tail.
+        expect(Object.keys(snapshot.payload as Record<string, unknown>)).toEqual(["state"]);
 
         expect(h.instances.ensureCalls).toContain("ws-1");
         expect(conn.subscribed.has("s1")).toBe(true);
+        await client.close();
+    });
+
+    it("relays the cached snapshot `entries` tail on subscribe", async () => {
+        await setup();
+        const conn = h.instances.get("ws-1")!;
+        const state = makeSessionState("s1", "ws-1");
+        const entries = makeEntryTail();
+        conn.snapshots.set("s1", state);
+        conn.seqs.set("s1", 7);
+        withSnapshotEntry(conn, (sessionId) => (sessionId === "s1" ? { state, entries } : undefined));
+
+        const client = await authedClient(h.wsUrl, token);
+        client.send({ type: "subscribe", payload: { sessionIds: ["s1"] } });
+
+        const snapshot = await client.next((message) => message.type === "snapshot");
+        const payload = snapshot.payload as SnapshotPayload;
+        expect(snapshot.epoch).toBe("i-ws-1");
+        expect(snapshot.seq).toBe(7);
+        expect(payload.state.sessionId).toBe("s1");
+        expect(payload.entries).toEqual(entries);
+        await client.close();
+    });
+
+    it("waits for the plugin snapshot when the cache is cold", async () => {
+        await setup();
+        const conn = h.instances.get("ws-1")!;
+        conn.seqs.set("s1", 4);
+        // The plugin replies to sub.subscribe asynchronously, after the client
+        // has already subscribed. The daemon must not return an empty subscribe.
+        conn.subscribe = (sessionId) => {
+            conn.subscribed.add(sessionId);
+            setTimeout(() => conn.snapshots.set(sessionId, makeSessionState(sessionId, "ws-1")), 40);
+        };
+
+        const client = await authedClient(h.wsUrl, token);
+        client.send({ type: "subscribe", payload: { sessionIds: ["s1"] } });
+
+        const snapshot = await client.next((message) => message.type === "snapshot", 3000);
+        expect(snapshot.sessionId).toBe("s1");
+        expect(snapshot.epoch).toBe("i-ws-1");
+        expect(snapshot.seq).toBe(4);
+        expect((snapshot.payload as { state: { sessionId: string } }).state.sessionId).toBe("s1");
+        expect(Object.keys(snapshot.payload as Record<string, unknown>)).toEqual(["state"]);
+        await client.close();
+    });
+
+    it("relays the `entries` tail for a cold subscribe", async () => {
+        await setup();
+        const conn = h.instances.get("ws-1")!;
+        const state = makeSessionState("s1", "ws-1");
+        const entries = makeEntryTail();
+        conn.seqs.set("s1", 4);
+        let reply: SnapshotPayload | undefined;
+        withSnapshotEntry(conn, (sessionId) => (sessionId === "s1" ? reply : undefined));
+        // The plugin answers `sub.subscribe` asynchronously with {state, entries}.
+        conn.subscribe = (sessionId) => {
+            conn.subscribed.add(sessionId);
+            setTimeout(() => {
+                conn.snapshots.set(sessionId, state);
+                reply = { state, entries };
+            }, 40);
+        };
+
+        const client = await authedClient(h.wsUrl, token);
+        client.send({ type: "subscribe", payload: { sessionIds: ["s1"] } });
+
+        const snapshot = await client.next((message) => message.type === "snapshot", 3000);
+        const payload = snapshot.payload as SnapshotPayload;
+        expect(snapshot.epoch).toBe("i-ws-1");
+        expect(snapshot.seq).toBe(4);
+        expect(payload.state.sessionId).toBe("s1");
+        expect(payload.entries).toEqual(entries);
+        await client.close();
+    });
+
+    it("forwards plugin snapshots published on the bus and dedupes the echo", async () => {
+        await setup();
+        const conn = h.instances.get("ws-1")!;
+        const initial = makeSessionState("s1", "ws-1");
+        conn.snapshots.set("s1", initial);
+        conn.seqs.set("s1", 3);
+
+        const client = await authedClient(h.wsUrl, token);
+        client.send({ type: "subscribe", payload: { sessionIds: ["s1"] } });
+        await client.next((message) => message.type === "snapshot");
+
+        const updated = { ...initial, name: "Renamed by plugin" };
+        const record = {
+            v: 1,
+            type: "snapshot",
+            workspaceId: "ws-1",
+            sessionId: "s1",
+            epoch: "i-ws-1",
+            seq: 5,
+            ts: 1,
+            payload: { state: updated },
+        };
+        h.bus.publish(record);
+        const snapshot = await client.next((message) => message.type === "snapshot" && message.seq === 5);
+        expect((snapshot.payload as { state: { name: string } }).state.name).toBe("Renamed by plugin");
+        expect(Object.keys(snapshot.payload as Record<string, unknown>)).toEqual(["state"]);
+
+        // The plugin also caches that snapshot, so a subsequent subscribe relay
+        // must not send the same (epoch, seq) twice.
+        conn.snapshots.set("s1", updated);
+        conn.seqs.set("s1", 5);
+        h.bus.publish(record);
+        await client.expectSilence();
+        await client.close();
+    });
+
+    it("forwards the `entries` tail of a snapshot published on the bus", async () => {
+        await setup();
+        const conn = h.instances.get("ws-1")!;
+        const initial = makeSessionState("s1", "ws-1");
+        conn.snapshots.set("s1", initial);
+        conn.seqs.set("s1", 3);
+
+        const client = await authedClient(h.wsUrl, token);
+        client.send({ type: "subscribe", payload: { sessionIds: ["s1"] } });
+        await client.next((message) => message.type === "snapshot");
+
+        const updated = { ...initial, name: "Renamed by plugin" };
+        const entries = makeEntryTail();
+        const record = {
+            v: 1,
+            type: "snapshot",
+            workspaceId: "ws-1",
+            sessionId: "s1",
+            epoch: "i-ws-1",
+            seq: 5,
+            ts: 1,
+            payload: { state: updated, entries },
+        };
+        h.bus.publish(record);
+        const snapshot = await client.next((message) => message.type === "snapshot" && message.seq === 5);
+        const payload = snapshot.payload as SnapshotPayload;
+        expect(payload.state.name).toBe("Renamed by plugin");
+        expect(payload.entries).toEqual(entries);
+
+        // Dedupe is still by (epoch, seq): the identical record is not re-sent.
+        h.bus.publish(record);
+        await client.expectSilence();
         await client.close();
     });
 

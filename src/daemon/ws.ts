@@ -8,8 +8,8 @@
 import type { Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import type { Bus, InstanceManager, Logger } from "../core/interfaces.js";
-import type { InstanceState, SessionState } from "../protocol/types.js";
+import type { Bus, InstanceManager, Logger, PluginConnection } from "../core/interfaces.js";
+import type { Entry, InstanceState, SessionState } from "../protocol/types.js";
 import { ERROR_CODES, errorBody } from "../protocol/errors.js";
 import { isAllowedOrigin, type AuthStore, type DevicePublic } from "./auth.js";
 import type { Config } from "../config.js";
@@ -29,6 +29,9 @@ const SERVER_TYPES = new Set([
 const CLOSE_UNAUTHORIZED = 4401;
 const CLOSE_BAD_MESSAGE = 4400;
 const CLOSE_TRY_AGAIN = 1013;
+/** How long a fresh subscription waits for the plugin's `snapshot`. */
+export const DEFAULT_SNAPSHOT_WAIT_MS = 1_500;
+const SNAPSHOT_POLL_MS = 20;
 
 export interface WsServerOptions {
     server: Server;
@@ -41,6 +44,7 @@ export interface WsServerOptions {
     now?: () => number;
     heartbeatMs?: number;
     authTimeoutMs?: number;
+    snapshotWaitMs?: number;
     maxBufferedBytes?: number;
     closeBufferedBytes?: number;
     maxConnections?: number;
@@ -66,9 +70,46 @@ interface ClientState {
     authenticated: boolean;
     workspaceIds: Set<string>;
     sessionWorkspaces: Map<string, string>;
+    /** Last snapshot (epoch, seq) sent, so a bus echo is not duplicated. */
+    snapshotsSent: Map<string, { epoch: string; seq: number }>;
     alive: boolean;
     dropped: boolean;
     authTimer: NodeJS.Timeout | undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.unref?.();
+    });
+}
+
+/** Cached snapshot: `state` plus the plugin's optional `entries` tail (docs/protocol.md §2). */
+interface CachedSnapshot {
+    state: SessionState;
+    entries?: Entry[];
+}
+
+/**
+ * `PluginSocketConnection` caches the whole plugin snapshot, but the frozen
+ * `PluginConnection` interface only exposes `state`. Duck-type the richer
+ * accessor so the documented `entries` tail survives the relay to browsers;
+ * implementations without it simply relay state.
+ */
+function readSnapshot(connection: PluginConnection, sessionId: string): CachedSnapshot | undefined {
+    const richer = connection as PluginConnection & {
+        snapshotEntry?: (id: string) => { state: SessionState; entries?: Entry[] } | undefined;
+    };
+    const entry = richer.snapshotEntry?.(sessionId);
+    if (entry !== undefined) {
+        return { state: entry.state, ...(entry.entries === undefined ? {} : { entries: entry.entries }) };
+    }
+    const state = connection.snapshot(sessionId);
+    return state === undefined ? undefined : { state };
 }
 
 function writeUpgradeRejection(socket: Duplex, status: number, code: string, message: string): void {
@@ -102,6 +143,7 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
         now = Date.now,
         heartbeatMs = 30_000,
         authTimeoutMs = 10_000,
+        snapshotWaitMs = DEFAULT_SNAPSHOT_WAIT_MS,
         maxBufferedBytes = 4 * 1024 * 1024,
         closeBufferedBytes = 8 * 1024 * 1024,
         maxConnections = config.limits.maxConnections,
@@ -185,6 +227,7 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
     const releaseSession = (state: ClientState, sessionId: string): void => {
         const workspaceId = state.sessionWorkspaces.get(sessionId);
         state.sessionWorkspaces.delete(sessionId);
+        state.snapshotsSent.delete(sessionId);
         if (!workspaceId) return;
         const others = [...clients].some(
             (other) => other !== state && other.authenticated && other.sessionWorkspaces.has(sessionId),
@@ -205,8 +248,11 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
         sessionId: string,
         epoch: string,
         seq: number,
-        snapshot: SessionState,
+        snapshot: CachedSnapshot,
     ): void => {
+        const previous = state.snapshotsSent.get(sessionId);
+        if (previous !== undefined && previous.epoch === epoch && previous.seq === seq) return;
+        state.snapshotsSent.set(sessionId, { epoch, seq });
         send(state, {
             v: 1,
             type: "snapshot",
@@ -214,8 +260,32 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
             epoch,
             seq,
             ts: now(),
-            payload: { state: snapshot },
+            // docs/protocol.md §2: a snapshot payload is `{state, entries[]}`. The
+            // tail is relayed verbatim and only omitted when the plugin omitted it.
+            payload:
+                snapshot.entries === undefined
+                    ? { state: snapshot.state }
+                    : { state: snapshot.state, entries: snapshot.entries },
         });
+    };
+
+    /**
+     * The plugin answers every `sub.subscribe` with a snapshot, but the reply is
+     * asynchronous. A fresh browser subscription therefore polls the connection
+     * cache briefly instead of returning no state at all (the first-subscribe bug).
+     */
+    const waitForSnapshot = async (
+        connection: PluginConnection,
+        sessionId: string,
+        timeoutMs: number,
+    ): Promise<CachedSnapshot | undefined> => {
+        const attempts = Math.max(1, Math.ceil(timeoutMs / SNAPSHOT_POLL_MS));
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            const snapshot = readSnapshot(connection, sessionId);
+            if (snapshot !== undefined) return snapshot;
+            if (attempt < attempts - 1) await delay(SNAPSHOT_POLL_MS);
+        }
+        return readSnapshot(connection, sessionId);
     };
 
     const subscribeSession = async (
@@ -258,8 +328,19 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
                 return;
             }
         }
-        const snapshot = connection.snapshot(sessionId);
-        if (snapshot) sendSnapshot(state, sessionId, epoch, lastSeq, snapshot);
+        const cached = readSnapshot(connection, sessionId);
+        if (cached) {
+            sendSnapshot(state, sessionId, epoch, lastSeq, cached);
+            return;
+        }
+
+        const snapshot = await waitForSnapshot(connection, sessionId, snapshotWaitMs);
+        if (snapshot === undefined) {
+            logger?.debug("no plugin snapshot after subscribe", { sessionId, workspaceId });
+            return;
+        }
+        // The cache may have advanced (or the epoch changed) while we waited.
+        sendSnapshot(state, sessionId, epochFor(workspaceId, instanceState), connection.lastSeq(sessionId), snapshot);
     };
 
     const subscribe = async (state: ClientState, payload: Record<string, unknown>): Promise<void> => {
@@ -421,6 +502,7 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
                 authenticated: device !== null,
                 workspaceIds: new Set(),
                 sessionWorkspaces: new Map(),
+                snapshotsSent: new Map(),
                 alive: true,
                 dropped: false,
                 authTimer: undefined,
@@ -475,7 +557,29 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
             if (!state.authenticated) continue;
             const sessionMatch = sessionId !== undefined && state.sessionWorkspaces.has(sessionId);
             const workspaceMatch = workspaceId !== undefined && state.workspaceIds.has(workspaceId);
-            if (sessionMatch || workspaceMatch) sendEvent(state, record);
+            if (!sessionMatch && !workspaceMatch) continue;
+
+            // The plugin's snapshot (published by PluginSocketConnection) is state,
+            // not an event: deliver it through the snapshot path so the client
+            // render cache is replaced rather than replayed as a delta.
+            if (type === "snapshot" && sessionId !== undefined) {
+                const payload = isRecord(record.payload) ? record.payload : {};
+                const snapshot = isRecord(payload.state) ? (payload.state as unknown as SessionState) : undefined;
+                if (snapshot !== undefined) {
+                    // The plugin's `entries` tail rides along with the state it
+                    // belongs to; dropping it would break the documented payload.
+                    const entries = Array.isArray(payload.entries) ? (payload.entries as Entry[]) : undefined;
+                    const relayed: CachedSnapshot =
+                        entries === undefined ? { state: snapshot } : { state: snapshot, entries };
+                    const fallbackWorkspace = workspaceId ?? state.sessionWorkspaces.get(sessionId) ?? "";
+                    const epoch =
+                        typeof record.epoch === "string" ? record.epoch : epochFor(fallbackWorkspace, undefined);
+                    const seq = typeof record.seq === "number" ? record.seq : 0;
+                    sendSnapshot(state, sessionId, epoch, seq, relayed);
+                    continue;
+                }
+            }
+            sendEvent(state, record);
         }
     });
 

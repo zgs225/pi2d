@@ -83,8 +83,10 @@ Flags:
 Flags are applied to the environment before the config is loaded, so
 `--port 8000` is equivalent to `PI2_PORT=8000`.
 
-Daemon startup order: mint `cli.token` → take `daemon.lock` → start the plugin
+Daemon startup order: take `daemon.lock` → mint `cli.token` → start the plugin
 unix socket → listen (with port retry) → write `daemon.json` → print the line.
+The token is rotated only by the process that owns the lock, so a rejected
+second daemon cannot invalidate the running one.
 
 ## 4. Configuration
 
@@ -287,7 +289,11 @@ For a login-less service to keep running on Linux enable linger
   `Environment=` line) .
 - Managed nvim output: `PI2_STATE_DIR/instances/<instanceId>.log`.
 - `GET /api/v1/health` → `{ok, items:[{name, ok, detail}]}` (`instances`,
-  `workspaces`, `auth`, `static`).
+  `workspaces`, `auth`, `static`). `instances` fails when a managed instance is
+  `degraded`; `workspaces` fails when every known workspace path is gone (ghost
+  discovery entries are normal and only shown in `detail`); `auth` fails when
+  there is neither an active device nor a local `cli.token`; `static` fails when
+  `PI2_STATIC_DIR` is missing.
 - `GET /api/v1/diagnostics` → uptime, connection count, event rate, slow
   queries, device/workspace/instance counts.
 - `GET /api/v1/resources` → per-instance RSS, total vs physical memory, soft

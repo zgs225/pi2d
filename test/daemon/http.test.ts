@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import * as os from "node:os";
 import { makeSessionState, makeWorkspaceInfo } from "./fakes.js";
 import { createHarness, TEST_LIMITS, type Harness } from "./harness.js";
 import { DaemonError } from "../../src/daemon/errors.js";
 import { ERROR_CODES } from "../../src/protocol/errors.js";
+import { WorkspaceError } from "../../src/workspaces/errors.js";
 
 describe("HTTP API", () => {
     let h: Harness;
@@ -41,6 +43,13 @@ describe("HTTP API", () => {
         expect(body.daemonId).toBe("d-test");
         expect(body.machineId).toBe("m-test");
         expect(body.limits).toEqual(TEST_LIMITS);
+        expect(body.hostname).toBe(os.hostname());
+        expect(body.os).toBe(`${os.platform()} ${os.release()}`);
+        expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
+        expect(body.uptimeMs).toBeTypeOf("number");
+        expect(body.uptimeMs as number).toBeGreaterThanOrEqual(0);
+        expect(body.pid).toBe(process.pid);
+        expect(body.port).toBe(h.server.port);
 
         const health = await fetch(`${h.url}/api/v1/health`);
         expect(health.status).toBe(200);
@@ -48,6 +57,49 @@ describe("HTTP API", () => {
         expect(healthBody.ok).toBe(true);
         expect(healthBody.items.length).toBeGreaterThan(0);
         expect(healthBody.items.every((item) => item.ok)).toBe(true);
+    });
+
+    it("reflects degraded instances and missing workspaces in health items", async () => {
+        h.instances.states.get("ws-1")!.status = "degraded";
+        h.workspaces.workspaces.get("ws-1")!.exists = false;
+
+        const res = await fetch(`${h.url}/api/v1/health`);
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+            ok: boolean;
+            items: { name: string; ok: boolean; detail: string }[];
+        };
+        expect(body.ok).toBe(false);
+        expect(body.items.find((item) => item.name === "instances")).toMatchObject({ ok: false });
+        expect(body.items.find((item) => item.name === "instances")?.detail).toContain("degraded");
+        expect(body.items.find((item) => item.name === "workspaces")).toMatchObject({ ok: false });
+        expect(body.items.find((item) => item.name === "workspaces")?.detail).toContain("missing");
+        expect(body.items.find((item) => item.name === "auth")?.ok).toBe(true);
+    });
+
+    it("stays healthy when some discovered workspaces are ghosts", async () => {
+        h.workspaces.workspaces.set("ws-2", makeWorkspaceInfo("ws-2", { exists: false }));
+
+        const res = await fetch(`${h.url}/api/v1/health`);
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { items: { name: string; ok: boolean; detail: string }[] };
+        const workspaces = body.items.find((item) => item.name === "workspaces");
+        expect(workspaces?.ok).toBe(true);
+        expect(workspaces?.detail).toContain("1 missing");
+    });
+
+    it("marks auth unhealthy without a device token or local CLI token", async () => {
+        const bare = await createHarness();
+        try {
+            const res = await fetch(`${bare.url}/api/v1/health`);
+            expect(res.status).toBe(200);
+            const body = (await res.json()) as { ok: boolean; items: { name: string; ok: boolean; detail: string }[] };
+            const authItem = body.items.find((item) => item.name === "auth");
+            expect(authItem?.ok).toBe(false);
+            expect(authItem?.detail).toContain("0 devices");
+        } finally {
+            await bare.cleanup();
+        }
     });
 
     it("requires a bearer token for all other API reads", async () => {
@@ -158,6 +210,24 @@ describe("HTTP API", () => {
         expect(body.retryable).toBe(false);
     });
 
+    it("returns 403 E_FORBIDDEN when workspace.add is outside the allowed roots", async () => {
+        h.workspaces.add = async () => {
+            throw new WorkspaceError(
+                ERROR_CODES.FORBIDDEN,
+                "workspace path is outside the allowed roots: /etc",
+            );
+        };
+        const res = await fetch(
+            `${h.url}/api/v1/cmd`,
+            authed({ method: "POST", body: JSON.stringify({ method: "workspace.add", params: { cwd: "/etc" } }) }),
+        );
+        expect(res.status).toBe(403);
+        const body = (await res.json()) as { code: string; retryable: boolean; message: string };
+        expect(body.code).toBe(ERROR_CODES.FORBIDDEN);
+        expect(body.retryable).toBe(false);
+        expect(body.message).toContain("outside the allowed roots");
+    });
+
     it("enforces the body limit", async () => {
         const small = await createHarness({ config: { limits: { ...TEST_LIMITS, maxBodyBytes: 16 } } });
         try {
@@ -238,6 +308,7 @@ describe("HTTP API", () => {
         const list = await fetch(`${h.url}/api/v1/devices`, authed());
         expect(list.status).toBe(200);
         const devices = (await list.json()) as { id: string; tokenHash?: string }[];
+        expect(Array.isArray(devices)).toBe(true);
         expect(devices).toHaveLength(1);
         expect(devices[0]!.tokenHash).toBeUndefined();
 

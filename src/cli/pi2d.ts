@@ -4,8 +4,9 @@
  *
  * Responsibilities (and nothing else):
  *   1. parse args / apply `--port|--host|--static-dir` to the config env
- *   2. mint `<runtime>/cli.token` (32-byte hex, 0600) for local CLI access
- *   3. take the singleton lock (`<runtime>/daemon.lock`, stale-aware, `--force`)
+ *   2. take the singleton lock (`<runtime>/daemon.lock`, stale-aware, `--force`)
+ *   3. only once the lock is ours, mint `<runtime>/cli.token` (32-byte hex, 0600)
+ *      for local CLI access — a second daemon must never rotate the live token
  *   4. wire the real dependencies and listen (port 0 allowed, +1..+9 on a busy
  *      default port), then publish `<runtime>/daemon.json`
  *   5. print exactly one line: `pi2d listening on http://host:port`
@@ -177,7 +178,6 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
     try {
         const runtime = runtimeDir();
         ensureDir(runtime, 0o700);
-        writeCliToken(cliTokenPath(runtime));
 
         const daemonId = `d-${randomUUID()}`;
         lock = acquireLock({
@@ -189,6 +189,9 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
                 protocolVersion: PROTOCOL_VERSION,
             },
         });
+        // Rotate the local CLI token only when this process owns the lock:
+        // otherwise a rejected second daemon would invalidate the live one.
+        writeCliToken(cliTokenPath(runtime));
 
         wired = await wireDaemon({ config, runtime, logger, daemonId });
         server = await wired.start({

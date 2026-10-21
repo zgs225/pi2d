@@ -1,5 +1,7 @@
 /** Hono application factory for the daemon HTTP surface. */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { hostname as osHostname, platform as osPlatform, release as osRelease } from "node:os";
+import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import type { HttpBindings } from "@hono/node-server";
 import type { Bus, InstanceManager, Logger, WorkspaceStore } from "../core/interfaces.js";
@@ -46,6 +48,17 @@ function bearer(c: Context<Env>): string | undefined {
 function isLoopback(c: Context<Env>): boolean {
     const address = c.env?.incoming?.socket?.remoteAddress;
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+/** Daemon package version; falls back to the v1 baseline when package.json is unavailable. */
+function daemonVersion(): string {
+    try {
+        const file = fileURLToPath(new URL("../../package.json", import.meta.url));
+        const parsed = JSON.parse(readFileSync(file, "utf8")) as { version?: unknown };
+        return typeof parsed.version === "string" && parsed.version.trim() !== "" ? parsed.version : "0.1.0";
+    } catch {
+        return "0.1.0";
+    }
 }
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -155,16 +168,51 @@ export function createApp(deps: AppDeps): Hono<Env> {
             daemonId: deps.daemonId,
             machineId: deps.machineId ?? deps.daemonId,
             platform: process.platform,
+            hostname: osHostname(),
+            os: `${osPlatform()} ${osRelease()}`,
+            version: daemonVersion(),
+            uptimeMs: Math.max(0, now() - startedAt),
+            pid: process.pid,
+            port: config.port,
             capabilities: ["ws", "sse", "devices", "attention"],
             limits: config.limits,
         }),
     );
 
     const health = (c: Context<Env>) => {
+        const instanceStates = instances.list();
+        const degraded = instanceStates.filter((instance) => instance.status === "degraded");
+        const workspaceList = workspaces.list();
+        const present = workspaceList.filter((workspace) => workspace.exists).length;
+        const missing = workspaceList.length - present;
+        const activeDevices = auth.listDevices().filter((device) => device.revokedAt === null).length;
+        const localToken =
+            auth.localTokenPath !== undefined && auth.localTokenPath !== "" && existsSync(auth.localTokenPath);
         const items = [
-            { name: "instances", ok: true, detail: `${instances.list().length} connected` },
-            { name: "workspaces", ok: true, detail: `${workspaces.list().length} registered` },
-            { name: "auth", ok: true, detail: `${auth.listDevices().length} devices` },
+            {
+                name: "instances",
+                ok: degraded.length === 0,
+                detail:
+                    degraded.length === 0
+                        ? `${instanceStates.length} connected`
+                        : `${degraded.length} degraded of ${instanceStates.length}`,
+            },
+            {
+                name: "workspaces",
+                // Discovery intentionally keeps ghost entries for old sessions, so a
+                // few missing cwds are normal. Healthy means at least one known
+                // workspace is still usable (or none are registered yet).
+                ok: workspaceList.length === 0 || present > 0,
+                detail:
+                    missing === 0
+                        ? `${workspaceList.length} registered`
+                        : `${present} of ${workspaceList.length} present (${missing} missing)`,
+            },
+            {
+                name: "auth",
+                ok: activeDevices > 0 || localToken,
+                detail: `${activeDevices} devices${localToken ? " + local token" : ""}`,
+            },
             { name: "static", ok: existsSync(config.staticDir), detail: config.staticDir },
         ];
         return c.json({ ok: items.every((item) => item.ok), items });

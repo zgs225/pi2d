@@ -79,7 +79,7 @@ Plugin obligations:
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/v1/info` | `{v, daemonId, machineId, platform, capabilities, limits}` |
+| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}` |
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` |
@@ -110,6 +110,10 @@ Client → server: `{"type":"subscribe","payload":{"workspaceId":"ws-1"}}` (work
 
 Server → client (same envelope as above): `hello_ack`, `instance_state`, `workspace_update`, `snapshot`,
 `event`, `presence`, `resync_required`, `dropped`, `error`.
+
+A session `subscribe` is answered with a `snapshot` as soon as the plugin's reply
+arrives (the daemon waits briefly for the plugin's `sub.subscribe` snapshot and also
+forwards every later plugin snapshot to current subscribers).
 
 `GET /events` (SSE) emits the same `event` records for degraded transports.
 
@@ -212,7 +216,7 @@ browser cmd(sessionId=s1)
 |---|---|---|
 | `E_BAD_REQUEST` | 400 | malformed JSON / missing field |
 | `E_UNAUTHORIZED` | 401 | missing/invalid device token |
-| `E_FORBIDDEN` | 403 | bad `Origin`, insufficient scope |
+| `E_FORBIDDEN` | 403 | bad `Origin`, insufficient scope, cwd outside `PI2_WORKSPACE_ROOTS` |
 | `E_NOT_FOUND` | 404 | unknown workspace/session/instance |
 | `E_PROTOCOL_VERSION` | 426 | `v` unsupported |
 | `E_PAYLOAD_TOO_LARGE` | 413 | body/frame > limits |

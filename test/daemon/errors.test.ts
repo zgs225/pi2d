@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DaemonError, isRetryableCode, statusForCode, toErrorPayload } from "../../src/daemon/errors.js";
+import { InstanceError } from "../../src/instances/errors.js";
 import { ERROR_CODES } from "../../src/protocol/errors.js";
+import { WorkspaceError } from "../../src/workspaces/errors.js";
 
 describe("protocol error mapping", () => {
     const expected: [string, number][] = [
@@ -42,5 +44,28 @@ describe("protocol error mapping", () => {
 
         const forbidden = new DaemonError(ERROR_CODES.FORBIDDEN, "nope", { details: { origin: "x" } });
         expect(toErrorPayload(forbidden).body).toMatchObject({ code: ERROR_CODES.FORBIDDEN, details: { origin: "x" } });
+    });
+
+    it("preserves protocol codes raised by the workspace and instance layers", () => {
+        const outside = new WorkspaceError(ERROR_CODES.FORBIDDEN, "workspace path is outside the allowed roots: /etc");
+        expect(toErrorPayload(outside)).toMatchObject({
+            status: 403,
+            body: { code: ERROR_CODES.FORBIDDEN, retryable: false },
+        });
+
+        const missing = new WorkspaceError(ERROR_CODES.NOT_FOUND, "cwd does not exist: /nope");
+        expect(toErrorPayload(missing).status).toBe(404);
+
+        const unavailable = new InstanceError(ERROR_CODES.INSTANCE_UNAVAILABLE, "no instance", true, {
+            workspaceId: "ws-1",
+        });
+        expect(toErrorPayload(unavailable)).toMatchObject({
+            status: 503,
+            body: { code: ERROR_CODES.INSTANCE_UNAVAILABLE, retryable: true, details: { workspaceId: "ws-1" } },
+        });
+
+        // Node errno codes must not be mistaken for protocol codes.
+        const errno = Object.assign(new Error("no such file"), { code: "ENOENT" });
+        expect(toErrorPayload(errno).body.code).toBe(ERROR_CODES.INTERNAL);
     });
 });
