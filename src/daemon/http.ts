@@ -187,7 +187,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
         if (before !== undefined) params.before = before;
         const limit = Number(c.req.query("limit"));
         if (Number.isFinite(limit) && limit > 0) params.limit = Math.min(500, Math.floor(limit));
-        const ack = await router.relaySessionQuery(c.req.param("sid"), "session.entries", params);
+        const ack = await router.relaySessionQuery(c.req.param("sid"), "workspace.query", {
+            ...params,
+            kind: "entries",
+        });
         return json(200, ack);
     });
 

@@ -28,7 +28,7 @@ export interface PluginConnection {
     command(
         cmd: { id: string; sessionId?: string; method: string; params?: Record<string, unknown>; clientRequestId?: string },
         timeoutMs?: number,
-    ): Promise<{ seq?: number; disposition?: string }>;
+    ): Promise<{ seq?: number; disposition?: string } & Record<string, unknown>>;
     subscribe(sessionId: string): void;
     unsubscribe(sessionId: string): void;
     /** Last snapshot received for a session (render cache, may be undefined). */

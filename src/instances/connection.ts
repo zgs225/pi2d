@@ -60,6 +60,8 @@ export interface CommandRequest {
 export interface CommandAck {
     seq?: number;
     disposition?: string;
+    /** Command result fields (the plugin's `ack.payload`), spread for callers. */
+    [key: string]: unknown;
 }
 
 interface PendingCommand {
@@ -355,6 +357,7 @@ export class PluginSocketConnection implements PluginConnection {
         clearTimeout(pending.timer);
         const disposition = asString(payload.disposition);
         pending.resolve({
+            ...payload,
             ...(seq === undefined ? {} : { seq }),
             ...(disposition === undefined ? {} : { disposition }),
         });
