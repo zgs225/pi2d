@@ -1,0 +1,53 @@
+{
+  "sessionId": "error-abort-compaction",
+  "workspaceId": "ws-fixture",
+  "cwd": "/repo",
+  "name": null,
+  "status": "exited",
+  "flags": {
+    "attention": false,
+    "done": false,
+    "error": true
+  },
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5"
+  },
+  "thinking": "off",
+  "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": 0
+  },
+  "contextUsage": null,
+  "queue": [],
+  "todos": [],
+  "tasks": [],
+  "batches": [],
+  "subagents": [],
+  "attention": [],
+  "entries": [
+    {
+      "id": "m1",
+      "role": "assistant",
+      "ts": 3002,
+      "blocks": [
+        {
+          "type": "text",
+          "text": "partial answer"
+        },
+        {
+          "type": "error",
+          "text": "Aborted by user"
+        },
+        {
+          "type": "error",
+          "text": "Aborted by user"
+        }
+      ],
+      "done": false
+    }
+  ]
+}

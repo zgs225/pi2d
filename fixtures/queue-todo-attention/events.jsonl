@@ -1,0 +1,10 @@
+{"type":"pi2:session","ts":2000,"session":{"status":"busy","cwd":"/repo","model":{"provider":"anthropic","id":"claude-sonnet-4-5"},"thinking":"high","contextUsage":{"tokens":1234,"window":200000,"percent":0.6}}}
+{"type":"session_info_changed","ts":2001,"name":"Refactor auth"}
+{"type":"queue_update","ts":2002,"steering":["use pnpm"],"followUp":["then run the tests"]}
+{"type":"pi2:todo","ts":2003,"todos":[{"content":"read auth.ts","status":"completed","activeForm":"reading auth.ts"},{"content":"refactor","status":"in_progress","activeForm":"refactoring"},{"content":"test","status":"pending"}],"completed":1,"total":3}
+{"type":"pi2:batch","ts":2004,"batchId":"b1","status":"running","items":[{"ref":"0","name":"audit","status":"ok"},{"ref":"1","name":"refactor","status":"running"}],"summary":{"total":2,"done":1,"ok":1,"failed":0,"cancelled":0,"running":1}}
+{"type":"pi2:task","ts":2005,"task":{"id":"t1","command":"pnpm test","status":"running","startTime":2005}}
+{"type":"pi2:subagents","ts":2006,"subagents":[{"id":"s2","name":"audit","status":"completed","model":"claude-sonnet-4-5"},{"id":"s3","name":"refactor","status":"active","model":"deepseek-v4.1"}],"parentId":"s1"}
+{"type":"pi2:attention_request","ts":2007,"requestId":"att1","method":"select","title":"Apply diff?","message":"3 files changed","options":[{"id":"accept","label":"Accept"},{"id":"reject","label":"Reject"}],"timeoutSec":120}
+{"type":"pi2:attention_resolved","ts":2008,"requestId":"att1","by":{"clientId":"c1","kind":"web"},"response":{"id":"accept"}}
+{"type":"agent_settled","ts":2010,"aborted":false}

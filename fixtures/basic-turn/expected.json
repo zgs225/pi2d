@@ -1,0 +1,79 @@
+{
+  "sessionId": "basic-turn",
+  "workspaceId": "ws-fixture",
+  "cwd": "/repo",
+  "name": null,
+  "status": "idle",
+  "flags": {
+    "attention": false,
+    "done": true,
+    "error": false
+  },
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5"
+  },
+  "thinking": "medium",
+  "usage": {
+    "input": 100,
+    "output": 20,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": 0.003
+  },
+  "contextUsage": {
+    "tokens": 1200,
+    "window": 200000,
+    "percent": 0.6
+  },
+  "queue": [],
+  "todos": [],
+  "tasks": [],
+  "batches": [],
+  "subagents": [],
+  "attention": [],
+  "entries": [
+    {
+      "id": "m1",
+      "role": "user",
+      "ts": 1012,
+      "blocks": [
+        {
+          "type": "text",
+          "text": "List the files"
+        }
+      ],
+      "done": true
+    },
+    {
+      "id": "m2",
+      "role": "assistant",
+      "ts": 1014,
+      "blocks": [
+        {
+          "type": "thinking",
+          "text": "I should list files."
+        },
+        {
+          "type": "text",
+          "text": "Let me list them."
+        },
+        {
+          "type": "tool",
+          "toolCallId": "call_1",
+          "name": "bash",
+          "state": "done",
+          "args": {
+            "command": "ls"
+          },
+          "output": {
+            "text": "a.txt\nb.txt",
+            "details": {}
+          },
+          "durationMs": 9
+        }
+      ],
+      "done": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{"type":"pi2:session","ts":3000,"session":{"status":"idle","cwd":"/repo","model":{"provider":"anthropic","id":"claude-sonnet-4-5"},"thinking":"off"}}
+{"type":"agent_start","ts":3001}
+{"type":"message_start","ts":3002,"message":{"role":"assistant","content":[],"timestamp":3002}}
+{"type":"message_update","ts":3003,"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","ts":3004,"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"partial answer"}}
+{"type":"message_update","ts":3005,"assistantMessageEvent":{"type":"error","reason":"aborted","error":"Aborted by user"}}
+{"type":"pi2:error","ts":3006,"message":"Aborted by user"}
+{"type":"agent_settled","ts":3007,"aborted":true}
+{"type":"compaction_start","ts":3010,"reason":"manual"}
+{"type":"compaction_end","ts":3020,"reason":"manual","success":true}
+{"type":"pi2:process_exit","ts":3030,"code":0,"signal":null}

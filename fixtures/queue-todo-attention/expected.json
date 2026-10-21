@@ -1,0 +1,107 @@
+{
+  "sessionId": "queue-todo-attention",
+  "workspaceId": "ws-fixture",
+  "cwd": "/repo",
+  "name": "Refactor auth",
+  "status": "idle",
+  "flags": {
+    "attention": false,
+    "done": true,
+    "error": false
+  },
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5"
+  },
+  "thinking": "high",
+  "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": 0
+  },
+  "contextUsage": {
+    "tokens": 1234,
+    "window": 200000,
+    "percent": 0.6
+  },
+  "queue": [
+    {
+      "id": "q:steer:0",
+      "text": "use pnpm",
+      "steer": true
+    },
+    {
+      "id": "q:follow:0",
+      "text": "then run the tests",
+      "steer": false
+    }
+  ],
+  "todos": [
+    {
+      "content": "read auth.ts",
+      "status": "completed",
+      "activeForm": "reading auth.ts"
+    },
+    {
+      "content": "refactor",
+      "status": "in_progress",
+      "activeForm": "refactoring"
+    },
+    {
+      "content": "test",
+      "status": "pending"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "command": "pnpm test",
+      "status": "running",
+      "startTime": 2005
+    }
+  ],
+  "batches": [
+    {
+      "batchId": "b1",
+      "status": "running",
+      "items": [
+        {
+          "ref": "0",
+          "name": "audit",
+          "status": "ok"
+        },
+        {
+          "ref": "1",
+          "name": "refactor",
+          "status": "running"
+        }
+      ],
+      "summary": {
+        "total": 2,
+        "done": 1,
+        "ok": 1,
+        "failed": 0,
+        "cancelled": 0,
+        "running": 1
+      }
+    }
+  ],
+  "subagents": [
+    {
+      "id": "s2",
+      "name": "audit",
+      "status": "completed",
+      "model": "claude-sonnet-4-5"
+    },
+    {
+      "id": "s3",
+      "name": "refactor",
+      "status": "active",
+      "model": "deepseek-v4.1"
+    }
+  ],
+  "attention": [],
+  "entries": []
+}
