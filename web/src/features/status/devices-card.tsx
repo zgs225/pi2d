@@ -1,0 +1,111 @@
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+
+import { Icon, type IconName } from "@/components/icons";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { RelativeTime } from "@/components/shared/relative-time";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import type { DeviceEntry } from "@/features/status/queries";
+
+import { ErrorBlock, LoadingBlock, StatusCard, StatusEmpty } from "./card-parts";
+
+const KIND_ICON: Record<string, IconName> = {
+    phone: "phone",
+    tablet: "tablet",
+    laptop: "laptop",
+};
+
+function scopeTone(scope: string): "default" | "info" | "ok" {
+    if (scope === "read") return "default";
+    if (scope === "steer") return "info";
+    if (scope === "apply") return "ok";
+    return "default";
+}
+
+export function deviceKey(device: DeviceEntry): string {
+    return device.id || device.deviceId || device.name;
+}
+
+export interface DevicesCardProps {
+    devices: DeviceEntry[];
+    loading: boolean;
+    error: string | null;
+    onRetry: () => void;
+    onRevoke: (device: DeviceEntry) => Promise<void>;
+}
+
+/** Card 6 — paired devices with kind icon, scopes, last active and confirm-revoke. */
+export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: DevicesCardProps) {
+    const { t } = useTranslation();
+    const [target, setTarget] = useState<DeviceEntry | null>(null);
+    const visible = devices.filter((device) => !device.revokedAt);
+
+    async function confirm() {
+        if (!target) return;
+        await onRevoke(target);
+        setTarget(null);
+    }
+
+    return (
+        <StatusCard
+            title={t("status.devices")}
+            icon="phone"
+            headExtra={<span className="card__sub">{t("status.deviceCount", { n: visible.length })}</span>}
+        >
+            {error ? (
+                <ErrorBlock message={error} onRetry={onRetry} />
+            ) : loading ? (
+                <LoadingBlock rows={3} />
+            ) : visible.length === 0 ? (
+                <StatusEmpty icon="phone" title={t("status.noDevicesTitle")} text={t("status.noDevicesText")} />
+            ) : (
+                <div className="device-list">
+                    {visible.map((device) => {
+                        const scopes = Array.isArray(device.scopes) ? device.scopes : [];
+                        return (
+                            <div className="device-row" key={deviceKey(device)}>
+                                <span className="device-icon">
+                                    <Icon name={KIND_ICON[device.kind] ?? "phone"} />
+                                </span>
+                                <div className="grow device-main">
+                                    <div className="device-name truncate">{device.name}</div>
+                                    <div className="device-badges">
+                                        {scopes.map((scope) => (
+                                            <Badge key={scope} tone={scopeTone(scope)}>
+                                                {scope}
+                                            </Badge>
+                                        ))}
+                                    </div>
+                                </div>
+                                <span className="device-time muted">
+                                    <RelativeTime ts={device.lastActiveAt} />
+                                </span>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="status-revoke"
+                                    onClick={() => setTarget(device)}
+                                >
+                                    <Icon name="revoke" />
+                                    {t("status.revoke")}
+                                </Button>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+
+            <ConfirmDialog
+                open={target != null}
+                onOpenChange={(open) => {
+                    if (!open) setTarget(null);
+                }}
+                title={t("status.revokeTitle")}
+                description={target ? t("status.revokeText", { name: target.name }) : undefined}
+                confirmLabel={t("status.revoke")}
+                onConfirm={confirm}
+            />
+        </StatusCard>
+    );
+}

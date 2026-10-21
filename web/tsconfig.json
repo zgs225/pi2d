@@ -21,7 +21,9 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@protocol/*": ["../src/protocol/*"],
+      "@protocol/reducer": ["./src/types/protocol-reducer.d.ts"]
     },
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
