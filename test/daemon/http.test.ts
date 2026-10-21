@@ -179,7 +179,7 @@ describe("HTTP API", () => {
             if (call.method === "workspace.query" && call.params?.kind === "sessions") {
                 return { seq: 1, disposition: "started", sessions: [{ sessionId: "s1" }] } as never;
             }
-            if (call.method === "session.entries") {
+            if (call.method === "workspace.query" && call.params?.kind === "entries") {
                 return { seq: 1, disposition: "started", entries: [{ id: "e1" }] } as never;
             }
             return { seq: 1, disposition: "started" };
@@ -192,8 +192,10 @@ describe("HTTP API", () => {
 
         const entries = await fetch(`${h.url}/api/v1/sessions/s1/entries?before=e9&limit=25`, authed());
         expect(entries.status).toBe(200);
-        const entryCall = conn.commands.find((call) => call.method === "session.entries");
-        expect(entryCall?.params).toEqual({ before: "e9", limit: 25 });
+        const entryCall = conn.commands.find(
+            (call) => call.method === "workspace.query" && call.params?.kind === "entries",
+        );
+        expect(entryCall?.params).toEqual({ before: "e9", limit: 25, kind: "entries" });
         expect((await entries.json()) as { entries: unknown[] }).toHaveProperty("entries");
 
         const attention = await fetch(`${h.url}/api/v1/attention?workspaceId=ws-1`, authed());
