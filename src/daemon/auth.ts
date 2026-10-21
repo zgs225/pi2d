@@ -3,6 +3,10 @@
  *
  * Tokens are bearer credentials for the HTTP/WS surfaces. Only a SHA-256 hash
  * is persisted, in `$PI2_DATA_DIR/devices.json` (mode 0600, atomic replace).
+ *
+ * A second, non-persisted credential exists for local tooling: the CLI token in
+ * `<runtime>/cli.token` (written by `pi2d`). It authenticates as the synthetic
+ * `local-cli` device with every scope; see `docs/deployment.md` §7.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -62,6 +66,23 @@ export interface AuthStoreOptions {
     baseUrl?: string;
     /** `touchDevice` write throttle. */
     touchIntervalMs?: number;
+    /**
+     * File holding the local CLI token (`<runtime>/cli.token`, written by `pi2d`).
+     * A bearer token equal to its trimmed contents authenticates as the synthetic
+     * `local-cli` device with every scope. Checked after the persisted devices.
+     */
+    localTokenPath?: string;
+}
+
+/** Synthetic device id used for the local CLI token (never persisted). */
+export const LOCAL_CLI_DEVICE_ID = "local-cli";
+
+/** Constant-time string compare; the token length itself is not a secret. */
+function tokensEqual(expected: string, candidate: string): boolean {
+    const left = Buffer.from(expected, "utf8");
+    const right = Buffer.from(candidate, "utf8");
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
 }
 
 interface PairEntry {
@@ -120,6 +141,7 @@ function pairCode(): string {
 
 export class AuthStore {
     readonly path: string;
+    readonly localTokenPath: string | undefined;
     private readonly now: () => number;
     private readonly baseUrl: string;
     private readonly touchIntervalMs: number;
@@ -131,6 +153,8 @@ export class AuthStore {
         this.now = options.now ?? Date.now;
         this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:7676").replace(/\/+$/, "");
         this.touchIntervalMs = options.touchIntervalMs ?? 60_000;
+        this.localTokenPath =
+            options.localTokenPath === undefined || options.localTokenPath === "" ? undefined : options.localTokenPath;
         this.load();
     }
 
@@ -162,6 +186,7 @@ export class AuthStore {
 
     verifyToken(rawToken: string): DevicePublic | null {
         if (typeof rawToken !== "string" || rawToken.length === 0) return null;
+        if (this.matchesLocalToken(rawToken)) return this.localCliDevice();
         const digest = hashToken(rawToken);
         let matched: DeviceRecord | undefined;
         // Compare against every record so the timing does not reveal the position.
@@ -234,6 +259,33 @@ export class AuthStore {
     /** Exposed for tests and diagnostics; never includes hashes. */
     isPairing(code: string): boolean {
         return this.pairs.has(code);
+    }
+
+    /** The local CLI token grants every scope; it is not persisted or revocable. */
+    private localCliDevice(): DevicePublic {
+        const timestamp = this.now();
+        return {
+            id: LOCAL_CLI_DEVICE_ID,
+            name: "local CLI",
+            kind: "laptop",
+            scopes: [...SCOPES],
+            createdAt: 0,
+            lastSeenAt: timestamp,
+            revokedAt: null,
+        };
+    }
+
+    private matchesLocalToken(candidate: string): boolean {
+        const path = this.localTokenPath;
+        if (path === undefined) return false;
+        let contents: string;
+        try {
+            contents = readFileSync(path, "utf8").trim();
+        } catch {
+            return false;
+        }
+        if (contents === "") return false;
+        return tokensEqual(contents, candidate);
     }
 
     private prunePairs(timestamp: number): void {

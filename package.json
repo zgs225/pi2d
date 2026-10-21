@@ -17,7 +17,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli/pi2d.js --foreground",
+    "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

@@ -1,0 +1,291 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+    checkCliToken,
+    checkLinger,
+    checkNvim,
+    checkNode,
+    checkProtocol,
+    collectContext,
+    defaultProbes,
+    formatReport,
+    parseNvimVersion,
+    parseVersion,
+    reportToJson,
+    runDoctor,
+    versionAtLeast,
+    type DoctorContext,
+} from "../../src/cli/doctor.js";
+import { clearRuntimeEnv, removeDir, tempDir } from "./helpers.js";
+
+function context(overrides: Partial<DoctorContext> = {}): DoctorContext {
+    const base: DoctorContext = {
+        platform: "linux",
+        nodeVersion: "v22.11.0",
+        nvim: { found: true, path: "/usr/bin/nvim", version: "v0.10.2" },
+        pi: { found: true, path: "/usr/local/bin/pi", version: "1.8.0" },
+        plugin: { dir: "/home/u/.local/share/nvim/lazy/pi2.nvim", bridgeFound: true },
+        runtime: { path: "/run/user/1000/pi2", exists: true, mode: 0o700 },
+        cliToken: { path: "/run/user/1000/pi2/cli.token", exists: true, mode: 0o600 },
+        socket: { path: "/run/user/1000/pi2/d.sock", exists: true },
+        daemon: { reachable: true, port: 7676, protocolVersion: 1 },
+        port: { configured: 7676, bound: true },
+        serviceManager: { name: "systemd", available: true },
+        linger: { checked: true, enabled: true },
+        webDist: { path: "/repo/web/dist", exists: true },
+    };
+    return { ...base, ...overrides };
+}
+
+async function checks(overrides: Partial<DoctorContext> = {}) {
+    return runDoctor(defaultProbes(context(overrides)));
+}
+
+function statusOf(report: Awaited<ReturnType<typeof checks>>, name: string): string | undefined {
+    return report.checks.find((check) => check.name === name)?.status;
+}
+
+describe("doctor checks (all passing)", () => {
+    it("reports ok and every check", async () => {
+        const report = await checks();
+        expect(report.ok).toBe(true);
+        expect(report.checks.map((check) => check.name)).toEqual([
+            "node",
+            "nvim",
+            "pi",
+            "plugin",
+            "runtime-dir",
+            "cli-token",
+            "socket",
+            "daemon",
+            "port",
+            "service-manager",
+            "linger",
+            "web-dist",
+            "protocol",
+        ]);
+        expect(report.checks.every((check) => check.status === "ok")).toBe(true);
+        expect(report.checks.find((check) => check.name === "node")?.detail).toContain("v22.11.0");
+    });
+
+    it("omits the linger check on macOS", async () => {
+        const report = await checks({
+            platform: "darwin",
+            serviceManager: { name: "launchd", available: true },
+            linger: { checked: false },
+        });
+        expect(statusOf(report, "linger")).toBeUndefined();
+        expect(report.ok).toBe(true);
+    });
+});
+
+describe("doctor failure cases", () => {
+    it("fails on node < 22", async () => {
+        const report = await checks({ nodeVersion: "v20.11.0" });
+        expect(report.ok).toBe(false);
+        expect(statusOf(report, "node")).toBe("fail");
+        expect(report.checks.find((check) => check.name === "node")?.detail).toContain("< 22.0.0");
+    });
+
+    it("fails when nvim is missing", async () => {
+        const report = await checks({ nvim: { found: false, error: "nvim not found on PATH" } });
+        expect(statusOf(report, "nvim")).toBe("fail");
+        expect(report.ok).toBe(false);
+    });
+
+    it("fails on nvim < 0.9 (no --remote-ui)", async () => {
+        const report = await checks({ nvim: { found: true, path: "/usr/bin/nvim", version: "v0.8.3" } });
+        expect(statusOf(report, "nvim")).toBe("fail");
+        expect(report.checks.find((check) => check.name === "nvim")?.detail).toContain("--remote-ui");
+    });
+
+    it("warns (does not fail) when pi is missing", async () => {
+        const report = await checks({ pi: { found: false } });
+        expect(statusOf(report, "pi")).toBe("warn");
+        expect(report.ok).toBe(true);
+    });
+
+    it("fails when the plugin is not installed", async () => {
+        const report = await checks({ plugin: { dir: "/home/u/nvim/pi2.nvim", bridgeFound: false } });
+        expect(statusOf(report, "plugin")).toBe("fail");
+        expect(report.ok).toBe(false);
+    });
+
+    it("fails when the runtime dir is missing and warns on loose modes", async () => {
+        expect(statusOf(await checks({ runtime: { path: "/run/pi2", exists: false, mode: undefined } }), "runtime-dir")).toBe(
+            "fail",
+        );
+        const loose = await checks({ runtime: { path: "/run/pi2", exists: true, mode: 0o755 } });
+        expect(statusOf(loose, "runtime-dir")).toBe("warn");
+        expect(loose.ok).toBe(true);
+    });
+
+    it("fails when the CLI token is readable by others", async () => {
+        const report = await checks({ cliToken: { path: "/run/pi2/cli.token", exists: true, mode: 0o644 } });
+        expect(statusOf(report, "cli-token")).toBe("fail");
+        expect(report.ok).toBe(false);
+        expect(checkCliToken({ path: "/run/pi2/cli.token", exists: false, mode: undefined }).status).toBe("warn");
+        expect(checkCliToken({ path: "/run/pi2/cli.token", exists: true, mode: 0o600 }).status).toBe("ok");
+    });
+
+    it("fails when the socket is missing and no daemon answers", async () => {
+        const report = await checks({
+            socket: { path: "/run/pi2/d.sock", exists: false },
+            daemon: { reachable: false, error: "connection refused" },
+            port: { configured: 7676, bound: false },
+        });
+        expect(statusOf(report, "socket")).toBe("fail");
+        expect(statusOf(report, "daemon")).toBe("fail");
+        expect(statusOf(report, "protocol")).toBe("fail");
+        expect(report.ok).toBe(false);
+        // A free port is fine on its own.
+        expect(statusOf(report, "port")).toBe("ok");
+    });
+
+    it("fails on a protocol version mismatch", async () => {
+        const report = await checks({ daemon: { reachable: true, port: 7676, protocolVersion: 2 } });
+        expect(statusOf(report, "protocol")).toBe("fail");
+        expect(checkProtocol({ reachable: true, port: 1, protocolVersion: 1 }).status).toBe("ok");
+    });
+
+    it("warns when web/dist, the service manager or linger are unavailable", async () => {
+        const report = await checks({
+            webDist: { path: "/repo/web/dist", exists: false },
+            serviceManager: { name: "systemd", available: false },
+            linger: { checked: true, enabled: false },
+        });
+        expect(statusOf(report, "web-dist")).toBe("warn");
+        expect(statusOf(report, "service-manager")).toBe("warn");
+        expect(statusOf(report, "linger")).toBe("warn");
+        expect(report.ok).toBe(true);
+    });
+
+    it("turns a throwing probe into a failing check", async () => {
+        const report = await runDoctor([
+            { name: "boom", run: () => Promise.reject(new Error("kaboom")) },
+            { name: "fine", run: () => ({ name: "fine", status: "ok", detail: "ok" }) },
+        ]);
+        expect(report.ok).toBe(false);
+        expect(report.checks[0]).toEqual({ name: "boom", status: "fail", detail: "kaboom" });
+    });
+});
+
+describe("doctor output", () => {
+    it("renders a table with an overall line", async () => {
+        const text = formatReport(await checks());
+        expect(text).toContain("check");
+        expect(text).toContain("detail");
+        expect(text).toContain("runtime-dir");
+        expect(text.trimEnd().endsWith("overall: ok")).toBe(true);
+
+        const failed = formatReport(await checks({ nodeVersion: "v18.0.0" }));
+        expect(failed).toContain("FAIL");
+        expect(failed.trimEnd().endsWith("overall: FAILED")).toBe(true);
+    });
+
+    it("emits a stable JSON shape", async () => {
+        const parsed = JSON.parse(reportToJson(await checks())) as {
+            ok: boolean;
+            checks: { name: string; status: string; detail: string }[];
+        };
+        expect(parsed.ok).toBe(true);
+        expect(Array.isArray(parsed.checks)).toBe(true);
+        expect(Object.keys(parsed.checks[0]!)).toEqual(["name", "status", "detail"]);
+        expect(parsed.checks.find((check) => check.name === "daemon")?.detail).toContain("http://127.0.0.1:7676");
+    });
+});
+
+describe("version helpers", () => {
+    it("parses and compares versions", () => {
+        expect(parseVersion("v22.1.0")).toEqual([22, 1, 0]);
+        expect(parseVersion("22.10.3")).toEqual([22, 10, 3]);
+        expect(parseVersion("nope")).toBeUndefined();
+        expect(versionAtLeast([22, 0, 0], [22, 0, 0])).toBe(true);
+        expect(versionAtLeast([22, 0, 0], [22, 1, 0])).toBe(false);
+        expect(versionAtLeast([23, 0, 0], [22, 9, 9])).toBe(true);
+        expect(parseNvimVersion("NVIM v0.10.2\nBuild type: Release")).toBe("0.10.2");
+        expect(parseNvimVersion("NVIM v0.9.5")).toBe("0.9.5");
+        expect(parseNvimVersion("garbage")).toBeUndefined();
+        expect(checkNode("v22.0.0").status).toBe("ok");
+        expect(checkNode("garbage").status).toBe("fail");
+        expect(checkNvim({ found: true, path: "/n", version: "v0.10.0" }).status).toBe("ok");
+        expect(checkLinger({ checked: false }).status).toBe("ok");
+    });
+});
+
+describe("collectContext", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = tempDir("pi2-doctor-");
+        process.env.PI2_RUNTIME_DIR = join(dir, "run");
+        process.env.PI2_DATA_DIR = join(dir, "data");
+        mkdirSync(join(dir, "run"), { recursive: true, mode: 0o700 });
+        writeFileSync(join(dir, "run", "cli.token"), "t".repeat(64), { mode: 0o600 });
+        writeFileSync(join(dir, "run", "d.sock"), "");
+        process.env.PI2_STATIC_DIR = join(dir, "web");
+    });
+
+    afterEach(() => {
+        clearRuntimeEnv();
+        removeDir(dir);
+    });
+
+    it("gathers real state through injectable probes", async () => {
+        const home = join(dir, "home");
+        mkdirSync(join(home, ".local", "share", "nvim", "lazy", "pi2.nvim", "lua", "pi", "web"), {
+            recursive: true,
+        });
+        writeFileSync(join(home, ".local", "share", "nvim", "lazy", "pi2.nvim", "lua", "pi", "web", "bridge.lua"), "");
+
+        const ctx = await collectContext({
+            platform: "linux",
+            home,
+            uid: 1000,
+            env: { PATH: "/usr/bin", PI2_RUNTIME_DIR: join(dir, "run"), PI2_STATIC_DIR: join(dir, "web") },
+            which: (command) => `/usr/bin/${command}`,
+            run: async (command, args) => {
+                if (command === "nvim") return { ok: true, stdout: "NVIM v0.10.2\nBuild type: Release\n", stderr: "" };
+                if (command === "pi") return { ok: true, stdout: "1.8.0\n", stderr: "" };
+                if (command === "loginctl" && args[1] === "1000") return { ok: true, stdout: "Linger=yes\n", stderr: "" };
+                return { ok: false, stdout: "", stderr: "unexpected" };
+            },
+            daemonInfo: async () => ({ port: 7712, protocolVersion: 1 }),
+        });
+
+        expect(ctx.nvim).toEqual({ found: true, path: "/usr/bin/nvim", version: "v0.10.2" });
+        expect(ctx.pi.version).toBe("1.8.0");
+        expect(ctx.plugin.bridgeFound).toBe(true);
+        expect(ctx.runtime.exists).toBe(true);
+        expect(ctx.cliToken.mode).toBe(0o600);
+        expect(ctx.socket.exists).toBe(true);
+        expect(ctx.daemon).toEqual({ reachable: true, port: 7712, protocolVersion: 1 });
+        expect(ctx.port).toEqual({ configured: 7712, bound: true });
+        expect(ctx.serviceManager).toEqual({ name: "systemd", available: true });
+        expect(ctx.linger).toMatchObject({ checked: true, enabled: true });
+        expect(ctx.webDist.path).toBe(join(dir, "web"));
+
+        const report = await runDoctor(defaultProbes(ctx));
+        // web/dist does not exist here, everything else passes.
+        expect(report.ok).toBe(true);
+        expect(report.checks.find((check) => check.name === "web-dist")?.status).toBe("warn");
+    });
+
+    it("records a missing daemon as unreachable", async () => {
+        const ctx = await collectContext({
+            platform: "darwin",
+            home: join(dir, "home"),
+            env: { PATH: "/usr/bin", PI2_RUNTIME_DIR: join(dir, "run") },
+            which: (command) => (command === "launchctl" ? "/bin/launchctl" : `/usr/bin/${command}`),
+            run: async () => ({ ok: false, stdout: "", stderr: "not found" }),
+            daemonInfo: async () => ({ error: "connection refused" }),
+        });
+        expect(ctx.daemon.reachable).toBe(false);
+        expect(ctx.linger.checked).toBe(false);
+        expect(ctx.serviceManager.name).toBe("launchd");
+        const report = await runDoctor(defaultProbes(ctx));
+        expect(report.ok).toBe(false);
+        expect(report.checks.some((check) => check.name === "linger")).toBe(false);
+    });
+});
