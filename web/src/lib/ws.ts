@@ -216,7 +216,7 @@ export class PiWsClient {
         socket.onopen = () => {
             if (this.socket !== socket) return;
             this.setState("authenticating");
-            this.send({ v: 1, type: AUTH_FRAME_TYPE, payload: { token: this.token ?? undefined } });
+            this.send({ v: 1, type: AUTH_FRAME_TYPE, token: this.token ?? undefined });
             this.authTimer = setTimeout(() => {
                 if (this.state !== "authenticating" || this.socket !== socket) return;
                 this.handlers.onError?.(new Error("WebSocket auth timed out"));

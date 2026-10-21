@@ -15,6 +15,7 @@ import {
     normalizeSessionsPayload,
     normalizeSnapshotState,
 } from "./session-state";
+import { setSessionMeta } from "./history";
 import { useChatStore } from "./store";
 
 export const EMPTY_SESSIONS: SessionState[] = [];
@@ -142,6 +143,15 @@ export function useChatSessions(workspaceId: string | undefined, enabled: boolea
 
     useEffect(() => {
         if (!workspaceId || !query.data) return;
+        const raw = query.data as { sessions?: Array<{ sessionId?: unknown; sessionFile?: unknown }> } | undefined;
+        for (const row of raw?.sessions ?? []) {
+            if (typeof row?.sessionId === "string") {
+                setSessionMeta(row.sessionId, {
+                    workspaceId,
+                    sessionFile: typeof row.sessionFile === "string" ? row.sessionFile : undefined,
+                });
+            }
+        }
         const current = useSessionsStore.getState();
         const existing = current.byWorkspace[workspaceId] ?? [];
         const next = normalizeSessionsPayload(query.data, workspaceId, existing);

@@ -321,12 +321,19 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
         }
         const type = typeof message.type === "string" ? message.type : "";
         if (!state.authenticated) {
-            if (type !== "auth" || typeof message.token !== "string") {
+            const payload = message.payload as Record<string, unknown> | undefined;
+            const authToken =
+                typeof message.token === "string"
+                    ? message.token
+                    : payload && typeof payload.token === "string"
+                      ? payload.token
+                      : undefined;
+            if (type !== "auth" || typeof authToken !== "string") {
                 sendError(state, ERROR_CODES.UNAUTHORIZED, "authenticate first");
                 state.ws.close(CLOSE_UNAUTHORIZED, "unauthorized");
                 return;
             }
-            if (!authenticate(state, message.token)) {
+            if (!authenticate(state, authToken)) {
                 sendError(state, ERROR_CODES.UNAUTHORIZED, "invalid device token");
                 state.ws.close(CLOSE_UNAUTHORIZED, "unauthorized");
             }

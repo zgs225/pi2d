@@ -99,21 +99,30 @@ pass "session $SID"
 echo "==> sending prompt (real model call)"
 cmd "{\"method\":\"prompt.send\",\"sessionId\":\"$SID\",\"params\":{\"text\":\"Reply with exactly the word PONG and nothing else.\"}}" >/dev/null || fail "prompt.send"
 
+# Require an ASSISTANT message containing PONG (the user prompt also contains it).
+assistant_text() {
+    echo "$1" | jq -r '[.entries[]? | select(.type == "message" and .message.role == "assistant")
+        | (.message.content | if type == "string" then . else ([.[]? | select(.type == "text") | .text] | join(" ")) end)]
+        | join(" ")' 2>/dev/null || true
+}
+
 FOUND=0
-for i in $(seq 1 120); do
+for i in $(seq 1 180); do
     SESS=$(api "$BASE/api/v1/workspaces/$WSID/sessions" 2>/dev/null || echo '')
-    REAL=$(echo "$SESS" | jq -r '.sessions[0].sessionId // empty' 2>/dev/null || true)
+    REAL=$(echo "$SESS" | jq -r '.sessions[]? | select(.live == true) | .sessionId' 2>/dev/null | head -1)
+    FILE=$(echo "$SESS" | jq -r '.sessions[]? | select(.live == true) | .sessionFile' 2>/dev/null | head -1)
     if [ -n "$REAL" ]; then
-        ENTRIES=$(api "$BASE/api/v1/sessions/$REAL/entries?limit=50" 2>/dev/null || echo '')
-        if echo "$ENTRIES" | grep -qi 'PONG'; then FOUND=1; SID="$REAL"; break; fi
+        ENTRIES=$(api "$BASE/api/v1/sessions/$REAL/entries?limit=50&workspaceId=$WSID&sessionFile=$FILE" 2>/dev/null || echo '')
+        TEXT=$(assistant_text "$ENTRIES")
+        if echo "$TEXT" | grep -qi 'PONG'; then FOUND=1; SID="$REAL"; break; fi
     fi
-    if [ $((i % 10)) -eq 0 ]; then
-        echo "    ... waiting (${i}/120) real=${REAL:-?} entries=$(echo "$ENTRIES" | head -c 240)"
+    if [ $((i % 15)) -eq 0 ]; then
+        echo "    ... waiting (${i}/180) real=${REAL:-?} assistant=${TEXT:-<none>}"
     fi
     sleep 1
 done
-[ "$FOUND" = "1" ] || fail "no assistant answer within 120s"
-pass "assistant answered (history endpoint contains PONG)"
+[ "$FOUND" = "1" ] || fail "no assistant answer within 180s"
+pass "assistant answered PONG (history endpoint, assistant role)"
 
 echo "==> session state"
 api "$BASE/api/v1/workspaces/$WSID/sessions" | jq -c '.' | head -c 800; echo

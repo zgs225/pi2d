@@ -78,7 +78,7 @@ describe("PiWsClient", () => {
         const socket = sockets[0]!;
         socket.open();
         expect(states).toEqual(["connecting", "authenticating"]);
-        expect(socket.sent[0]).toEqual({ v: 1, type: "auth", payload: { token: "pkt_test" } });
+        expect(socket.sent[0]).toEqual({ v: 1, type: "auth", token: "pkt_test" });
 
         // Queued before authentication.
         client.subscribe("s1");

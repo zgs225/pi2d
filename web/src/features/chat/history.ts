@@ -12,7 +12,21 @@ export interface FetchedPage {
     cursor: { before?: string; hasMore: boolean };
 }
 
-/** `GET /api/v1/sessions/:sid/entries?before=&limit=` → raw pi entries + cursor. */
+/**
+ * Session metadata needed to page a session that is not live in an instance
+ * (disk-only rows): the daemon routes by workspace and the plugin reads the file.
+ * Populated from the sessions list, keyed by session id.
+ */
+const sessionMeta = new Map<string, { workspaceId?: string; sessionFile?: string }>();
+
+export function setSessionMeta(
+    sessionId: string,
+    meta: { workspaceId?: string; sessionFile?: string },
+): void {
+    sessionMeta.set(sessionId, { ...sessionMeta.get(sessionId), ...meta });
+}
+
+/** `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` → raw pi entries + cursor. */
 export async function fetchEntriesPage(
     sessionId: string,
     before?: string,
@@ -21,6 +35,9 @@ export async function fetchEntriesPage(
 ): Promise<FetchedPage> {
     const query = new URLSearchParams({ limit: String(limit) });
     if (before) query.set("before", before);
+    const meta = sessionMeta.get(sessionId);
+    if (meta?.workspaceId) query.set("workspaceId", meta.workspaceId);
+    if (meta?.sessionFile) query.set("sessionFile", meta.sessionFile);
     const raw = await apiRequest<unknown>(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/entries?${query.toString()}`,
         { signal },
