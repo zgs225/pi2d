@@ -1,0 +1,155 @@
+/* ============================================================
+   pi2 console — design tokens (light default, dark override)
+   默认跟随系统；html[data-theme="light|dark"] 手动覆盖。
+   ============================================================ */
+
+:root {
+  /* surfaces */
+  --background: oklch(0.985 0.004 90);
+  --foreground: oklch(0.21 0.02 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 60);
+  --muted: oklch(0.955 0.006 90);
+  --muted-foreground: oklch(0.50 0.015 60);
+  --accent: oklch(0.94 0.012 85);
+  --accent-foreground: oklch(0.25 0.02 60);
+  --secondary: oklch(0.945 0.01 90);
+  --secondary-foreground: oklch(0.38 0.02 60);
+  --sidebar: oklch(0.972 0.005 90);
+  --sidebar-foreground: oklch(0.32 0.02 60);
+  --sidebar-accent: oklch(0.93 0.01 85);
+  --destructive: oklch(0.55 0.20 27);
+  --destructive-foreground: oklch(0.985 0.005 27);
+
+  /* borders & focus */
+  --border: oklch(0.21 0.02 60 / 13%);
+  --input: oklch(0.21 0.02 60 / 18%);
+  --ring: oklch(0.55 0.14 255 / 50%);
+
+  /* primary / selection */
+  --primary: oklch(0.50 0.15 258);
+  --primary-foreground: oklch(0.985 0.005 258);
+
+  /* role hues — pi2.nvim DESIGN.md 六角色 */
+  --role-user:     oklch(0.50 0.16 262);   /* indigo  */
+  --role-agent:    oklch(0.55 0.13 165);   /* emerald */
+  --role-thinking: oklch(0.54 0.17 295);   /* violet  */
+  --role-error:    var(--destructive);
+
+  /* semantic status */
+  --ok:   oklch(0.60 0.15 155);
+  --warn: oklch(0.72 0.15 85);
+  --err:  var(--destructive);
+  --info: var(--primary);
+
+  /* radius & space */
+  --radius-sm: 0.375rem;
+  --radius:    0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+  --space-1: 0.25rem; --space-2: 0.5rem;  --space-3: 0.75rem;
+  --space-4: 1rem;    --space-5: 1.25rem; --space-6: 1.5rem;
+  --space-8: 2rem;    --space-10: 2.5rem;
+
+  /* type */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* elevation */
+  --shadow-sm: 0 1px 2px oklch(0.21 0.02 60 / 7%);
+  --shadow:    0 4px 14px oklch(0.21 0.02 60 / 9%), 0 1px 3px oklch(0.21 0.02 60 / 7%);
+  --shadow-lg: 0 14px 44px oklch(0.21 0.02 60 / 17%), 0 3px 9px oklch(0.21 0.02 60 / 9%);
+
+  /* layout */
+  --topbar-h: 3.5rem;
+  --sidebar-w: 17.5rem;
+  --rail-w: 4.5rem;
+  --tabbar-h: 3.75rem;
+}
+
+html[data-theme="dark"] {
+  --background: oklch(0.145 0.008 60);
+  --foreground: oklch(0.925 0.008 80);
+  --card: oklch(0.205 0.010 60);
+  --card-foreground: oklch(0.925 0.008 80);
+  --popover: oklch(0.235 0.012 60);
+  --popover-foreground: oklch(0.925 0.008 80);
+  --muted: oklch(0.265 0.010 60);
+  --muted-foreground: oklch(0.66 0.012 70);
+  --accent: oklch(0.28 0.013 70);
+  --accent-foreground: oklch(0.925 0.008 80);
+  --secondary: oklch(0.26 0.011 60);
+  --secondary-foreground: oklch(0.78 0.012 70);
+  --sidebar: oklch(0.178 0.008 60);
+  --sidebar-foreground: oklch(0.76 0.012 70);
+  --sidebar-accent: oklch(0.25 0.012 70);
+  --destructive: oklch(0.63 0.20 27);
+  --destructive-foreground: oklch(0.985 0.005 27);
+
+  --border: oklch(1 0 0 / 10%);        /* 半透明白 */
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.62 0.14 260 / 55%);
+
+  --primary: oklch(0.68 0.14 260);
+  --primary-foreground: oklch(0.16 0.02 260);
+
+  --role-user:     oklch(0.72 0.14 264);
+  --role-agent:    oklch(0.78 0.13 165);
+  --role-thinking: oklch(0.74 0.15 295);
+
+  --ok:   oklch(0.76 0.14 160);
+  --warn: oklch(0.82 0.14 90);
+  --err:  var(--destructive);
+  --info: var(--primary);
+
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 40%);
+  --shadow:    0 4px 14px oklch(0 0 0 / 45%), 0 1px 3px oklch(0 0 0 / 40%);
+  --shadow-lg: 0 14px 44px oklch(0 0 0 / 55%), 0 3px 9px oklch(0 0 0 / 45%);
+}
+
+/* verify-fix: C1 — JS 未执行时（无 data-theme）由系统 prefers-color-scheme 回退到暗色。
+   与上方 html[data-theme="dark"] 的 token 值保持一致；手动选择 light/dark 时优先级更高。 */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --background: oklch(0.145 0.008 60);
+    --foreground: oklch(0.925 0.008 80);
+    --card: oklch(0.205 0.010 60);
+    --card-foreground: oklch(0.925 0.008 80);
+    --popover: oklch(0.235 0.012 60);
+    --popover-foreground: oklch(0.925 0.008 80);
+    --muted: oklch(0.265 0.010 60);
+    --muted-foreground: oklch(0.66 0.012 70);
+    --accent: oklch(0.28 0.013 70);
+    --accent-foreground: oklch(0.925 0.008 80);
+    --secondary: oklch(0.26 0.011 60);
+    --secondary-foreground: oklch(0.78 0.012 70);
+    --sidebar: oklch(0.178 0.008 60);
+    --sidebar-foreground: oklch(0.76 0.012 70);
+    --sidebar-accent: oklch(0.25 0.012 70);
+    --destructive: oklch(0.63 0.20 27);
+    --destructive-foreground: oklch(0.985 0.005 27);
+
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 16%);
+    --ring: oklch(0.62 0.14 260 / 55%);
+
+    --primary: oklch(0.68 0.14 260);
+    --primary-foreground: oklch(0.16 0.02 260);
+
+    --role-user:     oklch(0.72 0.14 264);
+    --role-agent:    oklch(0.78 0.13 165);
+    --role-thinking: oklch(0.74 0.15 295);
+
+    --ok:   oklch(0.76 0.14 160);
+    --warn: oklch(0.82 0.14 90);
+    --err:  var(--destructive);
+    --info: var(--primary);
+
+    --shadow-sm: 0 1px 2px oklch(0 0 0 / 40%);
+    --shadow:    0 4px 14px oklch(0 0 0 / 45%), 0 1px 3px oklch(0 0 0 / 40%);
+    --shadow-lg: 0 14px 44px oklch(0 0 0 / 55%), 0 3px 9px oklch(0 0 0 / 45%);
+  }
+}
