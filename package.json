@@ -1,7 +1,6 @@
 {
-  "name": "pi2-web-daemon",
+  "name": "pi2d",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "pi2 web console daemon (`pi2 daemon`): HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
   "engines": {
@@ -10,9 +9,35 @@
   "bin": {
     "pi2": "./dist/cli/pi2.js"
   },
+  "files": [
+    "dist/",
+    "web/dist/",
+    "docs/protocol.md",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zgs225/pi2d.git"
+  },
+  "homepage": "https://github.com/zgs225/pi2d#readme",
+  "bugs": {
+    "url": "https://github.com/zgs225/pi2d/issues"
+  },
+  "keywords": [
+    "pi",
+    "neovim",
+    "coding-agent",
+    "web-console",
+    "daemon"
+  ],
   "scripts": {
     "dev": "tsx watch src/cli/pi2.ts daemon",
     "build": "tsc -p tsconfig.json",
+    "build:web": "pnpm --dir web build",
+    "prepack": "npm run build && npm run build:web",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
