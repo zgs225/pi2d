@@ -1,6 +1,6 @@
 # pi2 daemon — pi2 web console daemon
 
-The always-on web side of [pi2.nvim](https://github.com/…/pi2.nvim). It is a **router + supervisor**, not an agent runtime:
+The always-on web side of [pi2.nvim](https://github.com/zgs225/pi2.nvim). It is a **router + supervisor**, not an agent runtime:
 
 ```
 browser ──HTTP/WS──▶ pi2 daemon ──JSONL unix socket──▶ one nvim per workspace (pi2.nvim)
