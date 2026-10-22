@@ -140,7 +140,7 @@ describe("resolveEndpoint / createClient", () => {
     });
 
     it("explains a missing daemon or token", () => {
-        expect(() => resolveEndpoint(dir)).toThrowError(/no running pi2d/);
+        expect(() => resolveEndpoint(dir)).toThrowError(/no running pi2 daemon/);
         writeDaemonJson(DAEMON, join(dir, "daemon.json"));
         expect(() => resolveEndpoint(dir)).toThrowError(/missing CLI token/);
     });
@@ -149,7 +149,7 @@ describe("resolveEndpoint / createClient", () => {
         writeDaemonJson({ ...DAEMON, port: 1 }, join(dir, "daemon.json"));
         writeCliToken(join(dir, "cli.token"));
         const client = createClient({ endpoint: resolveEndpoint(dir), timeoutMs: 500 });
-        await expect(client.get("/api/v1/info")).rejects.toThrowError(/cannot reach pi2d/);
+        await expect(client.get("/api/v1/info")).rejects.toThrowError(/cannot reach the pi2 daemon/);
     });
 });
 
@@ -255,11 +255,11 @@ describe("pi2 attach", () => {
             exec: recorded.exec,
             warn: (line) => warnings.push(line),
             client: () => {
-                throw new CliError("no running pi2d (daemon.json missing)");
+                throw new CliError("no running pi2 daemon (daemon.json missing)");
             },
         });
         expect(code).toBe(0);
-        expect(warnings[0]).toContain("no running pi2d");
+        expect(warnings[0]).toContain("no running pi2 daemon");
         expect(recorded.calls).toEqual([{ command: "nvim", args: [], cwd }]);
     });
 
@@ -274,12 +274,12 @@ describe("pi2 attach", () => {
             client: () => {
                 const client = fakeClient();
                 client.get = async () => {
-                    throw new CliError("cannot reach pi2d");
+                    throw new CliError("cannot reach the pi2 daemon");
                 };
                 return client;
             },
         });
-        expect(warnings[0]).toContain("cannot reach pi2d");
+        expect(warnings[0]).toContain("cannot reach the pi2 daemon");
         expect(recorded.calls).toEqual([{ command: "nvim", args: [], cwd }]);
     });
 });
@@ -362,18 +362,18 @@ describe("pi2 doctor (daemon probe wiring)", () => {
         expect(daemon?.status).toBe("ok");
         expect(daemon?.detail).toContain("http://127.0.0.1:7712");
         expect(report.checks.find((check) => check.name === "protocol")?.status).toBe("ok");
-        expect(report.checks.find((check) => check.name === "port")?.detail).toBe("7712 bound by pi2d");
+        expect(report.checks.find((check) => check.name === "port")?.detail).toBe("7712 bound by the daemon");
     });
 
     it("reports an unreachable daemon without throwing", async () => {
         const report = await runDoctorCommand({
             client: () => {
-                throw new CliError("no running pi2d (daemon.json missing)");
+                throw new CliError("no running pi2 daemon (daemon.json missing)");
             },
         });
         const daemon = report.checks.find((check) => check.name === "daemon");
         expect(daemon?.status).toBe("fail");
-        expect(daemon?.detail).toContain("no running pi2d");
+        expect(daemon?.detail).toContain("no running pi2 daemon");
         expect(report.ok).toBe(false);
     });
 });
@@ -411,11 +411,11 @@ describe("pi2 main", () => {
         const code = await main(["status"], {
             err: (line) => err.push(line),
             client: () => {
-                throw new CliError("no running pi2d");
+                throw new CliError("no running pi2 daemon");
             },
         });
         expect(code).toBe(1);
-        expect(err[0]).toBe("pi2: no running pi2d");
+        expect(err[0]).toBe("pi2: no running pi2 daemon");
     });
 
     it("routes attach through runAttach with an injected exec", async () => {
@@ -430,6 +430,45 @@ describe("pi2 main", () => {
         expect(recorded.calls).toEqual([{ command: "nvim", args: [], cwd: process.cwd() }]);
     });
 
+    it("dispatches `daemon` to the daemon entry point", async () => {
+        const out: string[] = [];
+        const err: string[] = [];
+        const seen: string[][] = [];
+        const code = await main(["daemon", "--help"], {
+            out: (line) => out.push(line),
+            err: (line) => err.push(line),
+            daemonMain: async (argv, io) => {
+                seen.push([...argv]);
+                io.out("daemon usage");
+                io.err("daemon warning");
+                return 7;
+            },
+        });
+        expect(code).toBe(7);
+        expect(seen).toEqual([["--help"]]);
+        expect(out).toEqual(["daemon usage"]);
+        expect(err).toEqual(["daemon warning"]);
+    });
+
+    it("strips the optional `start` word before parsing daemon flags", async () => {
+        const seen: string[][] = [];
+        const code = await main(["daemon", "start", "--help"], {
+            daemonMain: async (argv) => {
+                seen.push([...argv]);
+                return 0;
+            },
+        });
+        expect(code).toBe(0);
+        expect(seen).toEqual([["--help"]]);
+    });
+
+    it("exits 2 on an unknown daemon subcommand", async () => {
+        const err: string[] = [];
+        const code = await main(["daemon", "bogus"], { out: () => undefined, err: (line) => err.push(line) });
+        expect(code).toBe(2);
+        expect(err.join("\n")).toContain("unexpected argument bogus");
+    });
+
     it("installs a service with --write through the injected writer", async () => {
         const out: string[] = [];
         const writes: { path: string; content: string }[] = [];
@@ -438,7 +477,7 @@ describe("pi2 main", () => {
             platform: "linux",
             servicePaths: {
                 nodePath: "/usr/bin/node",
-                scriptPath: "/repo/dist/cli/pi2d.js",
+                scriptPath: "/repo/dist/cli/pi2.js",
                 stateDir: "/state",
                 homeDir: "/home/u",
                 pathEnv: "/usr/bin",
@@ -446,9 +485,9 @@ describe("pi2 main", () => {
             writeFile: (path, content) => writes.push({ path, content }),
         });
         expect(code).toBe(0);
-        expect(writes[0]?.path).toBe(join("/home/u/.config/systemd/user", "pi2d.service"));
-        expect(writes[0]?.content).toContain("ExecStart=/usr/bin/node /repo/dist/cli/pi2d.js --foreground");
-        expect(out.join("\n")).toContain("systemctl --user enable --now pi2d.service");
+        expect(writes[0]?.path).toBe(join("/home/u/.config/systemd/user", "pi2.service"));
+        expect(writes[0]?.content).toContain("ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground");
+        expect(out.join("\n")).toContain("systemctl --user enable --now pi2.service");
     });
 
     it("prints the service on the default dry-run", async () => {
@@ -458,7 +497,7 @@ describe("pi2 main", () => {
             platform: "darwin",
             servicePaths: {
                 nodePath: "/usr/bin/node",
-                scriptPath: "/repo/dist/cli/pi2d.js",
+                scriptPath: "/repo/dist/cli/pi2.js",
                 stateDir: "/state",
                 homeDir: "/home/u",
                 pathEnv: "/usr/bin",
@@ -466,7 +505,7 @@ describe("pi2 main", () => {
         });
         expect(code).toBe(0);
         expect(out.join("\n")).toContain("<key>KeepAlive</key>");
-        expect(out.join("\n")).toContain("would write /home/u/Library/LaunchAgents/com.pi2.pi2d.plist");
+        expect(out.join("\n")).toContain("would write /home/u/Library/LaunchAgents/com.pi2.daemon.plist");
     });
 
     it("renders doctor output and exits 1 when a check fails", async () => {

@@ -62,7 +62,7 @@ fs.mkdirSync(SCREENS, { recursive: true });
 fs.mkdirSync(REPORT_DIR, { recursive: true });
 
 /* ------------------------------------------------------------------ */
-/* playwright resolution (not a pi2d dependency)                       */
+/* playwright resolution (not a daemon dependency)                    */
 /* ------------------------------------------------------------------ */
 
 const require_ = createRequire(import.meta.url);
@@ -1568,7 +1568,7 @@ scenario("B7", "Abort: slow prompt → Abort button → Idle within 10 s, partia
     ctx.note(`abort status label: ${abortStatusLabel || "(none)"}`);
 
     const partial = (await streamArticles(page)).filter((article) => article.role === "assistant");
-    ctx.check("partial assistant text remains", partial.length >= 1 && partial[0].text.length > 0, {
+    ctx.check("partial assistant text remains", partial.some((article) => article.text.length > 0), {
         expected: ">=1 assistant article with text",
         observed: partial.map((article) => short(article.text, 80)),
     });

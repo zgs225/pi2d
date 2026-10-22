@@ -1,5 +1,5 @@
 /**
- * Test-only pi extension for the pi2d API/WS end-to-end suite (docs/e2e.md A11).
+ * Test-only pi extension for the pi2 daemon API/WS end-to-end suite (docs/e2e.md A11).
  *
  * The suite must prove the pre-execution attention/diff contract without a real
  * terminal UI:
@@ -18,7 +18,7 @@
  *
  * The title payload uses the web console's documented diff shape
  * `{toolName, files:[{path, before, after}]}` (see
- * `pi2d/web/src/features/chat/diff.ts:diffFilesFromPayload`), so the same JSON
+ * `web/src/features/chat/diff.ts:diffFilesFromPayload`), so the same JSON
  * drives both the plugin's attention classification and the web diff view.
  *
  * Determinism: the select is issued from the tool call (no timing tricks). A

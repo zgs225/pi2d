@@ -2,8 +2,8 @@
 #
 # End-to-end smoke test for the pi2 daemon.
 #
-# Builds the project, starts `pi2d` on an ephemeral port with throwaway runtime
-# dirs, then asserts the HTTP surface (info/health/static/404/auth), the
+# Builds the project, starts `pi2 daemon` on an ephemeral port with throwaway
+# runtime dirs, then asserts the HTTP surface (info/health/static/404/auth), the
 # discovery file and a clean SIGTERM shutdown.
 #
 # Usage: bash scripts/smoke.sh
@@ -20,7 +20,7 @@ export PI2_RUNTIME_DIR PI2_DATA_DIR PI2_STATE_DIR
 export PI2_PORT=0
 export PI2_LOG_LEVEL="${PI2_LOG_LEVEL:-warn}"
 
-LOG="$TMP/pi2d.log"
+LOG="$TMP/pi2-daemon.log"
 DAEMON_JSON="$PI2_RUNTIME_DIR/daemon.json"
 LOCK="$PI2_RUNTIME_DIR/daemon.lock"
 TOKEN_FILE="$PI2_RUNTIME_DIR/cli.token"
@@ -45,7 +45,7 @@ pass() { printf 'PASS %s\n' "$*"; }
 fail() {
     printf 'FAIL %s\n' "$*" >&2
     if [[ -f "$LOG" ]]; then
-        printf '\n--- pi2d log ---\n' >&2
+        printf '\n--- pi2 daemon log ---\n' >&2
         tail -n 40 "$LOG" >&2 || true
     fi
     printf '\n--- tmp dir: %s ---\n' "$TMP" >&2
@@ -102,17 +102,16 @@ if ! npx tsc -p tsconfig.json >"$TMP/build.log" 2>&1; then
     cat "$TMP/build.log" >&2
     fail "build failed"
 fi
-[[ -f dist/cli/pi2d.js ]] || fail "dist/cli/pi2d.js missing after build"
 [[ -f dist/cli/pi2.js ]] || fail "dist/cli/pi2.js missing after build"
-pass "build produced dist/cli/pi2d.js and dist/cli/pi2.js"
+pass "build produced dist/cli/pi2.js"
 
-printf '==> starting pi2d (port 0)\n'
-node dist/cli/pi2d.js --foreground >"$TMP/stdout.log" 2>"$LOG" &
+printf '==> starting pi2 daemon (port 0)\n'
+node dist/cli/pi2.js daemon --foreground >"$TMP/stdout.log" 2>"$LOG" &
 DAEMON_PID=$!
 
 for _ in $(seq 1 200); do
     [[ -f "$DAEMON_JSON" ]] && break
-    kill -0 "$DAEMON_PID" 2>/dev/null || fail "pi2d exited before writing daemon.json"
+    kill -0 "$DAEMON_PID" 2>/dev/null || fail "pi2 daemon exited before writing daemon.json"
     sleep 0.05
 done
 [[ -f "$DAEMON_JSON" ]] || fail "daemon.json was not written"
@@ -134,8 +133,8 @@ pass "daemon.lock holds pid $DAEMON_PID"
 
 expect_json "body.protocolVersion === 1" "daemon.json protocolVersion === 1" "$DAEMON_JSON"
 
-grep -q "^pi2d listening on http://127.0.0.1:$PORT$" "$TMP/stdout.log" ||
-    fail "stdout line missing: expected 'pi2d listening on http://127.0.0.1:$PORT' (got: $(cat "$TMP/stdout.log"))"
+grep -q "^pi2 daemon listening on http://127.0.0.1:$PORT$" "$TMP/stdout.log" ||
+    fail "stdout line missing: expected 'pi2 daemon listening on http://127.0.0.1:$PORT' (got: $(cat "$TMP/stdout.log"))"
 pass "stdout announced http://127.0.0.1:$PORT"
 
 [[ -f "$TOKEN_FILE" ]] || fail "cli.token missing"
@@ -175,19 +174,19 @@ pass "GET /api/v1/workspaces without a token -> 401"
 expect_status 401 GET /api/v1/workspaces -H "authorization: Bearer deadbeef"
 pass "GET /api/v1/workspaces with a bogus token -> 401"
 
-printf '==> stopping pi2d (SIGTERM)\n'
+printf '==> stopping pi2 daemon (SIGTERM)\n'
 kill -TERM "$DAEMON_PID"
 for _ in $(seq 1 100); do
     kill -0 "$DAEMON_PID" 2>/dev/null || break
     sleep 0.05
 done
-kill -0 "$DAEMON_PID" 2>/dev/null && fail "pi2d did not exit within 5s of SIGTERM"
+kill -0 "$DAEMON_PID" 2>/dev/null && fail "pi2 daemon did not exit within 5s of SIGTERM"
 
 set +e
 wait "$DAEMON_PID"
 EXIT_CODE=$?
 set -e
-[[ "$EXIT_CODE" -eq 0 ]] || fail "pi2d exited with code $EXIT_CODE"
+[[ "$EXIT_CODE" -eq 0 ]] || fail "pi2 daemon exited with code $EXIT_CODE"
 pass "SIGTERM -> clean exit (code 0)"
 
 [[ ! -f "$LOCK" ]] || fail "daemon.lock was not removed on shutdown"

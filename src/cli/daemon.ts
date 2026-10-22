@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 /**
- * `pi2d` — the pi2 daemon entry point.
+ * `pi2 daemon` — the pi2 web-console daemon entry point.
  *
  * Responsibilities (and nothing else):
  *   1. parse args / apply `--port|--host|--static-dir` to the config env
@@ -9,12 +8,14 @@
  *      for local CLI access — a second daemon must never rotate the live token
  *   4. wire the real dependencies and listen (port 0 allowed, +1..+9 on a busy
  *      default port), then publish `<runtime>/daemon.json`
- *   5. print exactly one line: `pi2d listening on http://host:port`
+ *   5. print exactly one line: `pi2 daemon listening on http://host:port`
  *   6. on SIGINT/SIGTERM close http + the plugin socket and release the lock —
  *      **without** stopping nvim instances (they reconnect on the next start)
+ *
+ * This module is not an entry point: `src/cli/pi2.ts` dispatches `pi2 daemon`
+ * (optionally `pi2 daemon start`) to `main()`.
  */
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { loadConfig, DEFAULT_PORT, type Config } from "../config.js";
 import { ensureDir, runtimeDir } from "../core/paths.js";
 import type { Logger } from "../core/interfaces.js";
@@ -22,23 +23,15 @@ import { PROTOCOL_VERSION } from "../protocol/types.js";
 import { createLogger } from "./logger.js";
 import { acquireLock, writeDaemonJson, type DaemonLockHandle } from "./lock.js";
 import { cliTokenPath, writeCliToken } from "./token.js";
-import {
-    boolFlag,
-    errorMessage,
-    packageVersion,
-    parseArgs,
-    realpathOrSelf,
-    stringFlag,
-    UsageError,
-} from "./util.js";
+import { boolFlag, errorMessage, packageVersion, parseArgs, stringFlag, UsageError } from "./util.js";
 import { wireDaemon, type WiredDaemon } from "./wiring.js";
 
 /** Extra attempts when the *default* port is taken (7676 → 7677 … 7685). */
 export const DEFAULT_PORT_RETRIES = 9;
 
-export const USAGE = `pi2d — pi2 daemon
+export const USAGE = `pi2 daemon — pi2 daemon
 
-Usage: pi2d [options]
+Usage: pi2 daemon [start] [options]
 
 Options:
   --port <n>         TCP port (default ${DEFAULT_PORT}; 0 = ephemeral)
@@ -137,7 +130,7 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
         args = parseDaemonArgs(argv);
     } catch (error) {
         if (error instanceof UsageError) {
-            io.err(`pi2d: ${error.message}`);
+            io.err(`pi2: ${error.message}`);
             io.err(error.usage ?? USAGE);
             return 2;
         }
@@ -149,7 +142,7 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
         return 0;
     }
     if (args.version) {
-        io.out(`pi2d ${packageVersion()}`);
+        io.out(`pi2 ${packageVersion()}`);
         return 0;
     }
 
@@ -166,7 +159,7 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
     try {
         config = loadConfig();
     } catch (error) {
-        io.err(`pi2d: ${errorMessage(error)}`);
+        io.err(`pi2: ${errorMessage(error)}`);
         return 1;
     }
 
@@ -202,9 +195,9 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
         lock.update({ port: server.port });
         writeDaemonJson(lock.lock);
         // One machine-readable line; every log record goes to stderr.
-        io.out(`pi2d listening on ${server.url}`);
+        io.out(`pi2 daemon listening on ${server.url}`);
     } catch (error) {
-        io.err(`pi2d: ${errorMessage(error)}`);
+        io.err(`pi2: ${errorMessage(error)}`);
         lock?.release();
         if (wired !== undefined) await wired.close().catch(() => undefined);
         return 1;
@@ -233,33 +226,11 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
         process.once(signal, () => {
             void shutdown(signal).catch((error: unknown) => {
-                io.err(`pi2d: shutdown failed: ${errorMessage(error)}`);
+                io.err(`pi2: shutdown failed: ${errorMessage(error)}`);
                 process.exit(1);
             });
         });
     }
 
     return 0;
-}
-
-function isDirectRun(): boolean {
-    const entry = process.argv[1];
-    if (entry === undefined) return false;
-    try {
-        return realpathOrSelf(entry) === realpathOrSelf(fileURLToPath(import.meta.url));
-    } catch {
-        return false;
-    }
-}
-
-if (isDirectRun()) {
-    void main(process.argv.slice(2)).then(
-        (code) => {
-            if (code !== 0) process.exitCode = code;
-        },
-        (error: unknown) => {
-            process.stderr.write(`pi2d: ${errorMessage(error)}\n`);
-            process.exitCode = 1;
-        },
-    );
 }

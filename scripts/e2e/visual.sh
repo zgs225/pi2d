@@ -24,7 +24,7 @@ export PI2_NVIM_BIN="${PI2_NVIM_BIN:-$(command -v nvim)}"
 export PI2_NVIM_INIT="$REPO/scripts/e2e/host-init.lua"
 export PI2_E2E_PLUGIN="${PI2_E2E_PLUGIN:-/home/yuez/Workspace/Neovim/pi2.nvim-web}"
 
-node "$REPO/dist/cli/pi2d.js" --foreground --port 0 >"$LOG" 2>&1 &
+node "$REPO/dist/cli/pi2.js" daemon --foreground --port 0 >"$LOG" 2>&1 &
 DPID=$!
 cleanup() { kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true; }
 trap cleanup EXIT

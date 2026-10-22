@@ -30,7 +30,7 @@ fail() {
     echo "--- daemon log ---"; tail -60 "$LOG" 2>/dev/null || true
     echo "--- instance logs ---"; ls -la "$STATE/instances" 2>/dev/null || true; tail -80 "$STATE"/instances/*.log 2>/dev/null || true
     echo "--- nvim web log ---"; find "$STATE" -name 'pi2-web.log' -exec tail -80 {} \; 2>/dev/null || true
-    echo "--- processes ---"; ps -eo pid,ppid,etime,args | grep -E "nvim|pi --mode|node .*pi2d" | grep -v grep || true
+    echo "--- processes ---"; ps -eo pid,ppid,etime,args | grep -E "nvim|pi --mode|node .*pi2\.js daemon" | grep -v grep || true
     echo "--- sessions endpoint ---"; curl -sS -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/workspaces/$WSID/sessions" 2>/dev/null | head -c 2000 || true
     echo
     echo "--- state ---"; ls -la "$STATE" "$RUN" 2>/dev/null || true
@@ -39,13 +39,13 @@ fail() {
 
 command -v jq >/dev/null || { echo "jq is required"; exit 2; }
 command -v pi >/dev/null || { echo "pi CLI is required"; exit 2; }
-[ -f "$REPO/dist/cli/pi2d.js" ] || { echo "run: npx tsc -p tsconfig.json"; exit 2; }
+[ -f "$REPO/dist/cli/pi2.js" ] || { echo "run: npx tsc -p tsconfig.json"; exit 2; }
 
 echo "==> workspace $WS"
 printf '# e2e\n' > "$WS/README.md"
 
-echo "==> starting pi2d"
-node "$REPO/dist/cli/pi2d.js" --foreground --port 0 >"$LOG" 2>&1 &
+echo "==> starting pi2 daemon"
+node "$REPO/dist/cli/pi2.js" daemon --foreground --port 0 >"$LOG" 2>&1 &
 DPID=$!
 cleanup() {
     kill "$DPID" 2>/dev/null || true

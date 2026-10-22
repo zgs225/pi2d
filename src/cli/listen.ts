@@ -1,7 +1,7 @@
 /**
  * Listening with a bounded port retry.
  *
- * `pi2d` uses the default port 7676; when another process already owns it the
+ * `pi2 daemon` uses the default port 7676; when another process already owns it the
  * daemon walks `+1 … +9` instead of failing to start (the browser UI and the
  * `pi2` CLI both read the actual port from `runtime/daemon.json`, so a bump is
  * invisible to users). An explicitly configured port is never re-mapped: a

@@ -2,7 +2,7 @@
  * Daemon configuration.
  *
  * Defaults follow `docs/protocol.md`; deployment-specific values come from the
- * environment so `pi2d` can be started without a config file.
+ * environment so `pi2 daemon` can be started without a config file.
  */
 import { fileURLToPath } from "node:url";
 import { daemonTokenPath, dataDir } from "./core/paths.js";

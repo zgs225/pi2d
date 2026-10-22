@@ -1,4 +1,4 @@
-/** Small shared helpers for the `pi2` / `pi2d` command line front ends. */
+/** Small shared helpers for the `pi2` command line front end (and `pi2 daemon`). */
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 

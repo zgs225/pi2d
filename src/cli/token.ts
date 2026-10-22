@@ -1,10 +1,10 @@
 /**
  * The local CLI token (`<runtime>/cli.token`).
  *
- * `pi2d` mints a fresh 32-byte hex token on every start and writes it 0600.
+ * `pi2 daemon` mints a fresh 32-byte hex token on every start and writes it 0600.
  * `AuthStore` accepts it as the synthetic `local-cli` admin device, so every
  * local `pi2*` command can talk to the daemon without pairing. The token is
- * per-daemon-lifetime: restarting `pi2d` rotates it.
+ * per-daemon-lifetime: restarting `pi2 daemon` rotates it.
  */
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";

@@ -11,7 +11,7 @@ describe("workspace registry", () => {
     let project: string;
 
     beforeEach(() => {
-        sandbox = makeSandbox("pi2d-registry-");
+        sandbox = makeSandbox("pi2-daemon-registry-");
         file = join(sandbox, "data", "workspaces.json");
         project = join(sandbox, "project");
         mkdirSync(project, { recursive: true });

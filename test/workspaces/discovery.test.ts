@@ -10,7 +10,7 @@ describe("workspace disk discovery", () => {
     let root: string;
 
     beforeEach(() => {
-        sandbox = makeSandbox("pi2d-discovery-");
+        sandbox = makeSandbox("pi2-daemon-discovery-");
         root = join(sandbox, "agent", "sessions");
         mkdirSync(root, { recursive: true });
     });

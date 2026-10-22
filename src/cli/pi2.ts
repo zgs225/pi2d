@@ -2,6 +2,7 @@
 /**
  * `pi2` — the user-facing CLI.
  *
+ *   pi2 daemon [start]     run the web-console daemon (foreground)
  *   pi2 attach [path]      attach nvim to the workspace instance (or open nvim)
  *   pi2 status [--json]    daemon, instances, resources, health
  *   pi2 doctor [--json]    environment checks
@@ -21,6 +22,7 @@ import { runtimeDir } from "../core/paths.js";
 import type { InstanceResourcesSnapshot } from "../core/interfaces.js";
 import type { WorkspaceInfo } from "../protocol/types.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
+import { main as runDaemonMain } from "./daemon.js";
 import { readDaemonJson, type DaemonLock } from "./lock.js";
 import { cliTokenPath, readCliToken } from "./token.js";
 import {
@@ -46,6 +48,7 @@ import { diagnose, formatReport, reportToJson, type DoctorReport } from "./docto
 export const USAGE = `pi2 — pi2 client
 
 Usage:
+  pi2 daemon [start] [options]       run the web-console daemon (foreground)
   pi2 attach [path]                  attach nvim to the workspace instance, else open nvim
   pi2 status [--json]                daemon info, instances, resources, health
   pi2 doctor [--json]                environment checks
@@ -55,7 +58,7 @@ Usage:
   pi2 --version | --help
 
 The daemon endpoint comes from $PI2_RUNTIME_DIR/daemon.json (port) and
-$PI2_RUNTIME_DIR/cli.token (local admin token). Start it with \`pi2d\`.
+$PI2_RUNTIME_DIR/cli.token (local admin token). Start it with \`pi2 daemon\`.
 See docs/deployment.md.`;
 
 /** A user-facing failure: printed as-is, exits with `code`. */
@@ -88,12 +91,12 @@ export function resolveEndpoint(runtime: string = runtimeDir()): Endpoint {
     const daemon = readDaemonJson(resolve(runtime, "daemon.json"));
     if (daemon === undefined) {
         throw new CliError(
-            `no running pi2d (${resolve(runtime, "daemon.json")} missing). Start it with \`pi2d --foreground\`.`,
+            `no running pi2 daemon (${resolve(runtime, "daemon.json")} missing). Start it with \`pi2 daemon\`.`,
         );
     }
     const token = readCliToken(cliTokenPath(runtime));
     if (token === undefined) {
-        throw new CliError(`missing CLI token (${cliTokenPath(runtime)}). Restart \`pi2d\`.`);
+        throw new CliError(`missing CLI token (${cliTokenPath(runtime)}). Restart the daemon (\`pi2 daemon\`).`);
     }
     return { baseUrl: `http://127.0.0.1:${daemon.port}`, token, daemon };
 }
@@ -123,7 +126,7 @@ export function createClient(options: ClientOptions = {}): DaemonClient {
                 signal: AbortSignal.timeout(timeoutMs),
             });
         } catch (error) {
-            throw new CliError(`cannot reach pi2d at ${endpoint.baseUrl}: ${errorMessage(error)}`);
+            throw new CliError(`cannot reach the pi2 daemon at ${endpoint.baseUrl}: ${errorMessage(error)}`);
         }
     }
 
@@ -466,6 +469,8 @@ export interface Pi2Options {
     writeFile?: (path: string, content: string) => void;
     removeFile?: (path: string) => void;
     runtime?: string;
+    /** Injected `pi2 daemon` runner (defaults to `src/cli/daemon.ts:main`). */
+    daemonMain?: (argv: readonly string[], io: { out: (line: string) => void; err: (line: string) => void }) => Promise<number>;
 }
 
 export async function main(argv: readonly string[], options: Pi2Options = {}): Promise<number> {
@@ -484,6 +489,13 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
 
     try {
         switch (command) {
+            case "daemon": {
+                // `pi2 daemon` and `pi2 daemon start` are the same thing; the
+                // optional `start` word is consumed here so the daemon parser
+                // only ever sees flags.
+                const argv = rest[0] === "start" ? rest.slice(1) : rest;
+                return await (options.daemonMain ?? runDaemonMain)(argv, { out, err });
+            }
             case "attach": {
                 const parsed = parseArgs(rest, { booleans: ["--help"], aliases: { "-h": "--help" } });
                 if (boolFlag(parsed.flags, "--help")) {

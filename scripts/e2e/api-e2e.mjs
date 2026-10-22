@@ -49,6 +49,9 @@ const STATE_DIR = process.env.PI2_STATE_DIR ?? join(E2E_ROOT, "state");
 const WS_URL = `${BASE.replace(/^http/, "ws")}/ws`;
 const REPORT_DIR = join(E2E_ROOT, "report");
 const RECON_REPORT = process.env.E2E_RECON_REPORT ?? "/tmp/pi2-e2e-recon/e2e-api-run.md";
+// Repository root (this driver lives in `<repo>/scripts/e2e/`), so the reports
+// can print a reproducible command without hardcoding a checkout path.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const TURN_MS = 120_000;
 const ABORT_SETTLE_MS = 10_000;
@@ -2907,12 +2910,12 @@ function collectLogTails() {
         const tail = tailOf(path);
         if (tail) targets.push({ label, path, tail });
     };
-    push("daemon", join(E2E_ROOT, "logs", "pi2d.log"));
-    push("daemon.stdout", join(E2E_ROOT, "logs", "pi2d.stdout"));
+    push("daemon", join(E2E_ROOT, "logs", "daemon.log"));
+    push("daemon.stdout", join(E2E_ROOT, "logs", "daemon.stdout"));
     for (const path of findLogs(join(STATE_DIR, "instances"))) push(`instance ${path.split("/").slice(-2).join("/")}`, path);
     for (const path of findLogs(STATE_DIR)) {
         if (targets.some((target) => target.path === path)) continue;
-        if (/pi2-web|pi2d|instance/.test(path)) push(`state ${path.split("/").slice(-2).join("/")}`, path);
+        if (/pi2-web|pi2-daemon|instance/.test(path)) push(`state ${path.split("/").slice(-2).join("/")}`, path);
     }
     return targets;
 }
@@ -2952,14 +2955,14 @@ function renderSummaryMarkdown(results, counts, durationMs) {
     lines.push("## Reproduction");
     lines.push("");
     lines.push("```bash");
-    lines.push("cd /home/yuez/Workspace/Neovim/pi2d && E2E_SKIP_BUILD=1 bash scripts/e2e/run-api.sh");
+    lines.push(`cd "${REPO_ROOT}" && E2E_SKIP_BUILD=1 bash scripts/e2e/run-api.sh`);
     lines.push("```");
     return `${lines.join("\n")}\n`;
 }
 
 function renderReconMarkdown(results, counts, durationMs, logs) {
     const lines = [];
-    lines.push("# pi2d API/WS E2E (A0–A12) — run report");
+    lines.push("# pi2 daemon API/WS E2E (A0–A12) — run report");
     lines.push("");
     lines.push(`- driver: \`${join(dirname(fileURLToPath(import.meta.url)), "api-e2e.mjs")}\``);
     lines.push(`- base: \`${BASE}\` · root: \`${E2E_ROOT}\``);

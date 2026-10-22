@@ -200,7 +200,7 @@ describe("canonical reducer integration", () => {
         expect(state.flags.attention).toBe(false);
     });
 
-    it("replays the pi2d basic-turn fixture through the shared reducer", () => {
+    it("replays the basic-turn fixture through the shared reducer", () => {
         const fixture = join(process.cwd(), "..", "fixtures", "basic-turn", "events.jsonl");
         if (!existsSync(fixture)) {
             expect(true).toBe(true);

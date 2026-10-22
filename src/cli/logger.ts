@@ -1,8 +1,8 @@
 /**
  * Console logger for the CLI entry points.
  *
- * `pi2d` prints exactly one machine-readable line on stdout (`pi2d listening
- * on …`); every log record therefore goes to stderr in JSONL so it can be
+ * `pi2 daemon` prints exactly one machine-readable line on stdout (`pi2 daemon
+ * listening on …`); every log record therefore goes to stderr in JSONL so it can be
  * piped into a log file or a systemd journal without corrupting stdout.
  */
 import type { Logger, LogLevel } from "../core/interfaces.js";

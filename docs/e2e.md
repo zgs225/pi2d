@@ -9,8 +9,8 @@ processes that make the console real, and describes the harness that implements 
 browser (React in web/dist)
       │ HTTP + WS
       ▼
-pi2d (src/)  ── JSONL unix socket ──▶  headless nvim + pi2.nvim web layer
-                                                   └── pi --mode rpc (real model)
+pi2 daemon (src/)  ── JSONL unix socket ──▶  headless nvim + pi2.nvim web layer
+                                                       └── pi --mode rpc (real model)
 ```
 
 Authority, highest first:
@@ -83,7 +83,7 @@ markers, so the diff review does not depend on the model choosing to call the to
 Rules:
 
 - Before anything starts, `e2e_init` requires `node`, `nvim`, `pi`, `jq` and `curl`, a plugin
-  worktree with `lua/pi/web/commands.lua`, a built `dist/cli/pi2d.js`, and `host-init.lua`.
+  worktree with `lua/pi/web/commands.lua`, a built `dist/cli/pi2.js`, and `host-init.lua`.
   Missing pieces exit 2 with the artifacts path.
 - Never touch a daemon already running in the default runtime dir. `e2e_stop` terminates the
   daemon it started, then reaps every process whose command line contains `$E2E_ROOT`
@@ -334,8 +334,8 @@ For every failed assertion:
      → fix the owning layer.
 3. Fix in one layer at a time, with exclusive file ownership per subagent; never let two
    agents edit the same file concurrently.
-4. Re-run the failed scenario, then the full suite. Unit tests (`vitest` in `pi2d` and
-   `pi2d/web`) must stay green after every fix.
+4. Re-run the failed scenario, then the full suite. Unit tests (`vitest` in the daemon repo and
+   in `web/`) must stay green after every fix.
 5. Do not mark a scenario PASS from a static grep or a screenshot alone; assert the
    observable behavior described above.
 
@@ -355,7 +355,7 @@ the Playwright module/Chrome actually used, and one section per scenario with ev
 assertion. `ui-e2e.mjs` also copies its markdown to `/tmp/pi2-e2e-recon/e2e-ui-run.md`.
 
 Logs live in `$E2E_ROOT/logs/`: `<suite>.log` (build output + driver stderr) and
-`pi2d.log` / `pi2d.stdout` for the daemon.
+`daemon.log` / `daemon.stdout` for the `pi2 daemon` process.
 
 The summary must state which scenarios passed, which failed with observed vs expected,
 which were skipped and why (non-blocking only), and the command that reproduces the run.
@@ -363,9 +363,9 @@ which were skipped and why (non-blocking only), and the command that reproduces 
 ## 7. Commands
 
 ```bash
-cd /home/yuez/Workspace/Neovim/pi2d
+cd <repo>    # the pi2 CLI/daemon checkout (this repository)
 
-# backend only (A0–A12): tsc, then daemon + headless nvim + real pi
+# backend only (A0–A12): tsc, then `pi2 daemon` + headless nvim + real pi
 bash scripts/e2e/run-api.sh
 
 # browser (B1–B14, C1–C4): also builds web/dist (pnpm), then Playwright

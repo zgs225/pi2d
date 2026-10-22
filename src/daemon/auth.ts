@@ -5,7 +5,7 @@
  * is persisted, in `$PI2_DATA_DIR/devices.json` (mode 0600, atomic replace).
  *
  * A second, non-persisted credential exists for local tooling: the CLI token in
- * `<runtime>/cli.token` (written by `pi2d`). It authenticates as the synthetic
+ * `<runtime>/cli.token` (written by `pi2 daemon`). It authenticates as the synthetic
  * `local-cli` device with every scope; see `docs/deployment.md` §7.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -67,7 +67,7 @@ export interface AuthStoreOptions {
     /** `touchDevice` write throttle. */
     touchIntervalMs?: number;
     /**
-     * File holding the local CLI token (`<runtime>/cli.token`, written by `pi2d`).
+     * File holding the local CLI token (`<runtime>/cli.token`, written by `pi2 daemon`).
      * A bearer token equal to its trimmed contents authenticates as the synthetic
      * `local-cli` device with every scope. Checked after the persisted devices.
      */

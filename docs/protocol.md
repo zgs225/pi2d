@@ -3,10 +3,10 @@
 Single vocabulary, three surfaces. **The plugin inside nvim is the only authority for session state.**
 
 ```
-browser  <──HTTP + WS/SSE──>  pi2d  <──JSONL over unix socket──>  plugin (nvim)
+browser  <──HTTP + WS/SSE──>  pi2 daemon  <──JSONL over unix socket──>  plugin (nvim)
 ```
 
-- `pi2d` never spawns `pi`, never parses session JSONL, never stores session state.
+- `pi2 daemon` never spawns `pi`, never parses session JSONL, never stores session state.
 - The browser keeps a **render cache** only; a `snapshot` replaces it wholesale.
 - One workspace maps to exactly one managed nvim instance.
 

@@ -192,7 +192,7 @@ export function acquireLock(options: AcquireLockOptions): DaemonLockHandle {
             if (staleness.live && options.force !== true) {
                 throw new LockError(
                     "E_LOCKED",
-                    `another pi2d is running (pid ${holder.pid}, port ${holder.port}); use --force to override`,
+                    `another pi2 daemon is running (pid ${holder.pid}, port ${holder.port}); use --force to override`,
                     holder,
                 );
             }
@@ -205,7 +205,7 @@ export function acquireLock(options: AcquireLockOptions): DaemonLockHandle {
         }
     }
 
-    throw new LockError("E_LOCKED", `could not acquire ${path}: another pi2d keeps re-creating it`);
+    throw new LockError("E_LOCKED", `could not acquire ${path}: another pi2 daemon keeps re-creating it`);
 }
 
 function makeHandle(path: string, initial: DaemonLock): DaemonLockHandle {

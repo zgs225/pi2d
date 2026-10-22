@@ -1,4 +1,4 @@
--- Init used by the pi2d end-to-end harness.
+-- Init used by the pi2 daemon end-to-end harness.
 -- Minimal, hermetic: only the plugin under test on the runtimepath, with the
 -- web console enabled and diagnostics enabled. Setting up the plugin here also
 -- makes `pi.host` skip its own `setup()` call.

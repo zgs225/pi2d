@@ -11,7 +11,7 @@ export const TEST_LIMITS: Limits = {
     maxConnections: 64,
 };
 
-export function tempDir(prefix = "pi2d-cli-"): string {
+export function tempDir(prefix = "pi2-daemon-cli-"): string {
     return mkdtempSync(join(tmpdir(), prefix));
 }
 
@@ -26,8 +26,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
         staticDir: "/nonexistent-web-dist",
         corsOrigins: [],
         limits: TEST_LIMITS,
-        tokenPath: "/tmp/pi2d-cli-test.sock.token",
-        deviceStorePath: "/tmp/pi2d-cli-test-devices.json",
+        tokenPath: "/tmp/pi2-daemon-cli-test.sock.token",
+        deviceStorePath: "/tmp/pi2-daemon-cli-test-devices.json",
     };
     return { ...base, ...overrides, limits: { ...base.limits, ...(overrides.limits ?? {}) } };
 }

@@ -1,24 +1,23 @@
 {
-  "name": "pi2d",
+  "name": "pi2-web-daemon",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "pi2 web console daemon: HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
+  "description": "pi2 web console daemon (`pi2 daemon`): HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "pi2d": "./dist/cli/pi2d.js",
     "pi2": "./dist/cli/pi2.js"
   },
   "scripts": {
-    "dev": "tsx watch src/cli/pi2d.ts",
+    "dev": "tsx watch src/cli/pi2.ts daemon",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/cli/pi2d.js --foreground",
+    "start": "node dist/cli/pi2.js daemon --foreground",
     "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {

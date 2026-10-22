@@ -1,5 +1,5 @@
 /**
- * Composition root: the real dependency graph behind `pi2d`.
+ * Composition root: the real dependency graph behind `pi2 daemon`.
  *
  * Everything the daemon serves is assembled here so that the CLI entry point
  * only has to deal with process concerns (args, lock, signals, daemon.json):

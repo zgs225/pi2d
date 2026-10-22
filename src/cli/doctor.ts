@@ -149,7 +149,7 @@ export function checkRuntimeDir(probe: DoctorContext["runtime"]): DoctorCheck {
 
 export function checkCliToken(probe: DoctorContext["cliToken"]): DoctorCheck {
     if (!probe.exists) {
-        return { name: "cli-token", status: "warn", detail: `${probe.path} missing (start pi2d to mint it)` };
+        return { name: "cli-token", status: "warn", detail: `${probe.path} missing (start the daemon with \`pi2 daemon\`)` };
     }
     const ok = probe.mode !== undefined && (probe.mode & 0o077) === 0;
     return {
@@ -172,13 +172,13 @@ export function checkSocket(probe: DoctorContext["socket"], daemonReachable: boo
 
 export function checkDaemon(probe: DoctorContext["daemon"]): DoctorCheck {
     if (!probe.reachable) {
-        return { name: "daemon", status: "fail", detail: probe.error ?? "not reachable (is pi2d running?)" };
+        return { name: "daemon", status: "fail", detail: probe.error ?? "not reachable (is the daemon running?)" };
     }
     return { name: "daemon", status: "ok", detail: `http://127.0.0.1:${probe.port ?? "?"} reachable` };
 }
 
 export function checkPort(probe: DoctorContext["port"]): DoctorCheck {
-    if (probe.bound) return { name: "port", status: "ok", detail: `${probe.configured} bound by pi2d` };
+    if (probe.bound) return { name: "port", status: "ok", detail: `${probe.configured} bound by the daemon` };
     return { name: "port", status: "ok", detail: `${probe.configured} free` };
 }
 
@@ -357,7 +357,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
             daemon = { reachable: false, error: error instanceof Error ? error.message : String(error) };
         }
     } else {
-        daemon = { reachable: false, error: "no daemon reachable (is pi2d running?)" };
+        daemon = { reachable: false, error: "no daemon reachable (is the daemon running?)" };
     }
 
     const serviceManager: DoctorContext["serviceManager"] =

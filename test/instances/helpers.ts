@@ -33,7 +33,7 @@ export interface TempEnv {
 
 const ENV_KEYS = ["PI2_RUNTIME_DIR", "PI2_DATA_DIR", "PI2_STATE_DIR", "PI2_NVIM_BIN", "PI2_NVIM_INIT"] as const;
 
-export function makeTempEnv(prefix = "pi2d-instances-"): TempEnv {
+export function makeTempEnv(prefix = "pi2-daemon-instances-"): TempEnv {
     const dir = mkdtempSync(join(tmpdir(), prefix));
     const runtime = join(dir, "run");
     const data = join(dir, "data");

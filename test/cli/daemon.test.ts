@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_PORT_RETRIES, main, parseDaemonArgs } from "../../src/cli/pi2d.js";
+import { DEFAULT_PORT_RETRIES, main, parseDaemonArgs } from "../../src/cli/daemon.js";
 import { acquireLock } from "../../src/cli/lock.js";
 import { readCliToken, tokenPerms, writeCliToken } from "../../src/cli/token.js";
 import { UsageError } from "../../src/cli/util.js";
@@ -44,12 +44,13 @@ describe("parseDaemonArgs", () => {
     });
 });
 
-describe("pi2d main (non-listening paths)", () => {
+describe("daemon main (non-listening paths)", () => {
     it("prints usage for --help", async () => {
         const out: string[] = [];
         const code = await main(["--help"], { out: (line) => out.push(line), err: () => undefined });
         expect(code).toBe(0);
-        expect(out.join("\n")).toContain("Usage: pi2d [options]");
+        expect(out[0]?.split("\n")[0]).toBe("pi2 daemon — pi2 daemon");
+        expect(out.join("\n")).toContain("Usage: pi2 daemon [start] [options]");
         expect(out.join("\n")).toContain("--static-dir");
     });
 
@@ -57,7 +58,7 @@ describe("pi2d main (non-listening paths)", () => {
         const out: string[] = [];
         const code = await main(["--version"], { out: (line) => out.push(line), err: () => undefined });
         expect(code).toBe(0);
-        expect(out[0]).toMatch(/^pi2d \d+\.\d+\.\d+/);
+        expect(out[0]).toMatch(/^pi2 \d+\.\d+\.\d+/);
     });
 
     it("exits 2 on bad arguments", async () => {
@@ -112,12 +113,12 @@ describe("local CLI token", () => {
     });
 });
 
-describe("pi2d singleton lock vs cli.token", () => {
+describe("daemon singleton lock vs cli.token", () => {
     let dir: string;
     let tokenPath: string;
 
     beforeEach(() => {
-        dir = tempDir("pi2d-main-lock-");
+        dir = tempDir("pi2-daemon-main-lock-");
         setRuntimeEnv(dir);
         mkdirSync(join(dir, "web"), { recursive: true });
         tokenPath = join(dir, "run", "cli.token");
@@ -147,7 +148,7 @@ describe("pi2d singleton lock vs cli.token", () => {
             const err: string[] = [];
             const code = await main([], { out: () => undefined, err: (line) => err.push(line) });
             expect(code).toBe(1);
-            expect(err.join("\n")).toContain("another pi2d is running");
+            expect(err.join("\n")).toContain("another pi2 daemon is running");
             expect(readCliToken(tokenPath)).toBe(original);
         } finally {
             holder.release();

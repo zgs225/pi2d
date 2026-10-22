@@ -15,7 +15,7 @@ export interface SessionSpec {
     mtime?: Date | number;
 }
 
-export function makeSandbox(prefix = "pi2d-ws-"): string {
+export function makeSandbox(prefix = "pi2-daemon-ws-"): string {
     return mkdtempSync(join(tmpdir(), prefix));
 }
 

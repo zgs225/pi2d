@@ -6,7 +6,7 @@
  *   - `src/daemon/**`          W1 (HTTP/WS/SSE/auth/static/router)
  *   - `src/instances/**`       W2 (supervisor: one managed nvim per workspace)
  *   - `src/workspaces/**`      W3 (registry + disk discovery)
- *   - `src/cli/**`             W8 (pi2d / pi2 commands)
+ *   - `src/cli/**`             W8 (pi2 / daemon commands)
  *
  * Do not change these shapes without updating `docs/protocol.md`.
  */

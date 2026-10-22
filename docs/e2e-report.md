@@ -12,7 +12,7 @@
 | node | v22.23.1 |
 | nvim | 0.12.6 |
 | pi | 1.3.0 |
-| daemon | `pi2d` @ `31f3630` + working-tree fixes |
+| daemon | `pi2 daemon` @ `31f3630` + working-tree fixes |
 | plugin | `pi2.nvim` `feat/web-console` @ `ffec47c` + working-tree fixes |
 | browser | Chrome (Playwright 1.63, headless) |
 | model | `cliproxyapi` (real turns; `deepseek-v4-pro` in the browser run) |
@@ -73,7 +73,7 @@ C3 dark/light screenshots · C4 zero unexpected console errors/pageerrors.
   is implemented; `subagent.dispatch` accepts the canonical `items[]` shape;
   `attention.respond` accepts the structured response table.
 
-### Daemon (`pi2d`)
+### Daemon (`pi2 daemon`)
 
 - Workspaces outside `PI2_WORKSPACE_ROOTS` returned `500 E_INTERNAL`; now
   `403 E_FORBIDDEN`.
@@ -86,7 +86,7 @@ C3 dark/light screenshots · C4 zero unexpected console errors/pageerrors.
 - `/api/v1/info` gained additive `hostname`, `os`, `version`, `uptimeMs`, `pid`,
   `port`; `/health` reflects instance/workspace/auth state.
 
-### Web (`pi2d/web`)
+### Web (`web/`)
 
 - Pairing posted `pair.redeem` to the bearer-gated `/api/v1/cmd` → every pairing
   401. The manual/scan flows now redeem the public `POST /api/v1/pair`
@@ -124,7 +124,7 @@ C3 dark/light screenshots · C4 zero unexpected console errors/pageerrors.
 ## Reproduction
 
 ```bash
-cd /home/yuez/Workspace/Neovim/pi2d
+cd <repo>    # the pi2 CLI/daemon checkout (this repository)
 bash scripts/e2e/run-all.sh          # builds daemon + web, runs API then browser
 
 # individual suites

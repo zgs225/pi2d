@@ -14,19 +14,19 @@ import { runInstallService, runUninstallService } from "../../src/cli/pi2.js";
 
 const paths: ServicePaths = {
     nodePath: "/opt/node/bin/node",
-    scriptPath: "/repo/dist/cli/pi2d.js",
+    scriptPath: "/repo/dist/cli/pi2.js",
     stateDir: "/home/u/.local/state/pi2",
     homeDir: "/home/u",
     pathEnv: "/opt/node/bin:/usr/bin:/bin",
 };
 
 const LINUX_UNIT = `[Unit]
-Description=pi2 daemon (pi2d)
+Description=pi2 daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/node/bin/node /repo/dist/cli/pi2d.js --foreground
+ExecStart=/opt/node/bin/node /repo/dist/cli/pi2.js daemon --foreground
 Environment=PATH=/opt/node/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=2
@@ -42,11 +42,12 @@ const MAC_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.pi2.pi2d</string>
+    <string>com.pi2.daemon</string>
     <key>ProgramArguments</key>
     <array>
         <string>/opt/node/bin/node</string>
-        <string>/repo/dist/cli/pi2d.js</string>
+        <string>/repo/dist/cli/pi2.js</string>
+        <string>daemon</string>
         <string>--foreground</string>
     </array>
     <key>EnvironmentVariables</key>
@@ -59,9 +60,9 @@ const MAC_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/home/u/.local/state/pi2/pi2d.log</string>
+    <string>/home/u/.local/state/pi2/pi2-daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/home/u/.local/state/pi2/pi2d.err.log</string>
+    <string>/home/u/.local/state/pi2/pi2-daemon.err.log</string>
 </dict>
 </plist>
 `;
@@ -80,22 +81,22 @@ describe("systemd user unit", () => {
     });
 
     it("quotes values with spaces", () => {
-        const unit = renderSystemdUnit({ ...paths, scriptPath: "/repo dir/cli/pi2d.js" });
-        expect(unit).toContain('ExecStart=/opt/node/bin/node "/repo dir/cli/pi2d.js" --foreground');
+        const unit = renderSystemdUnit({ ...paths, scriptPath: "/repo dir/cli/pi2.js" });
+        expect(unit).toContain('ExecStart=/opt/node/bin/node "/repo dir/cli/pi2.js" daemon --foreground');
     });
 
     it("targets ~/.config/systemd/user and honours XDG_CONFIG_HOME", () => {
         expect(systemdUserDir(paths)).toBe("/home/u/.config/systemd/user");
         expect(systemdUserDir({ ...paths, configHome: "/xdg" })).toBe("/xdg/systemd/user");
         const service = renderService("linux", paths);
-        expect(service.path).toBe("/home/u/.config/systemd/user/pi2d.service");
-        expect(service.name).toBe("pi2d.service");
+        expect(service.path).toBe("/home/u/.config/systemd/user/pi2.service");
+        expect(service.name).toBe("pi2.service");
         expect(serviceDir(service)).toBe("/home/u/.config/systemd/user");
         expect(service.commands).toEqual([
             "systemctl --user daemon-reload",
-            "systemctl --user enable --now pi2d.service",
+            "systemctl --user enable --now pi2.service",
         ]);
-        expect(service.removeCommands).toContain("systemctl --user disable --now pi2d.service");
+        expect(service.removeCommands).toContain("systemctl --user disable --now pi2.service");
     });
 });
 
@@ -112,14 +113,14 @@ describe("LaunchAgent plist", () => {
     it("targets ~/Library/LaunchAgents", () => {
         expect(launchAgentDir(paths)).toBe("/home/u/Library/LaunchAgents");
         const service = renderService("darwin", paths);
-        expect(service.path).toBe("/home/u/Library/LaunchAgents/com.pi2.pi2d.plist");
-        expect(service.name).toBe("com.pi2.pi2d.plist");
+        expect(service.path).toBe("/home/u/Library/LaunchAgents/com.pi2.daemon.plist");
+        expect(service.name).toBe("com.pi2.daemon.plist");
         expect(service.commands[0]).toContain("launchctl bootstrap gui/$(id -u)");
         expect(service.removeCommands[0]).toContain("launchctl bootout");
     });
 
-    it("resolves dist/cli/pi2d.js next to the built CLI", () => {
-        expect(defaultScriptPath()).toMatch(/dist\/cli\/pi2d\.js$/);
+    it("resolves dist/cli/pi2.js next to the built CLI", () => {
+        expect(defaultScriptPath()).toMatch(/dist\/cli\/pi2\.js$/);
     });
 });
 
@@ -137,8 +138,8 @@ describe("install-service / uninstall-service commands", () => {
         expect(code).toBe(0);
         expect(writes).toEqual([]);
         expect(lines.join("\n")).toContain("[Service]");
-        expect(lines.join("\n")).toContain("would write /home/u/.config/systemd/user/pi2d.service");
-        expect(lines.join("\n")).toContain("systemctl --user enable --now pi2d.service");
+        expect(lines.join("\n")).toContain("would write /home/u/.config/systemd/user/pi2.service");
+        expect(lines.join("\n")).toContain("systemctl --user enable --now pi2.service");
     });
 
     it("writes the unit on --write and prints the enable commands", () => {
@@ -152,8 +153,8 @@ describe("install-service / uninstall-service commands", () => {
             writeFile: (path, content) => writes.push({ path, content }),
         });
         expect(code).toBe(0);
-        expect(writes).toEqual([{ path: join("/home/u/.config/systemd/user", "pi2d.service"), content: LINUX_UNIT }]);
-        expect(lines[0]).toBe("wrote /home/u/.config/systemd/user/pi2d.service (mode 0644)");
+        expect(writes).toEqual([{ path: join("/home/u/.config/systemd/user", "pi2.service"), content: LINUX_UNIT }]);
+        expect(lines[0]).toBe("wrote /home/u/.config/systemd/user/pi2.service (mode 0644)");
         expect(lines.join("\n")).toContain("systemctl --user daemon-reload");
     });
 
@@ -170,7 +171,7 @@ describe("install-service / uninstall-service commands", () => {
             }),
         ).toBe(0);
         expect(removed).toEqual([]);
-        expect(dry.join("\n")).toContain("would remove /home/u/Library/LaunchAgents/com.pi2.pi2d.plist");
+        expect(dry.join("\n")).toContain("would remove /home/u/Library/LaunchAgents/com.pi2.daemon.plist");
 
         const lines: string[] = [];
         expect(
@@ -182,7 +183,7 @@ describe("install-service / uninstall-service commands", () => {
                 removeFile: (path) => removed.push(path),
             }),
         ).toBe(0);
-        expect(removed).toEqual(["/home/u/Library/LaunchAgents/com.pi2.pi2d.plist"]);
+        expect(removed).toEqual(["/home/u/Library/LaunchAgents/com.pi2.daemon.plist"]);
         expect(lines.join("\n")).toContain("launchctl bootout");
     });
 });

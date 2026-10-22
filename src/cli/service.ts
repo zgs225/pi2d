@@ -15,7 +15,7 @@ export type ServicePlatform = "linux" | "darwin";
 export interface ServicePaths {
     /** Absolute node binary (`process.execPath`). */
     nodePath: string;
-    /** Absolute path to `dist/cli/pi2d.js`. */
+    /** Absolute path to `dist/cli/pi2.js`. */
     scriptPath: string;
     /** Where logs go (plist StandardOut/ErrPath). */
     stateDir: string;
@@ -30,7 +30,7 @@ export interface ServicePaths {
 }
 
 export interface RenderedService {
-    /** `pi2d.service` on Linux, `com.pi2.pi2d.plist` on macOS. */
+    /** `pi2.service` on Linux, `com.pi2.daemon.plist` on macOS. */
     name: string;
     /** Absolute install path. */
     path: string;
@@ -41,13 +41,13 @@ export interface RenderedService {
     removeCommands: string[];
 }
 
-export const SYSTEMD_UNIT_NAME = "pi2d.service";
-export const LAUNCHD_LABEL = "com.pi2.pi2d";
+export const SYSTEMD_UNIT_NAME = "pi2.service";
+export const LAUNCHD_LABEL = "com.pi2.daemon";
 export const LAUNCHD_PLIST_NAME = `${LAUNCHD_LABEL}.plist`;
 
-/** `<repo>/dist/cli/pi2d.js`, resolved from either `src/cli/` or `dist/cli/`. */
+/** `<repo>/dist/cli/pi2.js`, resolved from either `src/cli/` or `dist/cli/`. */
 export function defaultScriptPath(): string {
-    return fileURLToPath(new URL("../../dist/cli/pi2d.js", import.meta.url));
+    return fileURLToPath(new URL("../../dist/cli/pi2.js", import.meta.url));
 }
 
 export function defaultServicePaths(overrides: Partial<ServicePaths> = {}): ServicePaths {
@@ -96,12 +96,12 @@ export function renderSystemdUnit(paths: ServicePaths): string {
     const env = environmentEntries(paths).map(([key, value]) => `Environment=${key}=${systemdQuote(value)}`);
     return [
         "[Unit]",
-        "Description=pi2 daemon (pi2d)",
+        "Description=pi2 daemon",
         "After=network.target",
         "",
         "[Service]",
         "Type=simple",
-        `ExecStart=${systemdQuote(paths.nodePath)} ${systemdQuote(paths.scriptPath)} --foreground`,
+        `ExecStart=${systemdQuote(paths.nodePath)} ${systemdQuote(paths.scriptPath)} daemon --foreground`,
         ...env,
         "Restart=on-failure",
         "RestartSec=2",
@@ -139,6 +139,7 @@ export function renderLaunchAgent(paths: ServicePaths): string {
         "    <array>",
         `        <string>${xmlEscape(paths.nodePath)}</string>`,
         `        <string>${xmlEscape(paths.scriptPath)}</string>`,
+        "        <string>daemon</string>",
         "        <string>--foreground</string>",
         "    </array>",
         ...envBlock,
@@ -147,9 +148,9 @@ export function renderLaunchAgent(paths: ServicePaths): string {
         "    <key>KeepAlive</key>",
         "    <true/>",
         "    <key>StandardOutPath</key>",
-        `    <string>${xmlEscape(join(paths.stateDir, "pi2d.log"))}</string>`,
+        `    <string>${xmlEscape(join(paths.stateDir, "pi2-daemon.log"))}</string>`,
         "    <key>StandardErrorPath</key>",
-        `    <string>${xmlEscape(join(paths.stateDir, "pi2d.err.log"))}</string>`,
+        `    <string>${xmlEscape(join(paths.stateDir, "pi2-daemon.err.log"))}</string>`,
         "</dict>",
         "</plist>",
         "",

@@ -43,7 +43,7 @@ describe("workspace store", () => {
     let projectGhost: string;
 
     beforeEach(() => {
-        sandbox = makeSandbox("pi2d-store-");
+        sandbox = makeSandbox("pi2-daemon-store-");
         sessions = join(sandbox, "agent", "sessions");
         dataFile = join(sandbox, "data", "workspaces.json");
         allowRoot = join(sandbox, "code");

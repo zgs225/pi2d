@@ -1,14 +1,15 @@
 # Deployment and operations
 
-`pi2d` is the pi2 web-console daemon. It owns the HTTP/WS surface, the
+`pi2 daemon` is the pi2 web-console daemon. It owns the HTTP/WS surface, the
 workspace registry, the instance supervisor (one managed nvim per workspace)
-and the device/CLI auth. This document covers running it, its runtime files,
-the `pi2` CLI and the day-to-day ops commands.
+and the device/CLI auth. It is **a subcommand of the single shipped `pi2`
+binary**, not a separate executable. This document covers running it, its
+runtime files, the `pi2` CLI and the day-to-day ops commands.
 
 ```
-browser ──HTTP + WS/SSE──▶ pi2d ──JSONL over unix socket──▶ plugin (nvim)
-                             ▲
-                    pi2 CLI │ (HTTP, local admin token)
+browser ──HTTP + WS/SSE──▶ pi2 daemon ──JSONL over unix socket──▶ plugin (nvim)
+                               ▲
+                      pi2 CLI │ (HTTP, local admin token)
 ```
 
 Contents
@@ -21,6 +22,7 @@ Contents
 6. [Ports and the singleton lock](#6-ports-and-the-singleton-lock)
 7. [Authentication](#7-authentication)
 8. [The `pi2` CLI](#8-the-pi2-cli)
+   - [`pi2 daemon [start]`](#80-pi2-daemon-start)
 9. [Services (systemd / launchd)](#9-services-systemd--launchd)
 10. [Logs and health](#10-logs-and-health)
 11. [Restart and shutdown semantics](#11-restart-and-shutdown-semantics)
@@ -44,41 +46,55 @@ Contents
 
 ```bash
 pnpm install
-pnpm build            # tsc -> dist/ (dist/cli/pi2d.js, dist/cli/pi2.js)
+pnpm build            # tsc -> dist/ (dist/cli/pi2.js)
 pnpm --dir web build  # optional: web/dist for the browser console
 ```
 
-`pi2d` serves the browser console from `<repo>/web/dist` (or `PI2_STATIC_DIR`).
+The daemon serves the browser console from `<repo>/web/dist` (or `PI2_STATIC_DIR`).
 Without it `/` returns 404/SPA fallback behaviour and `/api/v1/health` reports
 `static=FAIL`; the API and `pi2` keep working.
 
-Binaries: `dist/cli/pi2d.js` (daemon, `pi2d`) and `dist/cli/pi2.js` (client,
-`pi2`). Both are ESM and start with a `#!` line.
+There is exactly one built binary, `dist/cli/pi2.js` (client commands **and** the
+`daemon` subcommand). It is ESM and starts with a `#!` line.
 
 ## 3. Running the daemon
 
+The daemon is a subcommand of the single `pi2` binary (there is no separate
+executable to install or ship):
+
 ```bash
-node dist/cli/pi2d.js --foreground          # or: pnpm dev  (tsx watch)
+node dist/cli/pi2.js daemon --foreground    # or: pnpm dev  (tsx watch)
 ```
+
+`pi2 daemon`, `pi2 daemon start` (alias) and `pi2 daemon --foreground` all start
+the same foreground process — `main` is dispatched from `src/cli/pi2.ts` to
+`src/cli/daemon.ts` and the `start` positional is dropped before parsing. There
+is no detaching mode; that is what the systemd/launchd units below rely on.
+
+`pi2 daemon --help` prints the usage block (`Usage: pi2 daemon [start] [options]`),
+`pi2 daemon --version` prints `pi2 <version>`, and an unknown daemon positional
+exits `2` without starting anything.
 
 Exactly one line goes to **stdout**:
 
 ```
-pi2d listening on http://127.0.0.1:7676
+pi2 daemon listening on http://127.0.0.1:7676
 ```
 
 Every log record is JSONL on **stderr** (that is what systemd/launchd capture).
+Every daemon error is one line on stderr prefixed `pi2: `.
 
-Flags:
+Flags (`pi2 daemon [start] …`):
 
 | Flag | Meaning |
 |---|---|
-| `--port <n>` | TCP port; `0` = ephemeral (the real port lands in `daemon.json`) |
+| `--port <n>`, `-p <n>` | TCP port; `0` = ephemeral (the real port lands in `daemon.json`) |
 | `--host <addr>` | bind address (default `127.0.0.1`) |
 | `--static-dir <p>` | built web UI directory |
-| `--force` | take the lock even if another `pi2d` holds it |
+| `--force`, `-f` | take the lock even if another `pi2 daemon` holds it |
 | `--foreground` | stay attached to the terminal (default; used by unit files) |
-| `--version`, `--help` | print and exit |
+| `--version`, `-V` | print `pi2 <version>` and exit |
+| `--help`, `-h` | print the usage block and exit |
 
 Flags are applied to the environment before the config is loaded, so
 `--port 8000` is equivalent to `PI2_PORT=8000`.
@@ -131,8 +147,8 @@ overwritten on the next start.
 
 ## 6. Ports and the singleton lock
 
-- One daemon per runtime dir. A second `pi2d` exits `1` with
-  `pi2d: another pi2d is running (pid …, port …); use --force to override`.
+- One daemon per runtime dir. A second `pi2 daemon` exits `1` with
+  `pi2: another pi2 daemon is running (pid …, port …); use --force to override`.
 - `--force` takes over the lock; the displaced daemon keeps serving until it
   exits, and it will *not* delete the new lock on shutdown (ownership is
   checked by pid + `daemonId`).
@@ -150,8 +166,8 @@ Two token kinds:
 1. **Device tokens** (paired phones/laptops): created by `POST /api/v1/pair`
    (redeem) or `pair.create`; only SHA-256 hashes are stored in
    `PI2_DATA_DIR/devices.json`.
-2. **Local CLI token**: `PI2_RUNTIME_DIR/cli.token`, minted by `pi2d` on each
-   start. Any request carrying it authenticates as the synthetic device
+2. **Local CLI token**: `PI2_RUNTIME_DIR/cli.token`, minted by `pi2 daemon` on
+   each start. Any request carrying it authenticates as the synthetic device
    `{id:"local-cli", name:"local CLI", scopes:["read","steer","control","admin"]}`
    (constant-time compare, never persisted, not revocable, not listed by
    `GET /api/v1/devices`). Rotating the file invalidates the old value
@@ -167,6 +183,22 @@ authenticated (auth runs before routing).
 `pi2` discovers the daemon from `daemon.json` (port) and `cli.token` (auth) in
 `PI2_RUNTIME_DIR`, so it needs no flags. Every command exits non-zero with a
 one-line `pi2: …` message on failure.
+
+### 8.0 `pi2 daemon [start]`
+
+```bash
+pi2 daemon                  # foreground; the plugin/browser needs this running
+pi2 daemon start            # same thing (explicit subcommand alias)
+pi2 daemon --foreground     # same thing (the flag is the default)
+pi2 daemon -p 0             # ephemeral port
+pi2 daemon --help           # Usage: pi2 daemon [start] [options]
+```
+
+All three forms start the identical foreground process; the `start` positional is
+dropped before the flag parser runs, and an unknown daemon positional exits `2`.
+The daemon is dispatched *inside* `pi2` (`src/cli/pi2.ts` → `src/cli/daemon.ts`):
+it is not a separate executable, nothing is re-exec'd, and there is no detaching
+mode. Flags, stdout contract and startup order: [§3](#3-running-the-daemon).
 
 ### 8.1 `pi2 attach [path]`
 
@@ -242,21 +274,21 @@ commands. The CLI never executes `systemctl`/`launchctl`.
 
 ```bash
 pi2 install-service --dry-run     # inspect, nothing written
-pi2 install-service --write       # ~/.config/systemd/user/pi2d.service
+pi2 install-service --write       # ~/.config/systemd/user/pi2.service
 systemctl --user daemon-reload
-systemctl --user enable --now pi2d.service
+systemctl --user enable --now pi2.service
 ```
 
 The unit is rendered with absolute paths:
 
 ```ini
 [Unit]
-Description=pi2 daemon (pi2d)
+Description=pi2 daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /repo/dist/cli/pi2d.js --foreground
+ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=2
@@ -268,13 +300,14 @@ WantedBy=default.target
 ```
 
 `XDG_CONFIG_HOME` is honoured for the target directory. On macOS the same
-command writes `~/Library/LaunchAgents/com.pi2.pi2d.plist` (`RunAtLoad`,
-`KeepAlive`, absolute node + script paths, `StandardOutPath`/`StandardErrorPath`
-under `PI2_STATE_DIR`) and prints:
+command writes `~/Library/LaunchAgents/com.pi2.daemon.plist` (`RunAtLoad`,
+`KeepAlive`, absolute node + script paths, `ProgramArguments`
+`node /repo/dist/cli/pi2.js daemon --foreground`, `StandardOutPath`/
+`StandardErrorPath` under `PI2_STATE_DIR`) and prints:
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pi2.pi2d.plist
-launchctl enable gui/$(id -u)/com.pi2.pi2d
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pi2.daemon.plist
+launchctl enable gui/$(id -u)/com.pi2.daemon
 ```
 
 `uninstall-service --write` removes the file and prints the disable commands.
@@ -283,9 +316,10 @@ For a login-less service to keep running on Linux enable linger
 
 ## 10. Logs and health
 
-- `pi2d` logs JSONL to stderr: `systemctl --user status pi2d` /
-  `journalctl --user -u pi2d -f` on Linux, `~/Library/Logs/pi2/pi2d.log` on
-  macOS. Raise verbosity with `PI2_LOG_LEVEL=debug` (in the unit's
+- `pi2 daemon` logs JSONL to stderr: `systemctl --user status pi2` /
+  `journalctl --user -u pi2 -f` on Linux (`pi2.service`), and
+  `~/Library/Logs/pi2/pi2-daemon.log` (`pi2-daemon.err.log` for stderr) on macOS.
+  Raise verbosity with `PI2_LOG_LEVEL=debug` (in the unit's
   `Environment=` line) .
 - Managed nvim output: `PI2_STATE_DIR/instances/<instanceId>.log`.
 - `GET /api/v1/health` → `{ok, items:[{name, ok, detail}]}` (`instances`,
@@ -301,7 +335,7 @@ For a login-less service to keep running on Linux enable linger
 
 ## 11. Restart and shutdown semantics
 
-- **SIGINT/SIGTERM/SIGHUP** (`pi2d`): close HTTP + WS, close the plugin socket,
+- **SIGINT/SIGTERM/SIGHUP** (`pi2 daemon`): close HTTP + WS, close the plugin socket,
   release `daemon.lock`/`daemon.json`, exit `0`. **Managed nvim processes are
   not stopped** — they keep running and reconnect (exponential backoff,
   200 ms → 5 s) the next time the daemon starts.
@@ -319,22 +353,23 @@ For a login-less service to keep running on Linux enable linger
 bash scripts/smoke.sh
 ```
 
-Builds, starts `pi2d` on an ephemeral port with throwaway
+Builds, starts `pi2 daemon` on an ephemeral port with throwaway
 `PI2_RUNTIME_DIR`/`PI2_DATA_DIR`/`PI2_STATE_DIR`, waits for `daemon.json`, then
 asserts: `/api/v1/info` (200, `v=1`), `/api/v1/health` (200 ok), `/` (200 html
 from `web/dist`), `/api/v1/nope` (404 with token, 401 without),
 `/api/v1/workspaces` (200 array with the CLI token, 401 without/with a bogus
 token), the `cli.token` format/mode, the lock payload, and a clean `SIGTERM`
 exit with lock + `daemon.json` removed. Prints one `PASS` line per assertion.
-`PI2_SMOKE_KEEP=1` keeps the temp dir (and `pi2d` log) for debugging.
+`PI2_SMOKE_KEEP=1` keeps the temp dir (and the `pi2-daemon.log` daemon log) for
+debugging.
 
 ## 13. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `pi2d: another pi2d is running (pid …)` | a live daemon owns this runtime dir. Stop it, or `--force` |
-| `pi2: no running pi2d (…/daemon.json missing)` | daemon not started, or started with a different `PI2_RUNTIME_DIR` |
-| `pi2: missing CLI token (…/cli.token)` | token deleted or daemon restarted; restart `pi2d` |
+| `pi2: another pi2 daemon is running (pid …)` | a live daemon owns this runtime dir. Stop it, or `--force` |
+| `pi2: no running pi2 daemon (…/daemon.json missing)` | daemon not started, or started with a different `PI2_RUNTIME_DIR` |
+| `pi2: missing CLI token (…/cli.token)` | token deleted or daemon restarted; restart `pi2 daemon` |
 | `401 E_UNAUTHORIZED` from `curl` | send `Authorization: Bearer $(cat $PI2_RUNTIME_DIR/cli.token)` |
 | `EADDRINUSE` on an explicit port | pick another `--port` (only the default port retries) |
 | `403` with the browser console | origin not in `PI2_ORIGINS` (derived from the port) |

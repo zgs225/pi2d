@@ -71,8 +71,8 @@ e2e_init() {
     [ -n "$E2E_NVIM_BIN" ] || e2e_fail "nvim not found"
     [ -f "$E2E_PLUGIN/lua/pi/web/commands.lua" ] ||
         e2e_fail "plugin worktree has no web layer: $E2E_PLUGIN"
-    [ -f "$E2E_REPO/dist/cli/pi2d.js" ] ||
-        e2e_fail "dist/cli/pi2d.js missing; run e2e_build"
+    [ -f "$E2E_REPO/dist/cli/pi2.js" ] ||
+        e2e_fail "dist/cli/pi2.js missing; run e2e_build"
     [ -f "$E2E_REPO/scripts/e2e/host-init.lua" ] || e2e_fail "host-init.lua missing"
 
     e2e_log "==> $suite root: $E2E_ROOT"
@@ -95,12 +95,12 @@ e2e_build() {
 
 # Wait until the daemon publishes run/daemon.json, then environment-ready.
 e2e_start_daemon() {
-    local log="$E2E_ROOT/logs/pi2d.log"
+    local log="$E2E_ROOT/logs/daemon.log"
     : >"$log"
-    e2e_log "==> starting pi2d (isolated, port 0)"
+    e2e_log "==> starting pi2 daemon (isolated, port 0)"
     # `exec` makes $! the node process itself, not the wrapping subshell, so
     # the trap can actually stop the daemon.
-    (cd "$E2E_REPO" && exec node dist/cli/pi2d.js --foreground >"$E2E_ROOT/logs/pi2d.stdout" 2>"$log") &
+    (cd "$E2E_REPO" && exec node dist/cli/pi2.js daemon --foreground >"$E2E_ROOT/logs/daemon.stdout" 2>"$log") &
     E2E_DAEMON_PID=$!
     export E2E_DAEMON_PID
 
@@ -109,7 +109,7 @@ e2e_start_daemon() {
         [ -f "$PI2_RUNTIME_DIR/daemon.json" ] && break
         kill -0 "$E2E_DAEMON_PID" 2>/dev/null || {
             tail -40 "$log" >&2 || true
-            e2e_fail "pi2d exited before writing daemon.json"
+            e2e_fail "pi2 daemon exited before writing daemon.json"
         }
         sleep 0.05
     done
@@ -202,7 +202,7 @@ e2e_pids() {
     local pid
     {
         ps -eo pid=,args= | grep -F -- "$E2E_ROOT" | grep -v -F -- 'grep -F' | awk '{print $1}' || true
-        for pid in $(pgrep -f 'pi2d|pi\.host|pi --mode rpc|nvim --headless' 2>/dev/null || true); do
+        for pid in $(pgrep -f 'pi2\.js daemon|pi\.host|pi --mode rpc|nvim --headless' 2>/dev/null || true); do
             if tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null |
                 grep -Fxq "PI2_RUNTIME_DIR=$PI2_RUNTIME_DIR"; then
                 echo "$pid"
