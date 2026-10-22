@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/pnpm-lock.yaml
+
+      - name: Install daemon deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Install web deps
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Typecheck daemon
+        run: pnpm typecheck
+
+      - name: Typecheck web
+        run: pnpm --dir web typecheck
+
+      - name: Unit tests (daemon)
+        run: pnpm test
+
+      - name: Unit tests (web)
+        run: pnpm --dir web exec vitest run
+
+      - name: Build daemon
+        run: pnpm build
+
+      - name: Build web
+        run: pnpm build:web
+
+      - name: Smoke (daemon + static UI round trip)
+        run: bash scripts/smoke.sh
+
+      # --ignore-scripts: everything is already built above, and prepack's build
+      # output would corrupt the JSON on stdout.
+      - name: Check the publishable tarball embeds dist + web/dist
+        run: |
+          node -e 'if (!require("./package.json").scripts.prepack) { console.error("prepack missing"); process.exit(1) }'
+          npm pack --dry-run --json --ignore-scripts > pack.json
+          node -e '
+            const [t] = require("./pack.json");
+            const files = t.files.map((f) => f.path);
+            for (const need of ["dist/cli/pi2.js", "web/dist/index.html", "docs/protocol.md"]) {
+              if (!files.includes(need)) {
+                console.error(`missing from tarball: ${need}`);
+                process.exit(1);
+              }
+            }
+            if (files.some((f) => f.startsWith("src/") || f.startsWith("test/"))) {
+              console.error("tarball leaks source or tests");
+              process.exit(1);
+            }
+            console.log(`tarball ok: ${files.length} files`);
+          '
