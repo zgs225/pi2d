@@ -15,32 +15,49 @@ beforeAll(async () => {
     await setLanguage("en");
 });
 
-function renderTree(props: Partial<ComponentProps<typeof SessionTree>> = {}) {
-    const onSelectSession = vi.fn();
-    const onToggleCollapse = vi.fn();
-    const onToggleAll = vi.fn();
-    const sessions = props.sessions ?? [
-        sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [subagentFixture()] }),
-        sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
-    ];
-    const utils = render(
+const defaultSessions = () => [
+    sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [subagentFixture()] }),
+    sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
+];
+
+/** The tree element with inert handlers, so a test can rerender with new props. */
+function treeElement(props: Partial<ComponentProps<typeof SessionTree>> = {}) {
+    return (
         <SessionTree
-            sessions={sessions}
+            sessions={defaultSessions()}
             selectedId="s1"
             filter=""
             collapsed={{}}
+            showHidden={false}
             connected
             onFilter={vi.fn()}
-            onToggleCollapse={onToggleCollapse}
-            onToggleAll={onToggleAll}
-            onSelectSession={onSelectSession}
+            onToggleCollapse={vi.fn()}
+            onToggleAll={vi.fn()}
+            onToggleShowHidden={vi.fn()}
+            onSelectSession={vi.fn()}
             onNewSession={vi.fn()}
             onRenameSession={vi.fn()}
             onCloseSession={vi.fn()}
             {...props}
-        />,
+        />
     );
-    return { ...utils, sessions, onSelectSession, onToggleCollapse, onToggleAll };
+}
+
+function renderTree(props: Partial<ComponentProps<typeof SessionTree>> = {}) {
+    const onSelectSession = vi.fn();
+    const onToggleCollapse = vi.fn();
+    const onToggleAll = vi.fn();
+    const onToggleShowHidden = vi.fn();
+    const sessions = props.sessions ?? defaultSessions();
+    const utils = render(
+        treeElement({ sessions, onSelectSession, onToggleCollapse, onToggleAll, onToggleShowHidden, ...props }),
+    );
+    return { ...utils, sessions, onSelectSession, onToggleCollapse, onToggleAll, onToggleShowHidden };
+}
+
+/** `SessionState` for a sub-session row (`parentId` set, `visible` defaults true). */
+function childSession(overrides: Parameters<typeof sessionFixture>[0] = {}) {
+    return sessionFixture({ sessionId: "c1", name: "Child session", parentId: "s1", ...overrides });
 }
 
 describe("session tree", () => {
@@ -58,21 +75,7 @@ describe("session tree", () => {
         fireEvent.click(within(row).getByLabelText("Collapse"));
         expect(onToggleCollapse).toHaveBeenCalledWith("s1");
 
-        rerender(
-            <SessionTree
-                sessions={sessions}
-                selectedId="s1"
-                filter=""
-                collapsed={{ s1: true }}
-                onFilter={vi.fn()}
-                onToggleCollapse={vi.fn()}
-                onToggleAll={vi.fn()}
-                onSelectSession={vi.fn()}
-                onNewSession={vi.fn()}
-                onRenameSession={vi.fn()}
-                onCloseSession={vi.fn()}
-            />,
-        );
+        rerender(treeElement({ sessions, collapsed: { s1: true } }));
         expect(screen.queryByText("researcher")).not.toBeInTheDocument();
     });
 
@@ -83,6 +86,86 @@ describe("session tree", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Collapse or expand all" }));
         expect(onToggleAll).toHaveBeenCalledTimes(1);
+    });
+
+    it("nests a child session row under its parent and opens its own transcript", () => {
+        const { onSelectSession } = renderTree({
+            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
+        });
+
+        const parentRow = document.querySelector('[data-session-id="s1"]');
+        const childRow = document.querySelector('[data-session-id="c1"]');
+        expect(childRow).not.toBeNull();
+        expect(childRow).toHaveClass("tree-row", "tree-row--sub");
+        // Nested under the parent row instead of a flat sibling.
+        expect(parentRow?.closest("li")).toContainElement(childRow as HTMLElement);
+        expect(parentRow?.parentElement?.querySelector("ul")).toContainElement(childRow as HTMLElement);
+        expect(screen.getByText("(1)")).toBeInTheDocument();
+
+        fireEvent.click(childRow as HTMLElement);
+        expect(onSelectSession).toHaveBeenCalledWith("c1");
+    });
+
+    it("hides hidden sub-sessions by default and reveals them with the toggle", () => {
+        const sessions = [
+            sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }),
+            childSession({ visible: false }),
+        ];
+        const { rerender, onToggleShowHidden } = renderTree({ sessions });
+
+        expect(document.querySelector('[data-session-id="c1"]')).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Show hidden sub-sessions" }));
+        expect(onToggleShowHidden).toHaveBeenCalledTimes(1);
+
+        rerender(treeElement({ sessions, showHidden: true }));
+        const childRow = document.querySelector('[data-session-id="c1"]');
+        expect(childRow).not.toBeNull();
+        expect(childRow).toHaveAttribute("data-hidden", "true");
+    });
+
+    it("renders a sub-session once when the manifest lists it too", () => {
+        renderTree({
+            sessions: [
+                sessionFixture({
+                    sessionId: "s1",
+                    name: "Alpha",
+                    subagents: [subagentFixture({ id: "c1" })],
+                }),
+                childSession(),
+            ],
+        });
+
+        expect(document.querySelectorAll('[data-session-id="c1"]')).toHaveLength(1);
+        expect(document.querySelectorAll("[data-subagent-id]")).toHaveLength(0);
+    });
+
+    it("keeps the routed sub-session visible under a folded parent", () => {
+        renderTree({
+            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
+            collapsed: { s1: true },
+            selectedId: "c1",
+        });
+
+        // A fold must never hide the row the route points at.
+        const childRow = document.querySelector('[data-session-id="c1"]');
+        expect(childRow).not.toBeNull();
+        expect(childRow).toHaveAttribute("aria-current", "true");
+    });
+
+    it("explains an all-hidden list instead of reporting no matches", () => {
+        renderTree({
+            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession({ visible: false })],
+            filter: "",
+        });
+
+        // The only child is hidden by policy; the parent is still shown, so the
+        // "no matching sessions" copy would be wrong. (Parent row present.)
+        expect(document.querySelector('[data-session-id="s1"]')).not.toBeNull();
+
+        renderTree({ sessions: [childSession({ visible: false, parentId: null })] });
+        expect(screen.getByText("All sub-sessions are hidden")).toBeInTheDocument();
+        // Both the toolbar toggle and the empty-state action expose the label.
+        expect(screen.getAllByRole("button", { name: /Show hidden sub-sessions/i }).length).toBeGreaterThan(0);
     });
 });
 
@@ -130,6 +213,24 @@ function sessionsBody() {
         sessions: [
             { sessionId: "s1", name: "Alpha", workspaceId: "W1", cwd: "/work/w1", status: "idle" },
             { sessionId: "s2", name: "Beta", workspaceId: "W1", cwd: "/work/w1", status: "busy" },
+        ],
+    };
+}
+
+function subSessionBody() {
+    // The child row arrives first and carries the sub-session metadata.
+    return {
+        sessions: [
+            {
+                sessionId: "c1",
+                name: "Child session",
+                workspaceId: "W1",
+                cwd: "/work/w1",
+                status: "busy",
+                parentId: "s1",
+                visible: false,
+            },
+            { sessionId: "s1", name: "Alpha", workspaceId: "W1", cwd: "/work/w1", status: "idle", visible: true },
         ],
     };
 }
@@ -248,6 +349,48 @@ describe("chat session deep link", () => {
         await renderPage(chatRoutes(), "/chat?workspace=W1");
 
         expect(await screen.findByText("Alpha first message")).toBeInTheDocument();
+        expect(screen.queryByTestId("session-not-found")).toBeNull();
+        expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Alpha");
+    });
+
+    it("renders a deep-linked hidden sub-session and offers the way back to its parent", async () => {
+        mockApi([
+            { path: "/api/v1/workspaces", handler: () => ({ body: workspaceBody() }) },
+            { path: "/api/v1/workspaces/W1/sessions", handler: () => ({ body: subSessionBody() }) },
+            { path: "/api/v1/models", handler: () => ({ body: [] }) },
+            { path: /^\/api\/v1\/sessions\/c1\/entries/, handler: () => ({ body: entriesBody("Child first message") }) },
+            { path: /^\/api\/v1\/sessions\/s1\/entries/, handler: () => ({ body: entriesBody("Parent first message") }) },
+        ]);
+
+        await renderPage(chatRoutes(), "/chat/c1?workspace=W1");
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-session-id="c1"]')).toHaveAttribute("aria-current", "true");
+        });
+        // Hidden by the plugin policy, but the routed row still renders (muted).
+        expect(document.querySelector('[data-session-id="c1"]')).toHaveAttribute("data-hidden", "true");
+        expect(await screen.findByText("Child first message")).toBeInTheDocument();
+        expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Child session");
+
+        fireEvent.click(screen.getByRole("button", { name: "Back to parent" }));
+        expect(await screen.findByText("Parent first message")).toBeInTheDocument();
+        expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Alpha");
+        await waitFor(() => {
+            expect(document.querySelector('[data-session-id="s1"]')).toHaveAttribute("aria-current", "true");
+        });
+    });
+
+    it("prefers a root session for the /chat index when a child row comes first", async () => {
+        mockApi([
+            { path: "/api/v1/workspaces", handler: () => ({ body: workspaceBody() }) },
+            { path: "/api/v1/workspaces/W1/sessions", handler: () => ({ body: subSessionBody() }) },
+            { path: "/api/v1/models", handler: () => ({ body: [] }) },
+            { path: /^\/api\/v1\/sessions\/s1\/entries/, handler: () => ({ body: entriesBody("Parent first message") }) },
+        ]);
+
+        await renderPage(chatRoutes(), "/chat?workspace=W1");
+
+        expect(await screen.findByText("Parent first message")).toBeInTheDocument();
         expect(screen.queryByTestId("session-not-found")).toBeNull();
         expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Alpha");
     });

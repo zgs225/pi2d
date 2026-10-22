@@ -82,13 +82,39 @@ Plugin obligations:
 | `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}` |
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
-| `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` |
+| `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
 | `GET /api/v1/sessions/:sid/entries?before=&limit=` | relayed; plugin paginates |
 | `GET /api/v1/attention?workspaceId=` | pending attention for one workspace |
 | `GET /api/v1/devices` | paired devices (daemon-owned) |
 | `GET /api/v1/models?workspaceId=` | relayed to the instance |
 | `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice |
 | `GET /api/v1/diagnostics` | connections, event rates, slow queries, instance table |
+
+Session row (`GET /api/v1/workspaces/:id/sessions`) — a subset of `SessionState` plus list metadata (`usage`, `flags`, `entries` and `attention` arrive via snapshot/events, not on this row):
+
+| Field | Notes |
+|---|---|
+| `sessionId`, `sessionFile?`, `name?`, `cwd?`, `timestamp?`, `modified?`, `firstMessage?` | identity + disk projection |
+| `tab?`, `live?` | live projection |
+| `status?` | live status when `live` (`busy`, `compacting`, `idle`, `exited`); otherwise the child's manifest status (`dormant`, `done`, `error`, `interrupted`, `exited`). Absent on a non-live root. |
+| `model?`, `thinking?` | per-session model pin; the child's manifest thinking level |
+| `visible: boolean` | always present; the plugin's `:PiSessions` visibility decision |
+| `parentId?: string` | sub-session rows only: the parent session id (normally present in the same list) |
+| `task?`, `agentSpawned?`, `reported?` | sub-session rows only, carried through from the spawn request |
+| `createdAt?`, `lastActiveAt?` | epoch ms; ordering/aging hints, never required |
+
+Sub-session rows sit in the same flat list as their parent: build the tree from `parentId`
+(an unknown `parentId`, or one whose row was pruned, promotes the row to a root so a row is
+never lost). `status` of a non-live child is one of `dormant|done|error|interrupted|exited`;
+a live child reports its live status.
+
+Visibility follows the plugin's `:PiSessions` policy (`visible: false` = hidden), but the
+field is advisory: a client may still render hidden rows on request (pi2 web's “show hidden
+sub-sessions” toggle) or when the row is the routed/selected session. An active search filter
+takes precedence over the routed row in pi2 web (a non-matching row stays out, even when it is
+selected). A manifest `pi2:subagents` entry that also has a session row (same id) must render
+as that row only — the session row wins. `pi2:subagents` entries may additionally carry
+`parentId?`, `visible?`, `createdAt?`, `lastActiveAt?`.
 
 ### 3.2 Commands (writes)
 
@@ -136,11 +162,18 @@ interface SessionState {
              items: { ref: string; name?: string; status: string; error?: string }[];
              summary?: { total: number; done: number; ok: number; failed: number; cancelled: number; running: number } }[];
   subagents: { id: string; name?: string; status: "active" | "completed" | "failed" | "interrupted" | "dormant";
-               model?: string; thinking?: string; task?: string; children?: unknown[] }[];
+               model?: string; thinking?: string; task?: string; children?: unknown[];
+               parentId?: string; visible?: boolean }[];
   attention: { requestId: string; method: string; title?: string; message?: string;
                options?: { id: string; label: string }[]; payload?: unknown; timeoutSec?: number;
                createdAt: number; receivedAt: number }[];
   entries: Entry[];
+
+  // List metadata — enriched by the session list (`§3.1`) / snapshot from the
+  // web client's cached row, never emitted by the reducer.
+  parentId?: string | null;   // null = root (client-side only; the plugin omits the field)
+  visible?: boolean;          // plugin `:PiSessions` visibility decision
+  task?: string;              // subagent task description from the spawn request
 }
 
 type Block =

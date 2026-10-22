@@ -47,6 +47,8 @@ export interface ChatStore {
     tab: PanelTab;
     filter: string;
     collapsed: Record<string, boolean>;
+    /** Render sub-sessions the plugin hid (`:PiSessions` policy). */
+    showHidden: boolean;
     treeOpen: boolean;
     panelOpen: boolean;
     treeCollapsed: boolean;
@@ -62,6 +64,7 @@ export interface ChatStore {
     setFilter: (filter: string) => void;
     toggleCollapsed: (id: string) => void;
     setAllCollapsed: (ids: string[], collapsed: boolean) => void;
+    toggleShowHidden: () => void;
     setTreeOpen: (open: boolean) => void;
     setPanelOpen: (open: boolean) => void;
     setTreeCollapsed: (collapsed: boolean) => void;
@@ -105,6 +108,7 @@ export const useChatStore = create<ChatStore>((set) => ({
     tab: "subagents",
     filter: "",
     collapsed: {},
+    showHidden: false,
     treeOpen: false,
     panelOpen: false,
     treeCollapsed: false,
@@ -127,6 +131,7 @@ export const useChatStore = create<ChatStore>((set) => ({
         }),
     setAllCollapsed: (ids, collapsed) =>
         set(() => ({ collapsed: collapsed ? Object.fromEntries(ids.map((id) => [id, true])) : {} })),
+    toggleShowHidden: () => set((state) => ({ showHidden: !state.showHidden })),
     setTreeOpen: (treeOpen) => set({ treeOpen }),
     setPanelOpen: (panelOpen) => set({ panelOpen }),
     setTreeCollapsed: (treeCollapsed) => set({ treeCollapsed }),

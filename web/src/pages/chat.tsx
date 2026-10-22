@@ -111,6 +111,8 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     const setFilter = useChatStore((state) => state.setFilter);
     const collapsed = useChatStore((state) => state.collapsed);
     const toggleCollapsed = useChatStore((state) => state.toggleCollapsed);
+    const showHidden = useChatStore((state) => state.showHidden);
+    const toggleShowHidden = useChatStore((state) => state.toggleShowHidden);
     const setAllCollapsed = useChatStore((state) => state.setAllCollapsed);
     const tab = useChatStore((state) => state.tab);
     const setTab = useChatStore((state) => state.setTab);
@@ -322,6 +324,12 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         [sessions],
     );
     const anyOpen = allIds.some((id) => !collapsed[id]);
+    // Only offer the way back when the parent is actually in this workspace list;
+    // a pruned/archived parent would otherwise dead-end on the not-found page.
+    const parentSessionId =
+        active?.parentId && sessions.some((session) => session.sessionId === active.parentId)
+            ? active.parentId
+            : null;
 
     const streamHead = (
         <div className="stream-head">
@@ -342,6 +350,17 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
             >
                 <Icon name="chevron-right" />
             </button>
+            {parentSessionId ? (
+                // A sub-session row is reachable from the tree and by deep link;
+                // this is the way back up without opening the tree.
+                <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => navigateSession(parentSessionId)}
+                >
+                    {t("chat.backToParent")}
+                </button>
+            ) : null}
             <div className="stream-title">
                 {active ? <StatusDot status={sessionDot(active)} title={t(`state.${sessionStatusKey(active)}`)} /> : null}
                 <span className="stream-name truncate">
@@ -394,11 +413,13 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                         selectedId={active?.sessionId ?? null}
                         filter={filter}
                         collapsed={collapsed}
+                        showHidden={showHidden}
                         connected={connected}
                         creating={creating}
                         onFilter={setFilter}
                         onToggleCollapse={toggleCollapsed}
                         onToggleAll={() => setAllCollapsed(allIds, anyOpen)}
+                        onToggleShowHidden={toggleShowHidden}
                         onSelectSession={navigateSession}
                         onSelectWorkspace={navigateWorkspace}
                         onNewSession={() => void handleNewSession()}

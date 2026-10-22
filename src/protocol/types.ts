@@ -131,6 +131,16 @@ export interface Subagent {
     createdAt?: number;
     lastActiveAt?: number;
     live?: boolean;
+    /**
+     * List metadata only: the manifest parent (lineage) id of this subagent.
+     * Never emitted by the reducer.
+     */
+    parentId?: string;
+    /**
+     * List metadata only: the plugin's `:PiSessions` visibility decision for this
+     * subagent (`false` = hidden by default). Never emitted by the reducer.
+     */
+    visible?: boolean;
     children?: Subagent[];
 }
 
@@ -176,6 +186,19 @@ export interface SessionState {
     subagents: Subagent[];
     attention: AttentionItem[];
     entries: Entry[];
+    /**
+     * List metadata only (REST session row / snapshot enrichment), never emitted
+     * by the reducer: the parent session id; `null` marks a root session.
+     */
+    parentId?: string | null;
+    /**
+     * List metadata only: the plugin's `:PiSessions` visibility decision for this
+     * session (`false` = hidden unless the user asks for hidden rows). Never
+     * emitted by the reducer.
+     */
+    visible?: boolean;
+    /** List metadata only: the subagent task description carried by the list row. Never emitted by the reducer. */
+    task?: string;
 }
 
 /* ------------------------------------------------------------------ */

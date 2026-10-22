@@ -138,6 +138,22 @@
 .tree-row .badge {
     margin-left: var(--space-1);
 }
+/* Child sessions: indentation only, no vertical guides — muted and smaller. */
+.tree-row--sub .t-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+.tree-row--sub:not(.selected) .t-name {
+    color: var(--muted-foreground);
+}
+.tree-row[data-hidden="true"] .t-name {
+    /* Muted, not illegible: keep body text above the WCAG AA contrast floor. */
+    opacity: 0.85;
+}
+.icon-btn.is-on {
+    background: var(--accent);
+    color: var(--foreground);
+}
 .tree-toggle {
     align-items: center;
     width: 1.1rem;

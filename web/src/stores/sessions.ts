@@ -42,7 +42,22 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         set((state) => {
             const list = state.byWorkspace[session.workspaceId] ?? [];
             const index = list.findIndex((s) => s.sessionId === session.sessionId);
-            const next = index === -1 ? [...list, session] : list.map((s, i) => (i === index ? session : s));
+            if (index === -1) {
+                return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: [...list, session] } };
+            }
+            // Tree metadata is list metadata: a live update (`pi2:session`,
+            // reducer events, a rename) carries no `parentId`/`visible`/`task` and
+            // must not orphan the row. Explicit `undefined` is the only
+            // "not carried" marker — an explicit `parentId: null` means root and
+            // wins, which `??` would invert.
+            const previous = list[index] as SessionState;
+            const merged: SessionState = {
+                ...session,
+                parentId: session.parentId !== undefined ? session.parentId : previous.parentId,
+                visible: session.visible !== undefined ? session.visible : previous.visible,
+                task: session.task !== undefined ? session.task : previous.task,
+            };
+            const next = list.map((s, i) => (i === index ? merged : s));
             return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: next } };
         }),
 
@@ -53,18 +68,32 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
             let moved = false;
             for (const [workspaceId, list] of Object.entries(state.byWorkspace)) {
                 const index = list.findIndex((session) => session.sessionId === from);
-                if (index === -1) {
-                    byWorkspace[workspaceId] = list;
-                    continue;
-                }
-                moved = true;
-                byWorkspace[workspaceId] = list
-                    .map((session, position) =>
-                        position === index ? { ...session, sessionId: to } : session,
-                    )
+                let changed = false;
+                let next = list.map((session, position) => {
+                    let row = session;
+                    if (position === index) {
+                        row = { ...row, sessionId: to };
+                        changed = true;
+                    }
+                    // `tmp-N` → real id migration: children (sub-session rows) keep
+                    // pointing at their parent, now under its real id.
+                    if (row.parentId === from) {
+                        row = { ...row, parentId: to };
+                        changed = true;
+                    }
+                    return row;
+                });
+                if (index !== -1) {
                     // A row already cached under the new id would now duplicate the
                     // migrated one (the REST list can be ahead of the event).
-                    .filter((session, position) => position === index || session.sessionId !== to);
+                    const deduped = next.filter(
+                        (session, position) => position === index || session.sessionId !== to,
+                    );
+                    if (deduped.length !== next.length) changed = true;
+                    next = deduped;
+                }
+                if (changed) moved = true;
+                byWorkspace[workspaceId] = next;
             }
             if (!moved) return state;
             return {
@@ -77,7 +106,11 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         set((state) => {
             const byWorkspace: Record<string, SessionState[]> = {};
             for (const [workspaceId, list] of Object.entries(state.byWorkspace)) {
-                byWorkspace[workspaceId] = list.filter((s) => s.sessionId !== sessionId);
+                byWorkspace[workspaceId] = list
+                    .filter((s) => s.sessionId !== sessionId)
+                    // Never orphan a child: a removed parent promotes its children to
+                    // roots instead of hiding them behind a missing row.
+                    .map((s) => (s.parentId === sessionId ? { ...s, parentId: null } : s));
             }
             return { byWorkspace, selectedSessionId: state.selectedSessionId === sessionId ? null : state.selectedSessionId };
         }),

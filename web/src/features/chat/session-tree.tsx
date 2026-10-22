@@ -1,4 +1,5 @@
 import type { SessionState, Subagent, WorkspaceInfo } from "@protocol/types";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
@@ -8,6 +9,14 @@ import { Input } from "@/components/ui/input";
 import { StatusDot, subagentDotClass } from "@/components/ui/status-dot";
 import { cn } from "@/lib/utils";
 import { flattenSubagents, sessionDot, sessionStatusKey } from "./session-state";
+import {
+    buildSessionTree,
+    treeNodeId,
+    treeNodeKey,
+    type SessionTreeNode,
+    type SubagentTreeNode,
+    type TreeNode,
+} from "./session-tree-model";
 
 export interface SessionTreeProps {
     sessions: SessionState[];
@@ -16,11 +25,14 @@ export interface SessionTreeProps {
     selectedId?: string | null;
     filter: string;
     collapsed: Record<string, boolean>;
+    /** Render sub-sessions the plugin marked `visible: false`. */
+    showHidden: boolean;
     connected?: boolean;
     creating?: boolean;
     onFilter: (value: string) => void;
     onToggleCollapse: (id: string) => void;
     onToggleAll: () => void;
+    onToggleShowHidden: () => void;
     onSelectSession: (id: string) => void;
     onSelectWorkspace?: (id: string) => void;
     onNewSession: () => void;
@@ -34,15 +46,6 @@ export interface SessionTreeProps {
 
 function sessionName(session: SessionState, fallback: string): string {
     return session.name?.trim() || fallback;
-}
-
-function matchesFilter(session: SessionState, filter: string, fallback: string): boolean {
-    if (!filter) return true;
-    const needle = filter.toLowerCase();
-    if (sessionName(session, fallback).toLowerCase().includes(needle)) return true;
-    return flattenSubagents(session.subagents).some(({ subagent }) =>
-        (subagent.name ?? "").toLowerCase().includes(needle),
-    );
 }
 
 function ChevronToggle({
@@ -72,93 +75,50 @@ function ChevronToggle({
     );
 }
 
-function SubagentRow({
-    session,
-    subagent,
-    collapsed,
-    onToggleCollapse,
-    onOpenSubagent,
-    onRenameSubagent,
-}: {
-    session: SessionState;
-    subagent: Subagent;
-    collapsed: Record<string, boolean>;
+interface TreeHandlers {
     onToggleCollapse: (id: string) => void;
+    onSelectSession: (id: string) => void;
+    onRenameSession: (session: SessionState) => void;
+    onCloseSession: (session: SessionState) => void;
     onOpenSubagent?: (session: SessionState, subagent: Subagent) => void;
     onRenameSubagent?: (subagent: Subagent) => void;
-}) {
-    const { t } = useTranslation();
-    const children = subagent.children ?? [];
-    const isCollapsed = collapsed[subagent.id] === true;
-    const status = t(`state.${subagent.status}`);
-    const name = subagent.name ?? subagent.id;
+}
+
+/**
+ * One row of the session tree plus its children.
+ *
+ * A real child session renders as a `tree-row--sub` (indent only, no vertical
+ * guides) and navigates to its own transcript; a manifest subagent keeps the
+ * eye/rename affordances of the subagent preview.
+ */
+function TreeRow({
+    node,
+    selectedId,
+    collapsed,
+    ...handlers
+}: TreeHandlers & { node: TreeNode; selectedId?: string | null; collapsed: Record<string, boolean> }) {
+    const isCollapsed = collapsed[treeNodeId(node)] === true && !node.forcedOpen;
     return (
         <li>
-            <div
-                className="tree-row tree-row--sub"
-                role="button"
-                tabIndex={0}
-                aria-label={name}
-                data-subagent-id={subagent.id}
-                onClick={() => onOpenSubagent?.(session, subagent)}
-                onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        onOpenSubagent?.(session, subagent);
-                    }
-                }}
-            >
-                <ChevronToggle
-                    hasChildren={children.length > 0}
+            {node.kind === "session" ? (
+                <SessionNodeRow
+                    node={node}
                     collapsed={isCollapsed}
-                    onClick={() => onToggleCollapse(subagent.id)}
+                    selected={node.session.sessionId === selectedId}
+                    {...handlers}
                 />
-                <span className={cn("dot", subagentDotClass(subagent.status))} title={status} />
-                <span className="t-main">
-                    <span className="t-name truncate">{name}</span>
-                    <span className="t-sub truncate muted">
-                        {subagent.model ?? "—"}
-                        {subagent.thinking ? ` · ${subagent.thinking}` : ""}
-                    </span>
-                </span>
-                <span className="t-actions">
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        title={t("chat.preview")}
-                        aria-label={t("chat.previewSubagent")}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onOpenSubagent?.(session, subagent);
-                        }}
-                    >
-                        <Icon name="eye" />
-                    </button>
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        title={t("chat.rename")}
-                        aria-label={t("chat.renameSubagentAria")}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onRenameSubagent?.(subagent);
-                        }}
-                    >
-                        <Icon name="edit" />
-                    </button>
-                </span>
-            </div>
-            {children.length && !isCollapsed ? (
+            ) : (
+                <SubagentNodeRow node={node} collapsed={isCollapsed} {...handlers} />
+            )}
+            {node.children.length && !isCollapsed ? (
                 <ul>
-                    {children.map((child) => (
-                        <SubagentRow
-                            key={child.id}
-                            session={session}
-                            subagent={child}
+                    {node.children.map((child) => (
+                        <TreeRow
+                            key={treeNodeKey(child)}
+                            node={child}
                             collapsed={collapsed}
-                            onToggleCollapse={onToggleCollapse}
-                            onOpenSubagent={onOpenSubagent}
-                            onRenameSubagent={onRenameSubagent}
+                            selectedId={selectedId}
+                            {...handlers}
                         />
                     ))}
                 </ul>
@@ -167,116 +127,168 @@ function SubagentRow({
     );
 }
 
-function SessionRow({
-    session,
-    selected,
+function SessionNodeRow({
+    node,
     collapsed,
+    selected,
     onToggleCollapse,
     onSelectSession,
     onRenameSession,
     onCloseSession,
-    onOpenSubagent,
-    onRenameSubagent,
 }: {
-    session: SessionState;
+    node: SessionTreeNode;
+    collapsed: boolean;
     selected: boolean;
-    collapsed: Record<string, boolean>;
-    onToggleCollapse: (id: string) => void;
-    onSelectSession: (id: string) => void;
-    onRenameSession: (session: SessionState) => void;
-    onCloseSession: (session: SessionState) => void;
-    onOpenSubagent?: (session: SessionState, subagent: Subagent) => void;
-    onRenameSubagent?: (subagent: Subagent) => void;
-}) {
+} & Pick<TreeHandlers, "onToggleCollapse" | "onSelectSession" | "onRenameSession" | "onCloseSession">) {
     const { t } = useTranslation();
-    const subagents = session.subagents ?? [];
-    const isCollapsed = collapsed[session.sessionId] === true;
-    const dot = sessionDot(session);
+    const session = node.session;
     const status = t(`state.${sessionStatusKey(session)}`);
     const name = sessionName(session, session.sessionId);
     return (
-        <li>
-            <div
-                className={cn("tree-row", selected && "selected")}
-                role="button"
-                tabIndex={0}
-                aria-label={name}
-                aria-current={selected ? "true" : undefined}
-                data-session-id={session.sessionId}
-                onClick={() => onSelectSession(session.sessionId)}
-                onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        onSelectSession(session.sessionId);
-                    }
-                }}
-            >
-                <ChevronToggle
-                    hasChildren={subagents.length > 0}
-                    collapsed={isCollapsed}
-                    onClick={() => onToggleCollapse(session.sessionId)}
-                />
-                <StatusDot status={dot} title={status} />
-                <span className="t-main">
-                    <span className="t-name truncate">
-                        {name}
-                        {session.flags.attention && session.attention.length ? (
-                            <Badge tone="warn">{`!${session.attention.length}`}</Badge>
-                        ) : null}
-                    </span>
-                    <span className="t-sub truncate muted">
-                        {session.model?.id ?? "—"}
-                        {session.thinking ? ` · ${session.thinking}` : ""}
-                    </span>
+        <div
+            className={cn("tree-row", node.depth > 0 && "tree-row--sub", selected && "selected")}
+            role="button"
+            tabIndex={0}
+            aria-label={name}
+            aria-current={selected ? "true" : undefined}
+            data-session-id={session.sessionId}
+            data-hidden={node.hidden ? "true" : undefined}
+            onClick={() => onSelectSession(session.sessionId)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectSession(session.sessionId);
+                }
+            }}
+        >
+            <ChevronToggle
+                hasChildren={node.children.length > 0}
+                collapsed={collapsed}
+                onClick={() => onToggleCollapse(session.sessionId)}
+            />
+            <StatusDot status={sessionDot(session)} title={status} />
+            <span className="t-main">
+                <span className="t-name truncate">
+                    {name}
+                    {session.flags.attention && session.attention.length ? (
+                        <Badge tone="warn">{`!${session.attention.length}`}</Badge>
+                    ) : null}
                 </span>
-                {subagents.length ? (
-                    <span className="t-meta" title={t("chat.subagentCount", { n: subagents.length })}>
-                        {`(${subagents.length})`}
-                    </span>
-                ) : null}
-                <span className="t-actions">
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        title={t("chat.rename")}
-                        aria-label={t("chat.renameSession")}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onRenameSession(session);
-                        }}
-                    >
-                        <Icon name="edit" />
-                    </button>
-                    <button
-                        type="button"
-                        className="icon-btn icon-btn--danger"
-                        title={t("chat.closeProcess")}
-                        aria-label={t("chat.closeProcess")}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onCloseSession(session);
-                        }}
-                    >
-                        <Icon name="x" />
-                    </button>
+                <span className="t-sub truncate muted">
+                    {session.model?.id ?? "—"}
+                    {session.thinking ? ` · ${session.thinking}` : ""}
                 </span>
-            </div>
-            {subagents.length && !isCollapsed ? (
-                <ul>
-                    {subagents.map((subagent) => (
-                        <SubagentRow
-                            key={subagent.id}
-                            session={session}
-                            subagent={subagent}
-                            collapsed={collapsed}
-                            onToggleCollapse={onToggleCollapse}
-                            onOpenSubagent={onOpenSubagent}
-                            onRenameSubagent={onRenameSubagent}
-                        />
-                    ))}
-                </ul>
+            </span>
+            {node.childCount ? (
+                <span className="t-meta" title={t("chat.childCount", { n: node.childCount })}>
+                    {`(${node.childCount})`}
+                </span>
             ) : null}
-        </li>
+            <span className="t-actions">
+                <button
+                    type="button"
+                    className="icon-btn"
+                    title={t("chat.rename")}
+                    aria-label={t("chat.renameSession")}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onRenameSession(session);
+                    }}
+                >
+                    <Icon name="edit" />
+                </button>
+                <button
+                    type="button"
+                    className="icon-btn icon-btn--danger"
+                    title={t("chat.closeProcess")}
+                    aria-label={t("chat.closeProcess")}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onCloseSession(session);
+                    }}
+                >
+                    <Icon name="x" />
+                </button>
+            </span>
+        </div>
+    );
+}
+
+function SubagentNodeRow({
+    node,
+    collapsed,
+    onToggleCollapse,
+    onOpenSubagent,
+    onRenameSubagent,
+}: {
+    node: SubagentTreeNode;
+    collapsed: boolean;
+} & Pick<TreeHandlers, "onToggleCollapse" | "onOpenSubagent" | "onRenameSubagent">) {
+    const { t } = useTranslation();
+    const { session, subagent } = node;
+    const status = t(`state.${subagent.status}`);
+    const name = subagent.name ?? subagent.id;
+    return (
+        <div
+            className="tree-row tree-row--sub"
+            role="button"
+            tabIndex={0}
+            aria-label={name}
+            data-subagent-id={subagent.id}
+            data-hidden={node.hidden ? "true" : undefined}
+            onClick={() => onOpenSubagent?.(session, subagent)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpenSubagent?.(session, subagent);
+                }
+            }}
+        >
+            <ChevronToggle
+                hasChildren={node.children.length > 0}
+                collapsed={collapsed}
+                onClick={() => onToggleCollapse(subagent.id)}
+            />
+            <span className={cn("dot", subagentDotClass(subagent.status))} title={status} />
+            <span className="t-main">
+                <span className="t-name truncate">{name}</span>
+                <span className="t-sub truncate muted">
+                    {subagent.model ?? "—"}
+                    {subagent.thinking ? ` · ${subagent.thinking}` : ""}
+                </span>
+            </span>
+            {node.childCount ? (
+                <span className="t-meta" title={t("chat.childCount", { n: node.childCount })}>
+                    {`(${node.childCount})`}
+                </span>
+            ) : null}
+            <span className="t-actions">
+                <button
+                    type="button"
+                    className="icon-btn"
+                    title={t("chat.preview")}
+                    aria-label={t("chat.previewSubagent")}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenSubagent?.(session, subagent);
+                    }}
+                >
+                    <Icon name="eye" />
+                </button>
+                <button
+                    type="button"
+                    className="icon-btn"
+                    title={t("chat.rename")}
+                    aria-label={t("chat.renameSubagentAria")}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onRenameSubagent?.(subagent);
+                    }}
+                >
+                    <Icon name="edit" />
+                </button>
+            </span>
+        </div>
     );
 }
 
@@ -288,11 +300,13 @@ export function SessionTree({
     selectedId,
     filter,
     collapsed,
+    showHidden,
     connected = false,
     creating = false,
     onFilter,
     onToggleCollapse,
     onToggleAll,
+    onToggleShowHidden,
     onSelectSession,
     onSelectWorkspace,
     onNewSession,
@@ -304,7 +318,12 @@ export function SessionTree({
     className,
 }: SessionTreeProps) {
     const { t } = useTranslation();
-    const visible = sessions.filter((session) => matchesFilter(session, filter, session.sessionId));
+    const nodes = useMemo(
+        () => buildSessionTree(sessions, { filter, showHidden, selectedId }),
+        [sessions, filter, showHidden, selectedId],
+    );
+    // Every id — including rows the visibility policy or the filter dropped — so
+    // "collapse all" also folds folded-away parents.
     const allIds = sessions.flatMap((session) => [
         session.sessionId,
         ...flattenSubagents(session.subagents).map(({ subagent }) => subagent.id),
@@ -377,6 +396,16 @@ export function SessionTree({
                     </span>
                     <button
                         type="button"
+                        className={cn("icon-btn", showHidden && "is-on")}
+                        title={t("chat.showHidden")}
+                        aria-label={t("chat.showHiddenAria")}
+                        aria-pressed={showHidden}
+                        onClick={onToggleShowHidden}
+                    >
+                        <Icon name="eye" />
+                    </button>
+                    <button
+                        type="button"
                         className="icon-btn"
                         title={t("chat.toggleAll")}
                         aria-label={t("chat.toggleAllAria")}
@@ -387,13 +416,13 @@ export function SessionTree({
                 </div>
             </div>
             <div className="pane-scroll">
-                {visible.length ? (
+                {nodes.length ? (
                     <ul className="tree">
-                        {visible.map((session) => (
-                            <SessionRow
-                                key={session.sessionId}
-                                session={session}
-                                selected={session.sessionId === selectedId}
+                        {nodes.map((node) => (
+                            <TreeRow
+                                key={treeNodeKey(node)}
+                                node={node}
+                                selectedId={selectedId}
                                 collapsed={collapsed}
                                 onToggleCollapse={onToggleCollapse}
                                 onSelectSession={onSelectSession}
@@ -404,11 +433,23 @@ export function SessionTree({
                             />
                         ))}
                     </ul>
-                ) : sessions.length ? (
+                ) : filter.trim() ? (
                     <Empty
                         icon={<Icon name="search" />}
                         title={t("chat.noMatch")}
                         description={t("chat.tryOther")}
+                    />
+                ) : sessions.length ? (
+                    <Empty
+                        icon={<Icon name="eye" />}
+                        title={t("chat.allHidden")}
+                        description={t("chat.allHiddenText")}
+                        action={
+                            <button type="button" className="btn btn--sm" onClick={onToggleShowHidden}>
+                                <Icon name="eye" />
+                                {t("chat.showHidden")}
+                            </button>
+                        }
                     />
                 ) : (
                     <Empty

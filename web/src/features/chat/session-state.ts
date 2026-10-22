@@ -32,6 +32,9 @@ export interface EmptySessionInput {
     status?: SessionState["status"];
     model?: ModelRef | null;
     thinking?: ThinkingLevel | null;
+    parentId?: string | null;
+    visible?: boolean;
+    task?: string;
 }
 
 export function emptySessionState(input: EmptySessionInput): SessionState {
@@ -53,6 +56,12 @@ export function emptySessionState(input: EmptySessionInput): SessionState {
         subagents: [],
         attention: [],
         entries: [],
+        // `parentId`/`visible` are list metadata with an `undefined` = "not
+        // carried" meaning: a fresh/empty state must not clobber the cached
+        // row's tree position when it is upserted over it.
+        ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+        ...(input.visible !== undefined ? { visible: input.visible } : {}),
+        ...(input.task !== undefined ? { task: input.task } : {}),
     };
 }
 
@@ -226,8 +235,19 @@ export function applySessionEvent(state: SessionState, event: SessionEvent): Ses
     return next;
 }
 
+/** `parentId` as carried by a list row: string → value, explicit null → `null`. */
+function summaryParentId(record: Record<string, unknown>, base: SessionState): string | null {
+    if (!("parentId" in record) && !("parent_id" in record)) return base.parentId ?? null;
+    return str(record.parentId) ?? str(record.parent_id) ?? null;
+}
+
 /** Enrich a snapshot with its separately-carried entry tail. */
-export function normalizeSnapshotState(sessionId: string, workspaceId: string, payload: unknown): SessionState {
+export function normalizeSnapshotState(
+    sessionId: string,
+    workspaceId: string,
+    payload: unknown,
+    existing?: SessionState,
+): SessionState {
     const record = rec(payload);
     const candidate = rec(record?.state) ?? record ?? {};
     const base = emptySessionState({
@@ -235,11 +255,19 @@ export function normalizeSnapshotState(sessionId: string, workspaceId: string, p
         workspaceId: str(candidate.workspaceId) ?? workspaceId,
         cwd: str(candidate.cwd) ?? "",
     });
+    // The list row owns the tree metadata; a snapshot without it (the normal
+    // case — the reducer never emits these) must not turn a child into a root.
+    const parentId = str(candidate.parentId ?? candidate.parent_id) ?? existing?.parentId ?? null;
+    const visible = typeof candidate.visible === "boolean" ? candidate.visible : (existing?.visible ?? true);
+    const task = str(candidate.task) ?? existing?.task;
     const state: SessionState = {
         ...base,
         ...candidate,
         sessionId,
         workspaceId: str(candidate.workspaceId) ?? workspaceId,
+        parentId,
+        visible,
+        ...(task !== undefined ? { task } : {}),
         flags: {
             attention: candidate.flags ? rec(candidate.flags)?.attention === true : false,
             done: rec(candidate.flags)?.done === true,
@@ -292,6 +320,7 @@ export function normalizeSessionSummary(raw: unknown, workspaceId: string, exist
 
     const thinkingValue = str(record.thinking);
     const hasQueue = Array.isArray(record.queue);
+    const task = str(record.task) ?? base.task;
     return {
         ...base,
         sessionId,
@@ -314,6 +343,9 @@ export function normalizeSessionSummary(raw: unknown, workspaceId: string, exist
         subagents: Array.isArray(record.subagents) ? arr(record.subagents) : base.subagents,
         attention: Array.isArray(record.attention) ? arr(record.attention) : base.attention,
         entries: Array.isArray(record.entries) ? arr<Entry>(record.entries) : base.entries,
+        parentId: summaryParentId(record, base),
+        visible: typeof record.visible === "boolean" ? record.visible : base.visible,
+        ...(task !== undefined ? { task } : {}),
     };
 }
 
