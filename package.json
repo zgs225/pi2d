@@ -2,6 +2,7 @@
   "name": "pi2d",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "description": "pi2 web console daemon (`pi2 daemon`): HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
   "engines": {
     "node": ">=22"
@@ -13,7 +14,8 @@
     "dist/",
     "web/dist/",
     "docs/protocol.md",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
