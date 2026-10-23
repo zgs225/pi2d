@@ -14,7 +14,7 @@
  * bound port, `cli.token` the local admin token (see docs/deployment.md).
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform as osPlatform } from "node:os";
@@ -33,6 +33,7 @@ import {
     packageVersion,
     parseArgs,
     realpathOrSelf,
+    stringFlag,
     UsageError,
 } from "./util.js";
 import {
@@ -51,11 +52,17 @@ Usage:
   pi2 daemon [start] [options]       run the web-console daemon (foreground)
   pi2 attach [path]                  attach nvim to the workspace instance, else open nvim
   pi2 status [--json]                daemon info, instances, resources, health
+  pi2 open [--print] [--no-browser]  open the web console signed in (local only)
   pi2 doctor [--json]                environment checks
-  pi2 pairing                        create a pairing code (URL + code + QR payload)
+  pi2 pairing [--public-url <url>]   create a pairing code (URL + code + QR payload)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
   pi2 --version | --help
+
+\`pi2 open\` flags: --print prints the URL only; --no-browser prints it instead
+of launching a browser (--print implies --no-browser).
+\`pi2 pairing\` flags: --public-url <url> rebuilds the URL on that public base
+(defaults to daemon.json's publicUrl, then PI2_PUBLIC_URL).
 
 The daemon endpoint comes from $PI2_RUNTIME_DIR/daemon.json (port) and
 $PI2_RUNTIME_DIR/cli.token (local admin token). Start it with \`pi2 daemon\`.
@@ -258,6 +265,8 @@ interface InfoBody {
     platform: string;
     capabilities: string[];
     limits: { maxBodyBytes: number; maxFrameBytes: number; maxConnections: number };
+    access?: string;
+    publicUrl?: string | null;
 }
 
 interface HealthBody {
@@ -298,7 +307,13 @@ export async function runStatus(options: StatusOptions): Promise<number> {
         print(
             JSON.stringify(
                 {
-                    daemon: { url: client.baseUrl, ...info },
+                    daemon: {
+                        url: client.baseUrl,
+                        ...info,
+                        // Older daemons may not report them; daemon.json does.
+                        access: info.access ?? client.daemon.access,
+                        publicUrl: info.publicUrl ?? client.daemon.publicUrl ?? null,
+                    },
                     instances,
                     resources,
                     health,
@@ -350,6 +365,21 @@ export async function runStatus(options: StatusOptions): Promise<number> {
 export interface PairingOptions {
     client: DaemonClient;
     print?: (line: string) => void;
+    /** Rebuild the printed/QR url on this public base (e.g. `https://host.ts.net`). */
+    publicUrl?: string | null;
+}
+
+function withoutTrailingSlash(value: string): string {
+    return value.trim().replace(/\/+$/, "");
+}
+
+/** `--public-url` → `daemon.json.publicUrl` → `PI2_PUBLIC_URL`, first non-empty wins. */
+export function resolvePublicUrl(client: DaemonClient, flag: string | undefined): string | null {
+    for (const candidate of [flag, client.daemon.publicUrl, process.env.PI2_PUBLIC_URL]) {
+        const value = candidate === undefined || candidate === null ? "" : withoutTrailingSlash(candidate);
+        if (value !== "") return value;
+    }
+    return null;
 }
 
 export async function runPairing(options: PairingOptions): Promise<number> {
@@ -359,9 +389,13 @@ export async function runPairing(options: PairingOptions): Promise<number> {
     if (code === undefined) throw new CliError("pairing failed: daemon returned no code");
     const expiresAt = typeof result.body.expiresAt === "number" ? result.body.expiresAt : undefined;
     const nonce = typeof result.body.nonce === "string" ? result.body.nonce : undefined;
-    // Rebuild the URL from the *actual* base URL: the daemon's own `url` field is
-    // derived from the configured port, which is stale after a retry or `--port 0`.
-    const url = `${options.client.baseUrl}/pair/${code}`;
+    // Rebuild the URL from the *actual* base URL (or the public base when one is
+    // known): the daemon's own `url` field is derived from the configured port,
+    // which is stale after a retry or `--port 0`.
+    const base = options.publicUrl === undefined || options.publicUrl === null || options.publicUrl.trim() === ""
+        ? options.client.baseUrl
+        : withoutTrailingSlash(options.publicUrl);
+    const url = `${base}/pair/${code}`;
     const payload = JSON.stringify({ v: PROTOCOL_VERSION, code, url, ...(expiresAt === undefined ? {} : { expiresAt }), ...(nonce === undefined ? {} : { nonce }) });
 
     print(`url     ${url}`);
@@ -370,6 +404,52 @@ export async function runPairing(options: PairingOptions): Promise<number> {
         print(`expires ${new Date(expiresAt).toISOString()} (${Math.max(0, Math.round((expiresAt - Date.now()) / 1000))}s)`);
     }
     print(`qr      ${payload}`);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// open
+// ---------------------------------------------------------------------------
+
+export interface OpenOptions {
+    client: DaemonClient;
+    print?: (line: string) => void;
+    /** `--print`: print the URL only and exit. */
+    printOnly?: boolean;
+    /** `--no-browser`: print the URL instead of launching one. */
+    noBrowser?: boolean;
+    /** Opener override; call `onError` when the launch fails. */
+    openUrl?: (url: string, onError: () => void) => void;
+}
+
+/** Detached platform opener: `pi2 open` never waits for the browser. */
+export function openInBrowser(url: string, onError: () => void): void {
+    const command = osPlatform() === "darwin" ? "open" : "xdg-open";
+    try {
+        const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+        child.once("error", onError);
+        child.unref();
+    } catch {
+        onError();
+    }
+}
+
+/**
+ * `pi2 open`: mint a loopback browser session and put the browser on it. The
+ * token stays inside the returned URL (fragment), and only the URL is printed.
+ */
+export async function runOpen(options: OpenOptions): Promise<number> {
+    const print = options.print ?? ((line: string) => process.stdout.write(`${line}\n`));
+    const result = await options.client.post("/api/v1/console/session", {});
+    const url = typeof result.body.url === "string" ? result.body.url : undefined;
+    if (url === undefined) throw new CliError("console session failed: daemon returned no url");
+
+    if (options.printOnly === true || options.noBrowser === true) {
+        print(url);
+        return 0;
+    }
+    // A missing xdg-open only costs the auto-launch; the URL is still useful.
+    (options.openUrl ?? openInBrowser)(url, () => print(url));
     return 0;
 }
 
@@ -522,6 +602,24 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                 const client = (options.client ?? (() => createClient({ ...(options.runtime === undefined ? {} : { runtime: options.runtime }) })))();
                 return await runStatus({ client, json: boolFlag(parsed.flags, "--json"), print: out });
             }
+            case "open": {
+                const parsed = parseArgs(rest, {
+                    booleans: ["--print", "--no-browser", "--help"],
+                    aliases: { "-h": "--help" },
+                });
+                if (boolFlag(parsed.flags, "--help")) {
+                    out(USAGE);
+                    return 0;
+                }
+                if (parsed.positionals.length > 0) throw new UsageError("open takes no arguments");
+                const client = (options.client ?? (() => createClient({ ...(options.runtime === undefined ? {} : { runtime: options.runtime }) })))();
+                return await runOpen({
+                    client,
+                    print: out,
+                    printOnly: boolFlag(parsed.flags, "--print"),
+                    noBrowser: boolFlag(parsed.flags, "--no-browser"),
+                });
+            }
             case "doctor": {
                 const parsed = parseArgs(rest, { booleans: ["--json", "--help"], aliases: { "-h": "--help" } });
                 if (boolFlag(parsed.flags, "--help")) {
@@ -534,9 +632,21 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
             }
             case "pairing":
             case "pair": {
-                parseArgs(rest, { booleans: ["--help"], aliases: { "-h": "--help" } });
+                const parsed = parseArgs(rest, {
+                    values: ["--public-url"],
+                    booleans: ["--help"],
+                    aliases: { "-h": "--help" },
+                });
+                if (boolFlag(parsed.flags, "--help")) {
+                    out(USAGE);
+                    return 0;
+                }
                 const client = (options.client ?? (() => createClient({ ...(options.runtime === undefined ? {} : { runtime: options.runtime }) })))();
-                return await runPairing({ client, print: out });
+                return await runPairing({
+                    client,
+                    print: out,
+                    publicUrl: resolvePublicUrl(client, stringFlag(parsed.flags, "--public-url")),
+                });
             }
             case "install-service":
             case "uninstall-service": {

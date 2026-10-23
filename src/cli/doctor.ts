@@ -11,7 +11,7 @@ import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT } from "../config.js";
+import { DEFAULT_PORT, loadConfig, type AccessMode } from "../config.js";
 import { daemonSocketPath, runtimeDir } from "../core/paths.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
 import { formatTable } from "./util.js";
@@ -43,6 +43,13 @@ export interface BinaryProbe {
     error?: string;
 }
 
+export interface AccessModeContext {
+    mode: AccessMode;
+    host: string;
+    port: number;
+    publicUrl: string | null;
+}
+
 export interface DoctorContext {
     platform: NodeJS.Platform;
     nodeVersion: string;
@@ -54,6 +61,7 @@ export interface DoctorContext {
     socket: { path: string; exists: boolean };
     daemon: { reachable: boolean; port?: number; protocolVersion?: number; error?: string };
     port: { configured: number; bound: boolean };
+    access: AccessModeContext;
     serviceManager: { name: "systemd" | "launchd"; available: boolean; detail?: string };
     linger: { checked: boolean; enabled?: boolean; detail?: string };
     webDist: { path: string; exists: boolean };
@@ -182,6 +190,30 @@ export function checkPort(probe: DoctorContext["port"]): DoctorCheck {
     return { name: "port", status: "ok", detail: `${probe.configured} free` };
 }
 
+function isLoopbackHost(host: string): boolean {
+    return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/**
+ * `access`: local is fine; lan/tailscale warn because the daemon has no TLS of
+ * its own, and fail when a non-loopback bind is exposed without a public URL.
+ */
+export function checkAccess(probe: AccessModeContext): DoctorCheck {
+    if (probe.mode === "local") return { name: "access", status: "ok", detail: "local (loopback only)" };
+
+    const publicSuffix = probe.publicUrl === null ? "" : `, public ${probe.publicUrl}`;
+    const detail = `${probe.mode} (bind ${probe.host}/${probe.port}${publicSuffix})`;
+    if (probe.publicUrl === null && !isLoopbackHost(probe.host)) {
+        return { name: "access", status: "fail", detail };
+    }
+    const tls = probe.publicUrl !== null && probe.publicUrl.startsWith("https:");
+    return {
+        name: "access",
+        status: "warn",
+        detail: tls ? detail : `${detail} — no TLS, prefer \`tailscale serve\``,
+    };
+}
+
 export function checkServiceManager(probe: DoctorContext["serviceManager"]): DoctorCheck {
     return {
         name: "service-manager",
@@ -226,6 +258,7 @@ export function defaultProbes(ctx: DoctorContext): DoctorProbe[] {
         { name: "socket", run: () => checkSocket(ctx.socket, ctx.daemon.reachable) },
         { name: "daemon", run: () => checkDaemon(ctx.daemon) },
         { name: "port", run: () => checkPort(ctx.port) },
+        { name: "access", run: () => checkAccess(ctx.access) },
         { name: "service-manager", run: () => checkServiceManager(ctx.serviceManager) },
         ...(isLinux ? [{ name: "linger", run: () => checkLinger(ctx.linger) }] : []),
         { name: "web-dist", run: () => checkWebDist(ctx.webDist) },
@@ -306,6 +339,21 @@ function statOrUndefined(path: string): { exists: boolean; mode: number | undefi
         return { exists: true, mode: statSync(path).mode & 0o777 };
     } catch {
         return { exists: false, mode: undefined };
+    }
+}
+
+/** Best-effort access context; an unparsable environment reports `local`. */
+function accessContext(env: NodeJS.ProcessEnv, port: number): AccessModeContext {
+    try {
+        const config = loadConfig(env);
+        return { mode: config.access, host: config.host, port, publicUrl: config.publicUrl };
+    } catch {
+        return {
+            mode: "local",
+            host: env.PI2_HOST?.trim() || "127.0.0.1",
+            port,
+            publicUrl: env.PI2_PUBLIC_URL?.trim().replace(/\/+$/, "") || null,
+        };
     }
 }
 
@@ -394,6 +442,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         socket: { path: socketPath, exists: existsSync(socketPath) },
         daemon,
         port: { configured: daemon.port ?? configuredPort, bound: daemon.reachable },
+        access: accessContext(env, daemon.port ?? configuredPort),
         serviceManager,
         linger,
         webDist: { path: env.PI2_STATIC_DIR?.trim() || defaultWebDist(), exists: existsSync(env.PI2_STATIC_DIR?.trim() || defaultWebDist()) },

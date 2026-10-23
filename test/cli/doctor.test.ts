@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+    checkAccess,
     checkCliToken,
     checkLinger,
     checkNvim,
@@ -31,6 +32,7 @@ function context(overrides: Partial<DoctorContext> = {}): DoctorContext {
         socket: { path: "/run/user/1000/pi2/d.sock", exists: true },
         daemon: { reachable: true, port: 7676, protocolVersion: 1 },
         port: { configured: 7676, bound: true },
+        access: { mode: "local", host: "127.0.0.1", port: 7676, publicUrl: null },
         serviceManager: { name: "systemd", available: true },
         linger: { checked: true, enabled: true },
         webDist: { path: "/repo/web/dist", exists: true },
@@ -60,6 +62,7 @@ describe("doctor checks (all passing)", () => {
             "socket",
             "daemon",
             "port",
+            "access",
             "service-manager",
             "linger",
             "web-dist",
@@ -77,6 +80,56 @@ describe("doctor checks (all passing)", () => {
         });
         expect(statusOf(report, "linger")).toBeUndefined();
         expect(report.ok).toBe(true);
+    });
+});
+
+describe("doctor access check", () => {
+    it("is ok for local mode", () => {
+        const check = checkAccess({ mode: "local", host: "127.0.0.1", port: 7676, publicUrl: null });
+        expect(check).toEqual({ name: "access", status: "ok", detail: "local (loopback only)" });
+    });
+
+    it("warns for lan/tailscale with a TLS-terminated public URL", () => {
+        const lan = checkAccess({ mode: "lan", host: "0.0.0.0", port: 7676, publicUrl: "https://host.ts.net" });
+        expect(lan.status).toBe("warn");
+        expect(lan.detail).toBe("lan (bind 0.0.0.0/7676, public https://host.ts.net)");
+        expect(lan.detail).not.toContain("no TLS");
+
+        const tailscale = checkAccess({ mode: "tailscale", host: "127.0.0.1", port: 7676, publicUrl: "https://host.ts.net" });
+        expect(tailscale.status).toBe("warn");
+        expect(tailscale.detail).toBe("tailscale (bind 127.0.0.1/7676, public https://host.ts.net)");
+    });
+
+    it("adds the no-TLS hint when the public URL is missing or plain http", () => {
+        const loopback = checkAccess({ mode: "lan", host: "127.0.0.1", port: 7676, publicUrl: null });
+        expect(loopback.status).toBe("warn");
+        expect(loopback.detail).toContain("lan (bind 127.0.0.1/7676)");
+        expect(loopback.detail).toContain("no TLS, prefer `tailscale serve`");
+
+        const plain = checkAccess({ mode: "tailscale", host: "127.0.0.1", port: 7676, publicUrl: "http://host.ts.net" });
+        expect(plain.status).toBe("warn");
+        expect(plain.detail).toContain("no TLS, prefer `tailscale serve`");
+    });
+
+    it("fails when a non-loopback bind has no public URL", () => {
+        const check = checkAccess({ mode: "lan", host: "0.0.0.0", port: 7676, publicUrl: null });
+        expect(check).toEqual({ name: "access", status: "fail", detail: "lan (bind 0.0.0.0/7676)" });
+
+        const tailscale = checkAccess({ mode: "tailscale", host: "100.64.0.1", port: 7676, publicUrl: null });
+        expect(tailscale.status).toBe("fail");
+    });
+
+    it("is wired into the default probe list after port", async () => {
+        const report = await checks({ access: { mode: "tailscale", host: "127.0.0.1", port: 7676, publicUrl: null } });
+        const names = report.checks.map((check) => check.name);
+        expect(names.indexOf("access")).toBe(names.indexOf("port") + 1);
+        expect(statusOf(report, "access")).toBe("warn");
+        // A warn keeps the overall report ok.
+        expect(report.ok).toBe(true);
+
+        const failed = await checks({ access: { mode: "lan", host: "0.0.0.0", port: 7676, publicUrl: null } });
+        expect(statusOf(failed, "access")).toBe("fail");
+        expect(failed.ok).toBe(false);
     });
 });
 
@@ -262,6 +315,7 @@ describe("collectContext", () => {
         expect(ctx.socket.exists).toBe(true);
         expect(ctx.daemon).toEqual({ reachable: true, port: 7712, protocolVersion: 1 });
         expect(ctx.port).toEqual({ configured: 7712, bound: true });
+        expect(ctx.access).toEqual({ mode: "local", host: "127.0.0.1", port: 7712, publicUrl: null });
         expect(ctx.serviceManager).toEqual({ name: "systemd", available: true });
         expect(ctx.linger).toMatchObject({ checked: true, enabled: true });
         expect(ctx.webDist.path).toBe(join(dir, "web"));

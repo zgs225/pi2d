@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DaemonClient } from "../../src/cli/pi2.js";
-import { CliError, createClient, main, resolveEndpoint, runAttach, runDoctorCommand, runPairing, runStatus } from "../../src/cli/pi2.js";
+import { CliError, createClient, main, resolveEndpoint, runAttach, runDoctorCommand, runOpen, runPairing, runStatus } from "../../src/cli/pi2.js";
 import { writeDaemonJson, type DaemonLock } from "../../src/cli/lock.js";
 import { writeCliToken } from "../../src/cli/token.js";
 import type { WorkspaceInfo } from "../../src/protocol/types.js";
@@ -54,6 +54,7 @@ interface FakeData {
     resources?: Record<string, unknown>;
     health?: Record<string, unknown>;
     pair?: Record<string, unknown>;
+    session?: Record<string, unknown>;
     postError?: Error;
 }
 
@@ -95,6 +96,9 @@ function fakeClient(data: FakeData = {}): DaemonClient & { calls: string[] } {
             if (data.postError !== undefined) throw data.postError;
             if (path === "/api/v1/pair") {
                 return { status: 202, body: data.pair ?? { accepted: true, code: "ABCD2345", expiresAt: Date.now() + 60_000 } };
+            }
+            if (path === "/api/v1/console/session") {
+                return { status: 200, body: data.session ?? { token: "browser-token", url: "http://127.0.0.1:7712/#t=browser-token" } };
             }
             throw new CliError(`unexpected POST ${path}`);
         },
@@ -352,6 +356,106 @@ describe("pi2 pairing", () => {
         await expect(
             runPairing({ client: fakeClient({ postError: new CliError("pair failed: E_UNAUTHORIZED") }) }),
         ).rejects.toThrowError(/E_UNAUTHORIZED/);
+    });
+
+    it("rebuilds the URL on --public-url when given", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
+        await runPairing({ client, print: (line) => lines.push(line), publicUrl: "https://myhost.tail1234.ts.net/" });
+        const text = lines.join("\n");
+        expect(text).toContain("url     https://myhost.tail1234.ts.net/pair/ABCD2345");
+        expect(text).toContain('"url":"https://myhost.tail1234.ts.net/pair/ABCD2345"');
+        expect(text).toContain("code    ABCD2345");
+    });
+
+    it("defaults --public-url to daemon.json's publicUrl", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
+        await main(["pairing"], {
+            out: (line) => lines.push(line),
+            client: () => ({ ...client, daemon: { ...DAEMON, publicUrl: "https://from-daemon.ts.net" } }),
+        });
+        expect(lines.join("\n")).toContain("url     https://from-daemon.ts.net/pair/ABCD2345");
+    });
+
+    it("keeps the loopback URL without flags", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
+        await main(["pairing"], { out: (line) => lines.push(line), client: () => client });
+        expect(lines.join("\n")).toContain("url     http://127.0.0.1:7712/pair/ABCD2345");
+    });
+});
+
+describe("pi2 open", () => {
+    it("--print posts the console session and prints only the URL", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({
+            session: { token: "tok", url: "http://127.0.0.1:7712/#t=tok" },
+        });
+        const code = await runOpen({ client, print: (line) => lines.push(line), printOnly: true });
+        expect(code).toBe(0);
+        expect(lines).toEqual(["http://127.0.0.1:7712/#t=tok"]);
+        expect(client.calls).toEqual(["/api/v1/console/session {}"]);
+    });
+
+    it("--print implies --no-browser (never launches an opener)", async () => {
+        const lines: string[] = [];
+        const opens: string[] = [];
+        const code = await runOpen({
+            client: fakeClient({ session: { url: "http://127.0.0.1:7712/#t=tok" } }),
+            print: (line) => lines.push(line),
+            printOnly: true,
+            openUrl: (url) => opens.push(url),
+        });
+        expect(code).toBe(0);
+        expect(opens).toEqual([]);
+        expect(lines).toEqual(["http://127.0.0.1:7712/#t=tok"]);
+    });
+
+    it("launches the opener with the URL", async () => {
+        const opens: string[] = [];
+        const lines: string[] = [];
+        const code = await runOpen({
+            client: fakeClient({ session: { url: "http://127.0.0.1:7712/#t=tok" } }),
+            print: (line) => lines.push(line),
+            openUrl: (url) => opens.push(url),
+        });
+        expect(code).toBe(0);
+        expect(opens).toEqual(["http://127.0.0.1:7712/#t=tok"]);
+        expect(lines).toEqual([]);
+    });
+
+    it("prints the URL and still exits 0 when the opener fails", async () => {
+        const lines: string[] = [];
+        const code = await runOpen({
+            client: fakeClient({ session: { url: "http://127.0.0.1:7712/#t=tok" } }),
+            print: (line) => lines.push(line),
+            openUrl: (_url, onError) => onError(),
+        });
+        expect(code).toBe(0);
+        expect(lines).toEqual(["http://127.0.0.1:7712/#t=tok"]);
+    });
+
+    it("routes `pi2 open --print` through main", async () => {
+        const out: string[] = [];
+        const code = await main(["open", "--print"], {
+            out: (line) => out.push(line),
+            client: () => fakeClient({ session: { url: "http://127.0.0.1:7712/#t=tok" } }),
+        });
+        expect(code).toBe(0);
+        expect(out).toEqual(["http://127.0.0.1:7712/#t=tok"]);
+    });
+
+    it("exits 1 with the daemon-resolution message when no daemon runs", async () => {
+        const err: string[] = [];
+        const code = await main(["open", "--print"], {
+            err: (line) => err.push(line),
+            client: () => {
+                throw new CliError("no running pi2 daemon (…/daemon.json missing). Start it with `pi2 daemon`.");
+            },
+        });
+        expect(code).toBe(1);
+        expect(err[0]).toContain("no running pi2 daemon");
     });
 });
 

@@ -111,9 +111,11 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | Variable | Default | Meaning |
 |---|---|---|
 | `PI2_PORT` | `7676` | HTTP/WS port, `0` = ephemeral |
-| `PI2_HOST` | `127.0.0.1` | bind address |
+| `PI2_HOST` | `127.0.0.1` (`0.0.0.0` in `lan` mode) | bind address; wins over the mode default |
+| `PI2_ACCESS_MODE` | `local` | `local` / `lan` / `tailscale` (see below) |
+| `PI2_PUBLIC_URL` | – | external base URL, e.g. `https://myhost.tail1234.ts.net` (no trailing slash) |
+| `PI2_ORIGINS` | – | **extra** CORS/Origin allowlist entries (comma separated), added to the derived origins |
 | `PI2_STATIC_DIR` | `<repo>/web/dist` | built web UI |
-| `PI2_ORIGINS` | `http://127.0.0.1:<port>,http://localhost:<port>` | CORS/Origin allowlist (comma separated) |
 | `PI2_RUNTIME_DIR` | Linux `$XDG_RUNTIME_DIR/pi2`, macOS `~/Library/Caches/pi2/run` | sockets, lock, tokens |
 | `PI2_DATA_DIR` | Linux `$XDG_DATA_HOME/pi2`, macOS `~/Library/Application Support/pi2` | `devices.json`, `workspaces.json` |
 | `PI2_STATE_DIR` | Linux `$XDG_STATE_HOME/pi2`, macOS `~/Library/Logs/pi2` | instance logs |
@@ -126,6 +128,22 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 
 There is no config file: the environment *is* the configuration.
 
+### Access modes
+
+| `PI2_ACCESS_MODE` | bind (unless `PI2_HOST`) | derived `corsOrigins` |
+|---|---|---|
+| `local` (default) | `127.0.0.1` | `http://127.0.0.1:<port>`, `http://localhost:<port>`, `http://[::1]:<port>` |
+| `lan` | `0.0.0.0` | loopback three **plus** `http://<detected-lan-ip>:<port>` |
+| `tailscale` | `127.0.0.1` | loopback three **plus** the origin of `PI2_PUBLIC_URL` |
+
+Origins are normalized (trailing `/` stripped, empties dropped) and
+`PI2_ORIGINS` is appended — never a replacement. LAN detection is best effort:
+when the address is unknown that extra origin is simply skipped. `tailscale`
+assumes `tailscale serve` terminates TLS in front of the loopback daemon; the
+daemon never does TLS itself. An unknown mode fails startup with one line:
+`pi2: PI2_ACCESS_MODE must be local, lan or tailscale`. Changing the mode
+requires restarting `pi2 daemon`.
+
 ## 5. Runtime files
 
 All of these live in `PI2_RUNTIME_DIR` (created `0700`):
@@ -134,7 +152,7 @@ All of these live in `PI2_RUNTIME_DIR` (created `0700`):
 |---|---|---|
 | `d.sock` | `0600` | plugin ↔ daemon JSONL socket (nvim dials it) |
 | `d.sock.token` | `0600` | handshake token for `hello`; rotated per daemon start |
-| `daemon.lock` | `0600` | singleton lock: `{pid, bootId, port, daemonId, startedAt, protocolVersion}` |
+| `daemon.lock` | `0600` | singleton lock: `{pid, bootId, port, daemonId, startedAt, protocolVersion, access?, publicUrl?}` |
 | `daemon.json` | `0600` | same payload, written **after** `listen()` so tools learn the real port |
 | `cli.token` | `0600` | 32-byte hex local admin token, rotated per daemon start |
 
@@ -177,6 +195,20 @@ Two token kinds:
 a token; everything else under `/api/*` needs `Authorization: Bearer …`.
 Unknown `/api/*` paths answer `401` when unauthenticated and `404` when
 authenticated (auth runs before routing).
+
+### Local-browser login (`POST /api/v1/console/session`)
+
+`pi2 open` calls this endpoint (loopback **and** local CLI token required) to
+sign the browser in without a pairing code: it rotates the single
+`local browser` device (`kind:"laptop"`, all four scopes) and answers
+`{token, device, url}` with
+`url = http://127.0.0.1:<actual bound port>/#t=<token>`. The token lives in the
+fragment, so it never reaches a request line, a `Referer` header or a proxy
+access log, and the daemon never logs it. Every call rotates the token (same
+device `id`) and invalidates the previous URL.
+
+Non-loopback callers get `403 E_FORBIDDEN` (`console login is loopback-only`);
+remote browsers pair instead (see §8.5).
 
 ## 8. The `pi2` CLI
 
@@ -240,6 +272,7 @@ object `{daemon, instances, resources, health}`.
 | `socket` | `d.sock` missing (and no daemon) | missing but daemon answers |
 | `daemon` | `/api/v1/info` unreachable | – |
 | `port` | – (reports bound/free) | – |
+| `access` | `lan`/`tailscale` with a non-loopback bind and no `PI2_PUBLIC_URL` | `lan`/`tailscale` (adds `— no TLS, prefer \`tailscale serve\`` without an `https:` public URL) |
 | `service-manager` | – | systemd/launchd not found |
 | `linger` (Linux) | – | `Linger=no` |
 | `web-dist` | – | missing |
@@ -249,7 +282,21 @@ object `{daemon, instances, resources, health}`.
 only `fail` makes `ok:false`/exit `1`. All probes are injectable, so the checks
 are unit tested without touching the host.
 
-### 8.4 `pi2 pairing`
+### 8.4 `pi2 open [--print] [--no-browser]`
+
+```bash
+pi2 open              # mint a loopback session and open the browser, signed in
+pi2 open --print      # print the signed-in URL only (implies --no-browser)
+pi2 open --no-browser # print the URL instead of launching a browser
+```
+
+Resolves `daemon.json` + `cli.token`, `POST`s `/api/v1/console/session`, then
+launches `xdg-open` (Linux) / `open` (macOS) detached. The opener never blocks
+the command: if it is missing or fails, `pi2 open` prints the URL and still
+exits `0`. This is a local-only shortcut; use `pi2 pairing` for LAN/Tailscale
+browsers.
+
+### 8.5 `pi2 pairing [--public-url <url>]`
 
 `POST /api/v1/pair` with the local token and prints:
 
@@ -262,9 +309,12 @@ qr      {"v":1,"code":"ABCD2345","url":"…","expiresAt":…,"nonce":"…"}
 
 The URL is rebuilt from the *actual* daemon base URL because the daemon's own
 `url` field is derived from the configured port (stale after a retry or
-`--port 0`).
+`--port 0`). `--public-url <url>` rebuilds both the printed `url` and the QR
+payload's `url` on that base (e.g. `https://host.ts.net/pair/ABCD2345`); it
+defaults to `daemon.json`'s `publicUrl`, then `PI2_PUBLIC_URL`. The code, expiry
+and nonce are unchanged.
 
-### 8.5 `pi2 install-service` / `pi2 uninstall-service`
+### 8.6 `pi2 install-service` / `pi2 uninstall-service`
 
 See [§9](#9-services-systemd--launchd). `--dry-run` (default) prints the file
 and the follow-up commands; `--write` writes the file (`0644`) and prints the
@@ -373,6 +423,8 @@ debugging.
 | `401 E_UNAUTHORIZED` from `curl` | send `Authorization: Bearer $(cat $PI2_RUNTIME_DIR/cli.token)` |
 | `EADDRINUSE` on an explicit port | pick another `--port` (only the default port retries) |
 | `403` with the browser console | origin not in `PI2_ORIGINS` (derived from the port) |
+| `pi2 open` → `403 console login is loopback-only` | the request came from a non-loopback address; pair the device instead |
+| `pi2 doctor` → `access FAIL` | `PI2_ACCESS_MODE=lan/tailscale` binds a non-loopback address without `PI2_PUBLIC_URL`; set it or use `tailscale serve` |
 | `health: static=FAIL` | `web/dist` missing — build the web UI or set `PI2_STATIC_DIR` |
 | Browser console loads but no workspaces | no nvim with the plugin has connected yet; run `pi2 attach` in a project |
 | `pi2 doctor` → `plugin FAIL` | install pi2.nvim, or point `PI2_PLUGIN_DIR` at the checkout |
