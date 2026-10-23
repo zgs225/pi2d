@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
     checkAccess,
     checkCliToken,
+    checkCurl,
     checkLinger,
     checkNvim,
     checkNode,
@@ -11,6 +12,7 @@ import {
     collectContext,
     defaultProbes,
     formatReport,
+    parseCurlVersion,
     parseNvimVersion,
     parseVersion,
     reportToJson,
@@ -26,6 +28,11 @@ function context(overrides: Partial<DoctorContext> = {}): DoctorContext {
         nodeVersion: "v22.11.0",
         nvim: { found: true, path: "/usr/bin/nvim", version: "v0.10.2" },
         pi: { found: true, path: "/usr/local/bin/pi", version: "1.8.0" },
+        curl: {
+            found: true,
+            path: "/usr/bin/curl",
+            version: "curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1 OpenSSL/3.3.1",
+        },
         plugin: { dir: "/home/u/.local/share/nvim/lazy/pi2.nvim", bridgeFound: true },
         runtime: { path: "/run/user/1000/pi2", exists: true, mode: 0o700 },
         cliToken: { path: "/run/user/1000/pi2/cli.token", exists: true, mode: 0o600 },
@@ -56,6 +63,7 @@ describe("doctor checks (all passing)", () => {
             "node",
             "nvim",
             "pi",
+            "curl",
             "plugin",
             "runtime-dir",
             "cli-token",
@@ -130,6 +138,58 @@ describe("doctor access check", () => {
         const failed = await checks({ access: { mode: "lan", host: "0.0.0.0", port: 7676, publicUrl: null } });
         expect(statusOf(failed, "access")).toBe("fail");
         expect(failed.ok).toBe(false);
+    });
+});
+
+describe("doctor curl check", () => {
+    it("is ok and reports the parsed version with its path", () => {
+        const check = checkCurl({ found: true, path: "/usr/bin/curl", version: "curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1" });
+        expect(check).toEqual({ name: "curl", status: "ok", detail: "8.7.1 (/usr/bin/curl)" });
+    });
+
+    it("warns with an actionable hint when curl is missing", async () => {
+        const check = checkCurl({ found: false, error: "curl not found on PATH" });
+        expect(check).toEqual({
+            name: "curl",
+            status: "warn",
+            detail: "not found on PATH (:PiWeb cannot sign the browser in automatically; pair instead)",
+        });
+        expect(check.detail).toContain("pair instead");
+
+        const report = await checks({ curl: { found: false } });
+        expect(statusOf(report, "curl")).toBe("warn");
+        // A warn keeps the overall report ok.
+        expect(report.ok).toBe(true);
+    });
+
+    it("warns when the version cannot be parsed", () => {
+        expect(checkCurl({ found: true, path: "/usr/bin/curl", version: "garbage" })).toEqual({
+            name: "curl",
+            status: "warn",
+            detail: "could not parse version of /usr/bin/curl",
+        });
+        expect(checkCurl({ found: true, path: "/usr/bin/curl" }).status).toBe("warn");
+        expect(parseCurlVersion("curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1")).toBe("8.7.1");
+        expect(parseCurlVersion("garbage")).toBeUndefined();
+        expect(parseCurlVersion(undefined)).toBeUndefined();
+    });
+
+    it("is wired into the report right after pi, in the table and in --json", async () => {
+        const report = await checks();
+        const names = report.checks.map((check) => check.name);
+        expect(names.indexOf("curl")).toBe(names.indexOf("pi") + 1);
+        expect(names.indexOf("plugin")).toBe(names.indexOf("curl") + 1);
+        expect(report.checks.find((check) => check.name === "curl")).toEqual({
+            name: "curl",
+            status: "ok",
+            detail: "8.7.1 (/usr/bin/curl)",
+        });
+        expect(formatReport(report)).toMatch(/ok\s+curl\s+8\.7\.1 \(\/usr\/bin\/curl\)/);
+
+        const parsed = JSON.parse(reportToJson(report)) as { ok: boolean; checks: { name: string; status: string; detail: string }[] };
+        expect(parsed.ok).toBe(true);
+        expect(parsed.checks.map((check) => check.name).indexOf("curl")).toBe(names.indexOf("pi") + 1);
+        expect(parsed.checks.find((check) => check.name === "curl")?.detail).toBe("8.7.1 (/usr/bin/curl)");
     });
 });
 
@@ -301,6 +361,9 @@ describe("collectContext", () => {
             run: async (command, args) => {
                 if (command === "nvim") return { ok: true, stdout: "NVIM v0.10.2\nBuild type: Release\n", stderr: "" };
                 if (command === "pi") return { ok: true, stdout: "1.8.0\n", stderr: "" };
+                if (command === "curl") {
+                    return { ok: true, stdout: "curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1\nRelease-Date: 2024-03-27\n", stderr: "" };
+                }
                 if (command === "loginctl" && args[1] === "1000") return { ok: true, stdout: "Linger=yes\n", stderr: "" };
                 return { ok: false, stdout: "", stderr: "unexpected" };
             },
@@ -309,6 +372,7 @@ describe("collectContext", () => {
 
         expect(ctx.nvim).toEqual({ found: true, path: "/usr/bin/nvim", version: "v0.10.2" });
         expect(ctx.pi.version).toBe("1.8.0");
+        expect(ctx.curl).toEqual({ found: true, path: "/usr/bin/curl", version: "curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1" });
         expect(ctx.plugin.bridgeFound).toBe(true);
         expect(ctx.runtime.exists).toBe(true);
         expect(ctx.cliToken.mode).toBe(0o600);

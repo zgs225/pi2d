@@ -55,6 +55,7 @@ export interface DoctorContext {
     nodeVersion: string;
     nvim: BinaryProbe;
     pi: BinaryProbe;
+    curl: BinaryProbe;
     plugin: { dir: string | undefined; bridgeFound: boolean };
     runtime: { path: string; exists: boolean; mode: number | undefined };
     cliToken: { path: string; exists: boolean; mode: number | undefined };
@@ -87,6 +88,13 @@ export function versionAtLeast(version: readonly [number, number, number], minim
 /** `NVIM v0.10.2` (first line of `nvim --version`) → `0.10.2`. */
 export function parseNvimVersion(output: string): string | undefined {
     const match = /NVIM v(\d+\.\d+\.\d+)/.exec(output);
+    return match?.[1];
+}
+
+/** `curl 8.7.1 (x86_64-pc-linux-gnu) …` (first line of `curl --version`) → `8.7.1`. */
+export function parseCurlVersion(output: string | undefined): string | undefined {
+    if (output === undefined) return undefined;
+    const match = /^curl\s+v?(\d+\.\d+\.\d+)/.exec(output.trim());
     return match?.[1];
 }
 
@@ -128,6 +136,25 @@ export function checkNvim(probe: BinaryProbe): DoctorCheck {
 export function checkPi(probe: BinaryProbe): DoctorCheck {
     if (!probe.found) return { name: "pi", status: "warn", detail: probe.error ?? "pi not found on PATH (plugin-only sessions still work)" };
     return { name: "pi", status: "ok", detail: `${probe.version?.trim() ?? "unknown version"} (${probe.path ?? "pi"})` };
+}
+
+/**
+ * `curl`: `:PiWeb`'s login handshake shells out to curl (Neovim has no HTTP
+ * client), so a missing binary only breaks local sign-in — warn, never fail.
+ */
+export function checkCurl(probe: BinaryProbe): DoctorCheck {
+    if (!probe.found) {
+        return {
+            name: "curl",
+            status: "warn",
+            detail: "not found on PATH (:PiWeb cannot sign the browser in automatically; pair instead)",
+        };
+    }
+    const version = parseCurlVersion(probe.version);
+    if (version === undefined) {
+        return { name: "curl", status: "warn", detail: `could not parse version of ${probe.path ?? "curl"}` };
+    }
+    return { name: "curl", status: "ok", detail: `${version} (${probe.path ?? "curl"})` };
 }
 
 export function checkPlugin(probe: DoctorContext["plugin"]): DoctorCheck {
@@ -252,6 +279,7 @@ export function defaultProbes(ctx: DoctorContext): DoctorProbe[] {
         { name: "node", run: () => checkNode(ctx.nodeVersion) },
         { name: "nvim", run: () => checkNvim(ctx.nvim) },
         { name: "pi", run: () => checkPi(ctx.pi) },
+        { name: "curl", run: () => checkCurl(ctx.curl) },
         { name: "plugin", run: () => checkPlugin(ctx.plugin) },
         { name: "runtime-dir", run: () => checkRuntimeDir(ctx.runtime) },
         { name: "cli-token", run: () => checkCliToken(ctx.cliToken) },
@@ -383,6 +411,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         if (parsed !== undefined) nvim.version = `v${parsed}`;
     }
     const pi = await binaryProbe("pi", ["--version"], options, env);
+    const curl = await binaryProbe("curl", ["--version"], options, env);
 
     const pluginDir = env.PI2_PLUGIN_DIR?.trim() || join(home, ".local", "share", "nvim", "lazy", "pi2.nvim");
     const bridgeFound = existsSync(join(pluginDir, "lua", "pi", "web", "bridge.lua"));
@@ -436,6 +465,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         nodeVersion: process.version,
         nvim,
         pi,
+        curl,
         plugin: { dir: pluginDir, bridgeFound },
         runtime: { path: runtime, exists: runtimeStat.exists, mode: runtimeStat.mode },
         cliToken: { path: cliTokenPath, exists: tokenStat.exists, mode: tokenStat.mode },
