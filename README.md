@@ -46,7 +46,7 @@ Then:
 pi2 daemon                 # foreground; the plugin/browser needs this running
 pi2 install-service --write   # or run it at login: systemd --user / launchd
 pi2 status                 # daemon + instances + health
-pi2 doctor                 # node/nvim/pi/plugin/runtime/web-dist/protocol checks
+pi2 doctor                 # node/nvim/pi/curl/plugin/runtime/web-dist/protocol checks
 ```
 
 `pi2` is the only executable (`pi2d` is the npm package name); `pi2 daemon` is a subcommand
@@ -109,9 +109,16 @@ pnpm --dir web dev  # vite dev server on :5173, proxying /api and /ws to the dae
 ```
 
 `pnpm build` → `dist/`, `pnpm build:web` → `web/dist/`. The published tarball ships both, so
-`pi2 daemon` serves the web console from its own package with no extra step. Releasing:
-bump `version`, tag `v<version>`, push — `.github/workflows/release.yml` verifies the tag,
-runs the tests and publishes with provenance.
+`pi2 daemon` serves the web console from its own package with no extra step.
+
+Releasing: bump `version` in `package.json`, tag `v<version>`, push the tag. That is the whole
+flow — `.github/workflows/release.yml` verifies the tag matches `package.json`, runs the
+checks, and publishes to npm. Authentication is **OIDC trusted publishing**: the publish step
+holds no npm token, and `id-token: write` lets the npm CLI exchange a short-lived GitHub OIDC
+token for publish rights (provenance is attached automatically). There is no `NPM_TOKEN` secret
+to configure or rotate, and a guard step fails the run if one ever exists. The one-time bootstrap
+(first publish by hand, then the npmjs.com trusted-publisher setup), the local dry run and
+troubleshooting: [docs/releasing.md](docs/releasing.md).
 
 ## Layout
 

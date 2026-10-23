@@ -4,9 +4,17 @@ on:
   push:
     tags: ["v*"]
 
+# Authentication is npm Trusted Publishing (OIDC): the npm CLI picks up the
+# GitHub Actions OIDC token and exchanges it for a short-lived publish token.
+# The publish step deliberately gets no NPM_TOKEN / NODE_AUTH_TOKEN env.
+# See docs/releasing.md.
 permissions:
-  contents: read
-  id-token: write # npm provenance
+  # `contents: write` is for the `softprops/action-gh-release` step below, which
+  # creates the GitHub release; with `contents: read` it fails with 403. Kept at
+  # workflow level (single job) so the release step does not need a second job
+  # with its own checkout/install/test cycle.
+  contents: write
+  id-token: write # mint the OIDC token npm exchanges for publish rights
 
 jobs:
   publish:
@@ -47,12 +55,75 @@ jobs:
           pnpm test
           pnpm --dir web exec vitest run
 
-      # `prepack` builds dist/ and web/dist/ as part of pack+publish, so the
-      # published tarball is always built from the tagged source.
-      - name: Publish to npm
-        run: npm publish --access public --provenance
+      # A leftover automation token would silently win over OIDC and hide a
+      # broken trusted-publisher configuration, so fail loudly instead.
+      # Repository secrets are NOT exported as environment variables on their
+      # own, so they are mapped into THIS step's env explicitly: otherwise the
+      # guard would see nothing and pass while the publish step (which gets no
+      # env at all) would be the first place a stale token could leak in.
+      - name: Refuse token-based publishing
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          for var in NODE_AUTH_TOKEN NPM_TOKEN; do
+            if [ -n "${!var:-}" ]; then
+              echo "::error::env var $var is set. This workflow publishes with npm Trusted Publishing (OIDC) and must run without a token. Delete the repository secret and re-run."
+              exit 1
+            fi
+          done
+          echo "no publish token present — OIDC trusted publishing only"
+
+      # actions/setup-node's node 22 ships npm 10.x, which cannot do trusted
+      # publishing (needs >= 11.5.1).
+      - name: Upgrade npm
+        run: npm install -g npm@11
+
+      - name: Preflight — npm/node support trusted publishing
+        run: |
+          node <<'EOF'
+          const { execSync } = require("node:child_process");
+
+          const atLeast = (have, want) => {
+            const a = have.split(".").map(Number);
+            const b = want.split(".").map(Number);
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+              const x = a[i] || 0;
+              const y = b[i] || 0;
+              if (x !== y) return x > y;
+            }
+            return true;
+          };
+
+          const fail = [];
+          const npm = execSync("npm --version").toString().trim();
+          const node = process.version.replace(/^v/, "");
+          console.log(`npm ${npm} / node ${node}`);
+
+          if (!atLeast(npm, "11.5.1")) {
+            fail.push(`npm ${npm} is too old for trusted publishing (need >= 11.5.1); did 'npm install -g npm@11' run?`);
+          }
+          if (!atLeast(node, "22.14.0")) {
+            fail.push(`node ${node} is too old for trusted publishing (need >= 22.14.0)`);
+          }
+          if (!process.env.ACTIONS_ID_TOKEN_REQUEST_URL) {
+            fail.push("no OIDC token endpoint in the environment; 'permissions: id-token: write' is missing or the job is not running on GitHub Actions");
+          }
+
+          if (fail.length) {
+            for (const f of fail) console.error(`::error::${f}`);
+            process.exit(1);
+          }
+          console.log("trusted publishing preflight ok (OIDC endpoint present)");
+          EOF
+
+      # `prepack` builds dist/ and web/dist/ as part of pack+publish, so the
+      # published tarball is always built from the tagged source; no separate
+      # build step is needed here. No --provenance: provenance is automatic for
+      # a public package published from a public repo via OIDC.
+      # Deliberately no `env:` on this step — OIDC only.
+      - name: Publish to npm (trusted publishing, no token)
+        run: npm publish --access public
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
