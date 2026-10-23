@@ -12,18 +12,18 @@ bump version → git tag v<version> → push tag → release.yml → npm publish
 That pipeline applies to **every release after the first one**. The very first version has to be
 published by hand — see [Bootstrap](#bootstrap-the-first-publish-three-phases) — because npmjs.com
 only offers the Trusted Publisher settings page for a package that already exists on the registry,
-and `pi2d` does not exist yet (`npm view pi2d` → 404).
+and `@yuez/pi2d` does not exist yet (`npm view @yuez/pi2d` → 404).
 
 ## Bootstrap: the first publish (three phases)
 
 ### Phase 0 — publish the first version from your machine (once, no provenance)
 
-npmjs.com has no `pi2d` package page yet, so there is nowhere to configure a trusted publisher and
+npmjs.com has no `@yuez/pi2d` package page yet, so there is nowhere to configure a trusted publisher and
 CI cannot authenticate. The first version is therefore published manually from the repo root:
 
 ```bash
-npm login                      # account zgs225; 2FA prompt
-npm whoami                     # must print: zgs225
+npm login                      # npm account yuez; 2FA prompt
+npm whoami                     # must print: yuez
 npm publish --access public    # from the repo root; runs `prepack` (builds dist/ and web/dist/)
 ```
 
@@ -37,9 +37,9 @@ first CI release must use a **higher** `package.json` version (bump it in Phase 
 ### Phase 1 — register the trusted publisher (possible only now)
 
 The package page exists after Phase 0. Configure the publisher on
-<https://www.npmjs.com/package/pi2d> — no CI secrets are involved.
+<https://www.npmjs.com/package/@yuez/pi2d> — no CI secrets are involved.
 
-1. **Log in** to npmjs.com as an owner of `pi2d` (account `zgs225`) and make sure 2FA is enabled on
+1. **Log in** to npmjs.com as the owner of `@yuez/pi2d` (npm account `yuez`) and make sure 2FA is enabled on
    that account.
 2. Package page → **Settings** → **Trusted publishing** → **Add a trusted publisher** →
    **GitHub Actions**.
@@ -144,15 +144,15 @@ a real publish. It still validates `prepack`, the `files` list and the tarball c
 ## Verifying a publish
 
 ```bash
-npm view pi2d version dist.integrity dist.attestations
-npm view pi2d dist.tarball
-npm audit signatures                 # in a scratch dir, after `npm i pi2d`
+npm view @yuez/pi2d version dist.integrity dist.attestations
+npm view @yuez/pi2d dist.tarball
+npm audit signatures                 # in a scratch dir, after `npm i @yuez/pi2d`
 ```
 
 * npmjs.com shows a green **provenance badge** on the package page and on the version's
   "Provenance" section; it links to the exact commit and workflow run that built the tarball.
   (The Phase 0 bootstrap version has no badge — that is expected.)
-* `npm view pi2d dist.integrity` must match the tarball you expected; the release page should list
+* `npm view @yuez/pi2d dist.integrity` must match the tarball you expected; the release page should list
   the attestation (`dist.attestations.provenance`).
 * In the workflow log, the publish step should report authenticated publishing via OIDC — never a
   token.

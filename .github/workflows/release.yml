@@ -130,6 +130,6 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            `npm i -g pi2d@${{ github.ref_name }}`
+            `npm i -g @yuez/pi2d@${{ github.ref_name }}`
 
             Compatible pi2.nvim: protocol v1 (see `docs/protocol.md`).

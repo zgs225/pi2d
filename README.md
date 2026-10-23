@@ -29,15 +29,15 @@ starts it lazily. The result is one command inside Neovim:
 …which opens your browser already signed in, showing the current workspace.
 
 > **Status.** The npm package, the packaged web console and the lazy-start contract are
-> ready (`npm i -g pi2d` works today). `:PiWeb`, `:PiWebInstall` and the access-mode prompt
+> ready (`npm i -g @yuez/pi2d` works today). `:PiWeb`, `:PiWebInstall` and the access-mode prompt
 > land with the next pi2.nvim release; until then use `:PiWebStart` plus a manual install.
 
 ### Package managers (optional, for CLI-first users)
 
 ```bash
-npm i -g pi2d        # installs the `pi2` binary
-pnpm add -g pi2d
-bun add -g pi2d
+npm i -g @yuez/pi2d   # installs the `pi2` binary
+pnpm add -g @yuez/pi2d
+bun add -g @yuez/pi2d
 ```
 
 Then:
@@ -49,7 +49,7 @@ pi2 status                 # daemon + instances + health
 pi2 doctor                 # node/nvim/pi/curl/plugin/runtime/web-dist/protocol checks
 ```
 
-`pi2` is the only executable (`pi2d` is the npm package name); `pi2 daemon` is a subcommand
+`pi2` is the only executable (`@yuez/pi2d` is the npm package name); `pi2 daemon` is a subcommand
 of it, not a separate process. Runtime files, ports, auth, services and troubleshooting:
 [docs/deployment.md](docs/deployment.md).
 
@@ -75,7 +75,7 @@ The plugin looks for the daemon in this order, and `:PiWebStatus` reports which 
 | 2 | `pi2` on `PATH` | a global install |
 | 3 | plugin data dir | `<stdpath("data")>/pi2d/node_modules/.bin/pi2` |
 | 4 | repo checkout | `node_modules/.bin/pi2` (developing pi2d itself) |
-| 5 | `npx -y pi2d@<pinned>` | last resort when nothing is writable |
+| 5 | `npx -y @yuez/pi2d@latest` | last resort when nothing is writable |
 
 ## Remote access (phone, LAN, Tailscale)
 
