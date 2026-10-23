@@ -5,8 +5,12 @@
  * Both files carry the same payload:
  *
  * ```jsonc
- * {"pid":1234,"bootId":"…","port":7676,"daemonId":"d-…","startedAt":1733,"protocolVersion":1}
+ * {"pid":1234,"bootId":"…","port":7676,"daemonId":"d-…","startedAt":1733,"protocolVersion":1,
+ *  "access":"local","publicUrl":null}
  * ```
+ *
+ * `access`/`publicUrl` are optional so readers built before the access modes
+ * keep working.
  *
  * The lock is created with `wx` (atomic: only one daemon wins) and is
  * considered **stale** when the pid is gone or the recorded boot id differs
@@ -19,6 +23,7 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { daemonLockPath, ensureDir, runtimeDir } from "../core/paths.js";
+import { ACCESS_MODES, type AccessMode } from "../config.js";
 
 export const LOCK_FILE = "daemon.lock";
 export const DAEMON_JSON_FILE = "daemon.json";
@@ -30,6 +35,10 @@ export interface DaemonLock {
     daemonId: string;
     startedAt: number;
     protocolVersion: number;
+    /** Optional: written by daemons that know about access modes. */
+    access?: AccessMode;
+    /** Optional: external base URL (or explicit `null` when unset). */
+    publicUrl?: string | null;
 }
 
 export type LockErrorCode = "E_LOCKED";
@@ -79,6 +88,10 @@ export function isPidAlive(pid: number): boolean {
     }
 }
 
+function isAccessMode(value: unknown): value is AccessMode {
+    return typeof value === "string" && (ACCESS_MODES as readonly string[]).includes(value);
+}
+
 function isLock(value: unknown): value is DaemonLock {
     if (typeof value !== "object" || value === null) return false;
     const candidate = value as Partial<DaemonLock>;
@@ -91,7 +104,9 @@ function isLock(value: unknown): value is DaemonLock {
         typeof candidate.daemonId === "string" &&
         candidate.daemonId !== "" &&
         typeof candidate.startedAt === "number" &&
-        typeof candidate.protocolVersion === "number"
+        typeof candidate.protocolVersion === "number" &&
+        (candidate.access === undefined || isAccessMode(candidate.access)) &&
+        (candidate.publicUrl === undefined || candidate.publicUrl === null || typeof candidate.publicUrl === "string")
     );
 }
 

@@ -183,6 +183,36 @@ describe("daemon.json", () => {
         handle.release();
     });
 
+    it("carries the optional access/publicUrl fields and stays readable without them", () => {
+        const handle = acquireLock({
+            lockPath,
+            payload: {
+                port: 7676,
+                daemonId: "d-access",
+                startedAt: 5,
+                protocolVersion: PROTOCOL_VERSION,
+                access: "tailscale",
+                publicUrl: "https://host.ts.net",
+            },
+            bootId: () => BOOT,
+        });
+        expect(readLockFile(lockPath)?.access).toBe("tailscale");
+        expect(readLockFile(lockPath)?.publicUrl).toBe("https://host.ts.net");
+        handle.release();
+
+        // A legacy payload (no new fields) still parses.
+        const legacy = { ...payload(), pid: process.pid, bootId: BOOT };
+        writeFileSync(lockPath, `${JSON.stringify(legacy)}\n`);
+        expect(readLockFile(lockPath)?.access).toBeUndefined();
+        expect(readLockFile(lockPath)?.publicUrl).toBeUndefined();
+    });
+
+    it("refuses a malformed access field", () => {
+        const legacy = { ...payload(), pid: process.pid, bootId: BOOT, access: "public" };
+        writeFileSync(lockPath, `${JSON.stringify(legacy)}\n`);
+        expect(readLockFile(lockPath)).toBeUndefined();
+    });
+
     it("is removed by release() and missing files read as undefined", () => {
         const handle = acquireLock({
             lockPath,

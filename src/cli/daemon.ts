@@ -44,7 +44,8 @@ Options:
 
 Environment:
   PI2_PORT, PI2_HOST, PI2_STATIC_DIR, PI2_ORIGINS, PI2_RUNTIME_DIR,
-  PI2_DATA_DIR, PI2_STATE_DIR, PI2_LOG_LEVEL, PI2_WORKSPACE_ROOTS
+  PI2_DATA_DIR, PI2_STATE_DIR, PI2_LOG_LEVEL, PI2_WORKSPACE_ROOTS,
+  PI2_ACCESS_MODE (local|lan|tailscale), PI2_PUBLIC_URL
 
 Runtime files ($PI2_RUNTIME_DIR):
   d.sock         plugin unix socket (nvim → daemon)
@@ -180,6 +181,8 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
                 daemonId,
                 startedAt: Date.now(),
                 protocolVersion: PROTOCOL_VERSION,
+                access: config.access,
+                publicUrl: config.publicUrl,
             },
         });
         // Rotate the local CLI token only when this process owns the lock:

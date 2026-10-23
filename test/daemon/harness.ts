@@ -26,6 +26,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
         limits: TEST_LIMITS,
         tokenPath: "/tmp/pi2-daemon-test.sock.token",
         deviceStorePath: "/tmp/pi2-daemon-test-devices.json",
+        access: "local",
+        publicUrl: null,
     };
     return { ...base, ...overrides, limits: { ...base.limits, ...(overrides.limits ?? {}) } };
 }
@@ -35,6 +37,8 @@ export interface HarnessOptions {
     seedInstances?: string[];
     config?: Partial<Config>;
     staticFiles?: Record<string, string>;
+    /** Written to `<dir>/cli.token` and accepted by the daemon's AuthStore. */
+    cliToken?: string;
     heartbeatMs?: number;
     wsOverrides?: {
         maxBufferedBytes?: number;
@@ -74,7 +78,16 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
         writeFileSync(target, content);
     }
 
-    const auth = new AuthStore({ path: join(dir, "devices.json"), baseUrl: "http://127.0.0.1:0" });
+    const auth = new AuthStore({
+        path: join(dir, "devices.json"),
+        baseUrl: "http://127.0.0.1:0",
+        ...(options.cliToken === undefined
+            ? {}
+            : { localTokenPath: join(dir, "cli.token") }),
+    });
+    if (options.cliToken !== undefined) {
+        writeFileSync(join(dir, "cli.token"), `${options.cliToken}\n`, { mode: 0o600 });
+    }
     const instances = new FakeInstanceManager();
     for (const workspaceId of options.seedInstances ?? []) instances.addWorkspace(workspaceId);
     const workspaces = new FakeWorkspaceStore(options.workspaces ?? []);

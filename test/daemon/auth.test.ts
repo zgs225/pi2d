@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStore, hashToken, isAllowedOrigin, timingSafeEqualHex } from "../../src/daemon/auth.js";
@@ -124,6 +124,89 @@ describe("auth device store", () => {
         expect(timingSafeEqualHex(a, hashToken("token-b"))).toBe(false);
         expect(timingSafeEqualHex(a, a.slice(0, 10))).toBe(false);
         expect(timingSafeEqualHex("", "")).toBe(true);
+    });
+});
+
+describe("local browser session", () => {
+    let dir: string;
+    let path: string;
+
+    beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "pi2-auth-browser-"));
+        path = join(dir, "devices.json");
+    });
+
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+    it("creates exactly one local-browser device with every scope", () => {
+        const auth = new AuthStore({ path, now: () => 1_000 });
+        const session = auth.localBrowserSession();
+
+        expect(session.device.name).toBe("local browser");
+        expect(session.device.kind).toBe("laptop");
+        expect(session.device.scopes).toEqual(["read", "steer", "control", "admin"]);
+        expect(session.device.createdAt).toBe(1_000);
+        expect(session.device.lastSeenAt).toBe(1_000);
+        expect(session.device.revokedAt).toBeNull();
+        expect(auth.listDevices()).toHaveLength(1);
+        expect(auth.verifyToken(session.token)?.id).toBe(session.device.id);
+    });
+
+    it("reuses the same token across logins, so a second :PiWeb keeps the open tab alive", () => {
+        const auth = new AuthStore({ path, now: () => 2_000 });
+        const first = auth.localBrowserSession();
+        const second = auth.localBrowserSession();
+
+        expect(second.token).toBe(first.token);
+        expect(second.device.id).toBe(first.device.id);
+        expect(auth.verifyToken(first.token)?.id).toBe(first.device.id);
+        expect(auth.listDevices()).toHaveLength(1);
+
+        const persisted = JSON.parse(readFileSync(path, "utf8")) as {
+            devices: { tokenHash: string; name: string }[];
+        };
+        expect(persisted.devices).toHaveLength(1);
+        expect(persisted.devices[0]!.tokenHash).toBe(hashToken(first.token));
+
+        const tokenPath = join(dir, "local-browser.token");
+        expect(readFileSync(tokenPath, "utf8").trim()).toBe(first.token);
+        expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    });
+
+    it("mints a new token once the device is revoked", () => {
+        const auth = new AuthStore({ path, now: () => 3_000 });
+        const first = auth.localBrowserSession();
+        expect(auth.revokeDevice(first.device.id)).toBe(true);
+        expect(auth.verifyToken(first.token)).toBeNull();
+
+        const second = auth.localBrowserSession();
+        expect(second.device.id).toBe(first.device.id);
+        expect(second.device.revokedAt).toBeNull();
+        expect(second.token).not.toBe(first.token);
+        expect(auth.verifyToken(first.token)).toBeNull();
+        expect(auth.verifyToken(second.token)?.revokedAt).toBeNull();
+    });
+
+    it("mints a new token when the stored plaintext is missing or stale", () => {
+        const auth = new AuthStore({ path, now: () => 4_000 });
+        const first = auth.localBrowserSession();
+
+        unlinkSync(join(dir, "local-browser.token"));
+        const second = auth.localBrowserSession();
+        expect(second.token).not.toBe(first.token);
+        expect(auth.verifyToken(second.token)?.id).toBe(first.device.id);
+        expect(auth.listDevices()).toHaveLength(1);
+    });
+
+    it("survives a store reload with the same token", () => {
+        const first = new AuthStore({ path });
+        const session = first.localBrowserSession();
+        const reloaded = new AuthStore({ path });
+        expect(reloaded.verifyToken(session.token)?.name).toBe("local browser");
+        const again = reloaded.localBrowserSession();
+        expect(again.token).toBe(session.token);
+        expect(again.device.id).toBe(session.device.id);
+        expect(reloaded.listDevices()).toHaveLength(1);
     });
 });
 

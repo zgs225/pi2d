@@ -9,7 +9,7 @@ import { ERROR_CODES, errorBody } from "../protocol/errors.js";
 import { PROTOCOL_VERSION, type CommandRequest } from "../protocol/types.js";
 import type { Config } from "../config.js";
 import type { AuthStore, DevicePublic } from "./auth.js";
-import { isAllowedOrigin } from "./auth.js";
+import { isAllowedOrigin, LOCAL_CLI_DEVICE_ID } from "./auth.js";
 import { DaemonError, toErrorPayload } from "./errors.js";
 import { CommandRouter } from "./router.js";
 import { createSseHandler } from "./sse.js";
@@ -68,7 +68,16 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
     });
 }
 
-async function readJsonBody(c: Context<Env>, maxBytes: number): Promise<Record<string, unknown>> {
+interface ReadJsonOptions {
+    /** An absent body is `{}` (used by `console/session`, whose body is optional). */
+    optional?: boolean;
+}
+
+async function readJsonBody(
+    c: Context<Env>,
+    maxBytes: number,
+    options: ReadJsonOptions = {},
+): Promise<Record<string, unknown>> {
     const declared = c.req.header("content-length");
     if (declared !== undefined) {
         const length = Number(declared);
@@ -80,7 +89,10 @@ async function readJsonBody(c: Context<Env>, maxBytes: number): Promise<Record<s
     if (Buffer.byteLength(text, "utf8") > maxBytes) {
         throw DaemonError.payloadTooLarge(`body exceeds ${maxBytes} bytes`);
     }
-    if (text.trim() === "") throw DaemonError.badRequest("request body is required");
+    if (text.trim() === "") {
+        if (options.optional === true) return {};
+        throw DaemonError.badRequest("request body is required");
+    }
     let parsed: unknown;
     try {
         parsed = JSON.parse(text);
@@ -176,8 +188,31 @@ export function createApp(deps: AppDeps): Hono<Env> {
             port: config.port,
             capabilities: ["ws", "sse", "devices", "attention"],
             limits: config.limits,
+            access: config.access,
+            publicUrl: config.publicUrl,
         }),
     );
+
+    /**
+     * Local-browser login handshake: loopback + the local CLI token only.
+     * The token in the returned URL lives in the fragment (`#t=`), so it never
+     * reaches an HTTP request line, a `Referer` header or a proxy access log.
+     */
+    app.post("/api/v1/console/session", async (c) => {
+        // Remote clients pair instead; refuse before touching the device store.
+        if (!isLoopback(c)) return json(403, errorBody(ERROR_CODES.FORBIDDEN, "console login is loopback-only"));
+        const callerToken = bearer(c);
+        const caller = callerToken === undefined ? null : auth.verifyToken(callerToken);
+        if (caller === null || caller.id !== LOCAL_CLI_DEVICE_ID) {
+            return json(401, errorBody(ERROR_CODES.UNAUTHORIZED, "console login requires the local CLI token"));
+        }
+        await readJsonBody(c, config.limits.maxBodyBytes, { optional: true });
+        const session = auth.localBrowserSession();
+        // Always loopback and the *actual* bound port (`config.port` already
+        // reflects retries/ephemeral ports), even when the daemon binds 0.0.0.0.
+        const url = `http://127.0.0.1:${config.port}/#t=${encodeURIComponent(session.token)}`;
+        return c.json({ token: session.token, device: session.device, url });
+    });
 
     const health = (c: Context<Env>) => {
         const instanceStates = instances.list();

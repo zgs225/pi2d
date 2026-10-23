@@ -9,7 +9,7 @@
  * `local-cli` device with every scope; see `docs/deployment.md` §7.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { dataDir } from "../core/paths.js";
 import { ERROR_CODES } from "../protocol/errors.js";
@@ -72,10 +72,24 @@ export interface AuthStoreOptions {
      * `local-cli` device with every scope. Checked after the persisted devices.
      */
     localTokenPath?: string;
+    /**
+     * Where the plaintext local-browser token lives. Defaults to
+     * `<dataDir>/local-browser.token` (mode 0600), next to `devices.json`.
+     */
+    localBrowserTokenPath?: string;
 }
 
 /** Synthetic device id used for the local CLI token (never persisted). */
 export const LOCAL_CLI_DEVICE_ID = "local-cli";
+
+/** The single device that represents the browser opened by `pi2 open`. */
+export const LOCAL_BROWSER_NAME = "local browser";
+export const LOCAL_BROWSER_KIND: DeviceKind = "laptop";
+
+export interface LocalBrowserSession {
+    token: string;
+    device: DevicePublic;
+}
 
 /** Constant-time string compare; the token length itself is not a secret. */
 function tokensEqual(expected: string, candidate: string): boolean {
@@ -142,6 +156,7 @@ function pairCode(): string {
 export class AuthStore {
     readonly path: string;
     readonly localTokenPath: string | undefined;
+    readonly localBrowserTokenPath: string;
     private readonly now: () => number;
     private readonly baseUrl: string;
     private readonly touchIntervalMs: number;
@@ -155,6 +170,7 @@ export class AuthStore {
         this.touchIntervalMs = options.touchIntervalMs ?? 60_000;
         this.localTokenPath =
             options.localTokenPath === undefined || options.localTokenPath === "" ? undefined : options.localTokenPath;
+        this.localBrowserTokenPath = options.localBrowserTokenPath ?? `${dirname(this.path)}/local-browser.token`;
         this.load();
     }
 
@@ -206,6 +222,9 @@ export class AuthStore {
         if (!record || record.revokedAt !== null) return false;
         record.revokedAt = this.now();
         this.persist();
+        // Revoking the local browser also drops the plaintext token, so the next
+        // `:PiWeb` / `pi2 open` mints a fresh one instead of handing out a dead URL.
+        if (record.name === LOCAL_BROWSER_NAME && record.kind === LOCAL_BROWSER_KIND) this.clearLocalBrowserToken();
         return true;
     }
 
@@ -259,6 +278,90 @@ export class AuthStore {
     /** Exposed for tests and diagnostics; never includes hashes. */
     isPairing(code: string): boolean {
         return this.pairs.has(code);
+    }
+
+    /**
+     * The local-browser login handshake (`POST /api/v1/console/session`).
+     *
+     * There is exactly one "local browser" device and, until it is revoked, one
+     * stable token: `pi2 open` and `:PiWeb` hand the same credentials to the
+     * browser on every call, so opening the console twice never invalidates the
+     * tab that is already open. The plaintext lives in
+     * `<dataDir>/local-browser.token` (0600, like `cli.token`); `devices.json`
+     * keeps only the hash.
+     *
+     * Revoking the device (or deleting the file) forces a new token on the next
+     * login; that path also covers a `devices.json` whose hash no longer matches
+     * the stored plaintext.
+     */
+    localBrowserSession(): LocalBrowserSession {
+        const existing = this.devices.find(
+            (device) => device.name === LOCAL_BROWSER_NAME && device.kind === LOCAL_BROWSER_KIND,
+        );
+        const stored = this.readLocalBrowserToken();
+        if (
+            existing !== undefined &&
+            existing.revokedAt === null &&
+            stored !== null &&
+            timingSafeEqualHex(existing.tokenHash, hashToken(stored))
+        ) {
+            return { token: stored, device: publicDevice(existing) };
+        }
+
+        const token = randomBytes(32).toString("base64url");
+        const hash = hashToken(token);
+        if (existing === undefined) {
+            // `createDevice` mints its own token; overwrite it so the created and
+            // rotated paths end in the same state (one record, this token).
+            const created = this.createDevice({
+                name: LOCAL_BROWSER_NAME,
+                kind: LOCAL_BROWSER_KIND,
+                scopes: [...SCOPES],
+            });
+            const record = this.devices.find((device) => device.id === created.device.id);
+            if (record === undefined) return created;
+            record.tokenHash = hash;
+            record.scopes = [...SCOPES];
+            this.persist();
+            this.writeLocalBrowserToken(token);
+            return { token, device: publicDevice(record) };
+        }
+
+        existing.tokenHash = hash;
+        existing.scopes = [...SCOPES];
+        existing.revokedAt = null;
+        this.persist();
+        this.writeLocalBrowserToken(token);
+        return { token, device: publicDevice(existing) };
+    }
+
+    /** Stored plaintext for the local browser; `null` when absent or unreadable. */
+    private readLocalBrowserToken(): string | null {
+        if (!existsSync(this.localBrowserTokenPath)) return null;
+        try {
+            const contents = readFileSync(this.localBrowserTokenPath, "utf8").trim();
+            return contents === "" ? null : contents;
+        } catch {
+            return null;
+        }
+    }
+
+    /** Atomic 0600 write, same pattern as `persist()`. */
+    private writeLocalBrowserToken(token: string): void {
+        const directory = dirname(this.localBrowserTokenPath);
+        if (!existsSync(directory)) mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const temporary = `${this.localBrowserTokenPath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+        writeFileSync(temporary, `${token}\n`, { mode: 0o600 });
+        renameSync(temporary, this.localBrowserTokenPath);
+    }
+
+    /** Drop the stored token; the next login mints a new one. */
+    private clearLocalBrowserToken(): void {
+        try {
+            if (existsSync(this.localBrowserTokenPath)) unlinkSync(this.localBrowserTokenPath);
+        } catch {
+            /* best effort: a missing file is the desired state */
+        }
     }
 
     /** The local CLI token grants every scope; it is not persisted or revocable. */
