@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A0–A12 — API/WS end-to-end driver (docs/e2e.md §4.1).
+ * A0–A13 — API/WS end-to-end driver (docs/e2e.md §4.1).
  *
  * Runs against a live daemon + one managed headless nvim per workspace + a real
  * `pi --mode rpc` child. The lifecycle (temp dirs, ephemeral port, pairing,
@@ -2868,6 +2868,74 @@ scenario("A12", "Errors", async (ctx) => {
             /* ignore */
         }
     }
+});
+
+// ---------------------------------------------------------------------------
+// A13 — console login (local browser handoff)
+// ---------------------------------------------------------------------------
+
+scenario("A13", "Console login handoff", async (ctx) => {
+    const session = () => http("POST", "/api/v1/console/session", { token: CLI_TOKEN });
+
+    const first = await session();
+    ctx.eq("POST /api/v1/console/session → 200", first.status, 200);
+    const token = first.json?.token;
+    const url = typeof first.json?.url === "string" ? first.json.url : "";
+    const deviceId = first.json?.device?.id;
+
+    ctx.eq("the session names the local-browser device", first.json?.device?.name, "local browser");
+    ctx.eq("the local-browser device is a laptop", first.json?.device?.kind, "laptop");
+    ctx.eq("the local-browser device holds every scope", first.json?.device?.scopes, [
+        "read",
+        "steer",
+        "control",
+        "admin",
+    ]);
+    ctx.check("the handoff url puts the token in the fragment", /\/#t=[A-Za-z0-9_-]{20,}$/.test(url), {
+        expected: "http://127.0.0.1:<port>/#t=<token>",
+        observed: url.replace(/#t=.{6}.*/, "#t=<redacted>"),
+    });
+    ctx.check("the handoff url never carries the token in the query string", !url.includes("?t="), {
+        expected: "no ?t=",
+        observed: url.replace(/#t=.{6}.*/, "#t=<redacted>"),
+    });
+    ctx.check("the handoff url targets loopback", url.startsWith("http://127.0.0.1:"), {
+        expected: "http://127.0.0.1:<port>/#t=…",
+        observed: url.replace(/#t=.{6}.*/, "#t=<redacted>"),
+    });
+
+    const used = await http("GET", "/api/v1/workspaces", { token });
+    ctx.eq("the handed-off token authenticates → 200", used.status, 200);
+
+    // `:PiWeb` twice must not log the tab that is already open out.
+    const second = await session();
+    ctx.eq("a second login reuses the same token", second.json?.token, token);
+    const stillUsed = await http("GET", "/api/v1/workspaces", { token });
+    ctx.eq("the first tab keeps working after a second :PiWeb", stillUsed.status, 200);
+
+    const anonymous = await http("POST", "/api/v1/console/session");
+    ctx.eq("no cli token → 401", anonymous.status, 401);
+    const asDevice = await http("POST", "/api/v1/console/session", { token });
+    ctx.eq("a device token cannot mint another console session", asDevice.status, 401);
+
+    const devices = await http("GET", "/api/v1/devices", { token: CLI_TOKEN });
+    const browsers = (Array.isArray(devices.json) ? devices.json : []).filter(
+        (device) => device?.name === "local browser",
+    );
+    ctx.eq("exactly one local-browser device exists", browsers.length, 1);
+
+    // Revocation drops the stored plaintext, so the next login mints a new token.
+    const revoked = await http("DELETE", `/api/v1/devices/${encodeURIComponent(deviceId)}`, { token: CLI_TOKEN });
+    ctx.eq("revoking the local browser → 204", revoked.status, 204);
+    const afterRevoke = await session();
+    ctx.check("the next login mints a new token", afterRevoke.status === 200 && afterRevoke.json?.token !== token, {
+        expected: "200 with a different token",
+        observed: { status: afterRevoke.status, sameToken: afterRevoke.json?.token === token },
+    });
+    const deadToken = await http("GET", "/api/v1/workspaces", { token });
+    ctx.eq("the revoked token is rejected → 401", deadToken.status, 401);
+    const freshToken = await http("GET", "/api/v1/workspaces", { token: afterRevoke.json?.token });
+    ctx.eq("the new token works → 200", freshToken.status, 200);
 });
 
 // ---------------------------------------------------------------------------

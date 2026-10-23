@@ -28,7 +28,7 @@ the real daemon/plugin/browser, never `MOCK.*` data.
 
 The v1 gate is green when:
 
-- **A0–A12** (API/WS against a real headless nvim + real pi) pass.
+- **A0–A13** (API/WS against a real headless nvim + real pi) pass.
 - **B1–B14** (Playwright against the daemon-served production bundle) pass.
 - **C1–C4** (responsive, theme, language, no console errors) pass.
 - `tsc --noEmit`, `vitest run` (daemon), `vitest run` (web) stay green.
@@ -110,7 +110,7 @@ then the browser suite, each in its own temp root. Both drivers are standalone w
 
 ## 4. Scenarios
 
-All scenario ids below are implemented in the two drivers: `scenario("A0", …)` … `scenario("A12", …)`
+All scenario ids below are implemented in the two drivers: `scenario("A0", …)` … `scenario("A13", …)`
 in `api-e2e.mjs`, `scenario("B1", …)` … `scenario("B14", …)` and `scenario("C1", …)` …
 `scenario("C4", …)` in `ui-e2e.mjs`. A driver exits non-zero only on **FAIL**; SKIP is
 tolerant, and every skip is printed with its reason and written into the report.
@@ -219,6 +219,15 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
   block is accepted; a second respond gets `E_ATTENTION_RESOLVED`.
 - reject case: another file is requested; respond `{cancelled:true}` (or Rejected);
   the file does not exist and the turn continues/settles without error state.
+
+**A13 Console login handoff**
+- `POST /api/v1/console/session` with the CLI token → 200, one `local browser`/`laptop`
+  device with every scope, and a `http://127.0.0.1:<port>/#t=<token>` URL (fragment only,
+  never `?t=`).
+- the handed-off token authenticates; a second login returns the **same** token so a second
+  `:PiWeb` does not log the open tab out.
+- no CLI token → 401, a device token → 401 (loopback-only, local-CLI-only).
+- revoking the device → 204, the old token → 401, and the next login mints a new token.
 
 **A12 Errors**
 - unknown session id → `E_SESSION_NOT_FOUND`; malformed `cmd` → `E_BAD_REQUEST`;
@@ -365,7 +374,7 @@ which were skipped and why (non-blocking only), and the command that reproduces 
 ```bash
 cd <repo>    # the pi2 CLI/daemon checkout (this repository)
 
-# backend only (A0–A12): tsc, then `pi2 daemon` + headless nvim + real pi
+# backend only (A0–A13): tsc, then `pi2 daemon` + headless nvim + real pi
 bash scripts/e2e/run-api.sh
 
 # browser (B1–B14, C1–C4): also builds web/dist (pnpm), then Playwright
