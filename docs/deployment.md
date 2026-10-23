@@ -120,13 +120,43 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | `PI2_DATA_DIR` | Linux `$XDG_DATA_HOME/pi2`, macOS `~/Library/Application Support/pi2` | `devices.json`, `workspaces.json` |
 | `PI2_STATE_DIR` | Linux `$XDG_STATE_HOME/pi2`, macOS `~/Library/Logs/pi2` | instance logs |
 | `PI2_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`/`silent` |
-| `PI2_WORKSPACE_ROOTS` | `$HOME` | allowlist for `workspace.add` |
+| `PI2_WORKSPACE_ROOTS` | `$HOME` | allowlist for `workspace.add`, and the root set for `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS` (comma separated, `~` expanded) |
+| `PI2_WORKSPACE_HIDE_TEMP` | `1` | hide workspaces under the absolute `$TMPDIR` (ignored when relative), `/tmp`, `/var/tmp`, `/var/folders`, `/private/var/folders` |
+| `PI2_WORKSPACE_HIDE_GHOSTS` | `1` | hide workspaces whose `cwd` no longer exists (session files are kept) |
+| `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS` | `0` | hide workspaces outside `PI2_WORKSPACE_ROOTS` (opt-in: hides real repos outside `$HOME`) |
+| `PI2_WORKSPACE_STALE_DAYS` | `0` (= off) | hide workspaces idle for more than `n` days (opt-in: hides real repos) |
 | `PI2_PLUGIN_DIR` | `~/.local/share/nvim/lazy/pi2.nvim` | plugin location for `pi2 doctor` |
 | `PI2_NVIM_BIN` | `nvim` | binary used for managed instances |
 | `PI2_NVIM_INIT` | – | extra `-u <init>` for managed instances |
 | `PI2_CODING_AGENT_DIR` | `~/.pi/agent` | pi session storage (discovery) |
 
 There is no config file: the environment *is* the configuration.
+
+### Workspace list (noise policy)
+
+`GET /api/v1/workspaces` always returns **every** known workspace, so
+`/workspace/<workspaceId>` deep links keep resolving. The noise policy is a
+derived, non-persisted `visibility` (`default` | `secondary`) plus
+`visibilityReason` (`hidden` | `ghost` | `temp` | `outside-roots` | `stale`),
+with this precedence (first match wins):
+
+1. `hidden: true` → secondary (explicit intent, never rescued).
+2. A live instance (`instance != null` or `liveCount > 0`), `pinned` or
+   `trusted` → default (rescue: a workspace you are using is never hidden).
+3. `PI2_WORKSPACE_HIDE_TEMP` → secondary/`temp`.
+4. `PI2_WORKSPACE_HIDE_GHOSTS` → secondary/`ghost`.
+5. `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS` → secondary/`outside-roots`.
+6. `PI2_WORKSPACE_STALE_DAYS` → secondary/`stale` (`lastActiveAt: null` never
+   counts as stale).
+7. Otherwise default.
+
+Boolean switches accept `1/true/yes/on` and `0/false/no/off`; anything else
+falls back to the default. `workspace.add` always clears `hidden`, so opening a
+previously hidden path brings it back. In the browser console the workspaces
+page lists `default` rows only behind a persisted “Show N hidden” toggle
+(`localStorage` key `pi2-workspaces-show-all`, default off) that reveals the
+secondary rows dimmed with a reason badge; any workspace picker offers
+`default` rows only, while lookups by id ignore `visibility` entirely.
 
 ### Access modes
 
@@ -266,6 +296,7 @@ object `{daemon, instances, resources, health}`.
 | `node` | < 22 | – |
 | `nvim` | missing, or < 0.9 | version unparsable |
 | `pi` | – | not on `PATH` |
+| `curl` | – | missing → `not found on PATH (:PiWeb cannot sign the browser in automatically; pair instead)`; present but unparsable → `could not parse version of <path>` |
 | `plugin` | `lua/pi/web/bridge.lua` not found | – |
 | `runtime-dir` | missing | mode not `0700` |
 | `cli-token` | mode not `0600` | missing (daemon not started yet) |
