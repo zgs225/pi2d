@@ -14,6 +14,12 @@ import { useInfoQuery, useWorkspacesQuery } from "@/features/status/queries";
 import { openWorkspace } from "@/features/workspaces/commands";
 import { NewWorkspaceDialog, type NewWorkspaceInput } from "@/features/workspaces/new-workspace-dialog";
 import {
+    countSecondary,
+    partitionWorkspaces,
+    readShowAll,
+    writeShowAll,
+} from "@/features/workspaces/visibility";
+import {
     ServerContextBar,
     WorkspaceRow,
     WorkspacesSkeleton,
@@ -48,13 +54,25 @@ export function WorkspacesPage() {
     const workspaces = useWorkspacesQuery();
     const info = useInfoQuery();
 
-    const items = useMemo(
-        () => (workspaces.data ?? []).filter((workspace) => !workspace.hidden).slice().sort(compareWorkspaces),
-        [workspaces.data],
-    );
+    // Persisted "show N hidden" toggle (localStorage, default off): secondary
+    // rows (hidden/ghost/temp/…) stay out of the list until asked for.
+    const [showAll, setShowAll] = useState<boolean>(() => readShowAll());
+
+    function toggleShowAll() {
+        setShowAll((previous) => {
+            const next = !previous;
+            writeShowAll(next);
+            return next;
+        });
+    }
+
+    const all = useMemo(() => (workspaces.data ?? []).slice().sort(compareWorkspaces), [workspaces.data]);
+    const secondaryCount = useMemo(() => countSecondary(all), [all]);
+    const { primary, secondary } = useMemo(() => partitionWorkspaces(all, showAll), [all, showAll]);
+    const items = showAll ? [...primary, ...secondary].sort(compareWorkspaces) : primary;
     const sessionCount = useMemo(
-        () => items.reduce((total, workspace) => total + Math.max(workspace.liveCount || 0, workspace.sessionCount || 0), 0),
-        [items],
+        () => primary.reduce((total, workspace) => total + Math.max(workspace.liveCount || 0, workspace.sessionCount || 0), 0),
+        [primary],
     );
 
     const server = deriveServerIdentity({
@@ -85,10 +103,24 @@ export function WorkspacesPage() {
                 subtitle={t("workspaces.subtitle")}
                 docTitle={t("nav.workspaces")}
                 actions={
-                    <Button variant="primary" onClick={() => setDialogOpen(true)}>
-                        <Icon name="plus" />
-                        {t("workspaces.new")}
-                    </Button>
+                    <>
+                        {secondaryCount > 0 ? (
+                            <Button
+                                variant={showAll ? "default" : "ghost"}
+                                aria-pressed={showAll}
+                                aria-label={t("workspaces.showHiddenAria")}
+                                data-testid="workspaces-show-all"
+                                onClick={toggleShowAll}
+                            >
+                                <Icon name="eye" />
+                                {t(showAll ? "workspaces.hideHidden" : "workspaces.showHidden", { n: secondaryCount })}
+                            </Button>
+                        ) : null}
+                        <Button variant="primary" onClick={() => setDialogOpen(true)}>
+                            <Icon name="plus" />
+                            {t("workspaces.new")}
+                        </Button>
+                    </>
                 }
             />
 
@@ -116,17 +148,24 @@ export function WorkspacesPage() {
                         }
                     />
                 </Panel>
-            ) : items.length === 0 ? (
+            ) : all.length === 0 || (primary.length === 0 && !showAll) ? (
                 <Panel>
                     <Empty
                         icon={<Icon name="folder" size={28} />}
-                        title={t("workspaces.emptyTitle")}
-                        description={t("workspaces.emptyText")}
+                        title={all.length === 0 ? t("workspaces.emptyTitle") : t("workspaces.allHidden")}
+                        description={all.length === 0 ? t("workspaces.emptyText") : t("workspaces.allHiddenText", { n: secondaryCount })}
                         action={
-                            <Button variant="primary" onClick={() => setDialogOpen(true)}>
-                                <Icon name="plus" />
-                                {t("workspaces.new")}
-                            </Button>
+                            all.length === 0 ? (
+                                <Button variant="primary" onClick={() => setDialogOpen(true)}>
+                                    <Icon name="plus" />
+                                    {t("workspaces.new")}
+                                </Button>
+                            ) : (
+                                <Button variant="ghost" onClick={toggleShowAll}>
+                                    <Icon name="eye" />
+                                    {t("workspaces.showHidden", { n: secondaryCount })}
+                                </Button>
+                            )
                         }
                     />
                 </Panel>

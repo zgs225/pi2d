@@ -385,6 +385,11 @@
   "time.minutesAgo": "{n} 分钟前",
   "workspaces.activeRecently": "最近 1 小时有活动",
   "workspaces.addFailed": "打开工作空间失败，请检查路径是否可访问",
+  "workspaces.allHidden": "所有工作空间都被隐藏了",
+  "workspaces.allHiddenText": "打开“显示 {n} 个隐藏项”以查看。",
+  "workspaces.hideHidden": "隐藏 {n} 个隐藏项",
+  "workspaces.showHidden": "显示 {n} 个隐藏项",
+  "workspaces.showHiddenAria": "显示隐藏的工作空间",
   "workspaces.contextAria": "当前服务器",
   "workspaces.count": "{n} 个工作空间",
   "workspaces.count.one": "{n} 个工作空间",
@@ -420,5 +425,10 @@
   "workspaces.sessionCount.other": "{n} 个会话",
   "workspaces.subtitle": "工作空间 = Neovim 工作目录（cwd），会话严格按 cwd 隔离。",
   "workspaces.title": "工作空间",
-  "workspaces.unnamed": "未命名"
+  "workspaces.unnamed": "未命名",
+  "workspaces.reason.ghost": "目录不存在",
+  "workspaces.reason.hidden": "已隐藏",
+  "workspaces.reason.outside-roots": "根目录外",
+  "workspaces.reason.stale": "长期未动",
+  "workspaces.reason.temp": "临时目录"
 }

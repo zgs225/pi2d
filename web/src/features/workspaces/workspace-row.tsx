@@ -10,6 +10,7 @@ import { plural } from "@/lib/i18n";
 import type { WorkspaceInfo } from "@/lib/protocol";
 
 import { workspaceName } from "./commands";
+import { isSecondary, reasonLabelKey } from "./visibility";
 
 function serverDot(status: ServerIdentity["status"]): DotStatus {
     if (status === "online") return "ok";
@@ -78,9 +79,20 @@ export function WorkspaceRow({ workspace }: WorkspaceRowProps) {
     const { t } = useTranslation();
     const dot = instanceDot(workspace);
     const count = Math.max(workspace.liveCount || 0, workspace.sessionCount || 0);
+    // Secondary rows are dimmed and carry the policy reason; the page decides
+    // *whether* they render (see features/workspaces/visibility.ts).
+    const secondary = isSecondary(workspace);
+    const reasonKey = secondary ? reasonLabelKey(workspace) : null;
 
     return (
-        <div className="list-row" data-workspace-id={workspace.workspaceId} data-testid="workspace-row">
+        <div
+            className={secondary ? "list-row list-row--secondary" : "list-row"}
+            style={secondary ? { opacity: 0.55 } : undefined}
+            data-workspace-id={workspace.workspaceId}
+            data-testid="workspace-row"
+            data-visibility={secondary ? "secondary" : "default"}
+            data-visibility-reason={reasonKey ? workspace.visibilityReason ?? "hidden" : undefined}
+        >
             <span className="ico list-row__icon">
                 <Icon name="folder" />
             </span>
@@ -88,6 +100,11 @@ export function WorkspaceRow({ workspace }: WorkspaceRowProps) {
                 <div className="list-row__name">{workspaceName(workspace, t("workspaces.unnamed"))}</div>
                 <div className="list-row__cwd mono muted truncate">{workspace.cwd}</div>
             </div>
+            {reasonKey ? (
+                <Badge className="list-row__count" data-testid="workspace-reason">
+                    {t(reasonKey)}
+                </Badge>
+            ) : null}
             <Badge tone="info" className="list-row__count">
                 {plural("workspaces.sessionCount", count)}
             </Badge>

@@ -15,8 +15,7 @@ import { ConnectionCard } from "@/features/status/connection-card";
 import { deviceKey, DevicesCard } from "@/features/status/devices-card";
 import { HealthCard } from "@/features/status/health-card";
 import { ModelsCard } from "@/features/status/models-card";
-import {
-    mergeTasks,
+import { mergeTasks,
     sessionTasks,
     useDevicesQuery,
     useHealthQuery,
@@ -34,6 +33,7 @@ import { ResourcesCard } from "@/features/status/resources-card";
 import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
 import { ServerInfoCard } from "@/features/status/server-info-card";
 import { TasksCard } from "@/features/status/tasks-card";
+import { partitionWorkspaces } from "@/features/workspaces/visibility";
 import { ApiError, api, errorI18nKey } from "@/lib/api";
 import { useConnectionStore } from "@/stores/connection";
 import { useSessionsStore } from "@/stores/sessions";
@@ -72,7 +72,10 @@ export function StatusPage() {
     const pairCode = usePairCodeQuery(paired);
 
     const workspaces = workspacesQuery.data ?? [];
-    const visibleWorkspaces = workspaces.filter((workspace) => !workspace.hidden);
+    // Counters, the models probe and the task list only consider the rows the
+    // workspace-noise policy keeps in the default view: a ghost or a /tmp
+    // scratch dir must not become the "first workspace" used for `/models`.
+    const { primary: visibleWorkspaces } = partitionWorkspaces(workspaces);
     const workspaceCount = visibleWorkspaces.length;
     const sessionCount = visibleWorkspaces.reduce((total, workspace) => total + (workspace.sessionCount || 0), 0);
     const modelsWorkspaceId = visibleWorkspaces[0]?.workspaceId ?? null;

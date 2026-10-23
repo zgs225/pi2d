@@ -385,6 +385,11 @@
   "time.minutesAgo": "{n}m ago",
   "workspaces.activeRecently": "Active in the last hour",
   "workspaces.addFailed": "Could not open the workspace. Check that the path is accessible.",
+  "workspaces.allHidden": "All workspaces are hidden",
+  "workspaces.allHiddenText": "Turn on “Show {n} hidden” to list them.",
+  "workspaces.hideHidden": "Hide {n} hidden",
+  "workspaces.showHidden": "Show {n} hidden",
+  "workspaces.showHiddenAria": "Show hidden workspaces",
   "workspaces.contextAria": "Current server",
   "workspaces.count": "{n} workspaces",
   "workspaces.count.one": "{n} workspace",
@@ -420,5 +425,10 @@
   "workspaces.sessionCount.other": "{n} sessions",
   "workspaces.subtitle": "A workspace is a Neovim working directory (cwd); sessions are isolated per cwd.",
   "workspaces.title": "Workspaces",
-  "workspaces.unnamed": "Untitled"
+  "workspaces.unnamed": "Untitled",
+  "workspaces.reason.ghost": "missing",
+  "workspaces.reason.hidden": "hidden",
+  "workspaces.reason.outside-roots": "outside roots",
+  "workspaces.reason.stale": "stale",
+  "workspaces.reason.temp": "temp"
 }

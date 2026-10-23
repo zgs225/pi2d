@@ -128,6 +128,55 @@ describe("workspace store", () => {
         expect(store.get(bId)?.hidden).toBe(true);
     });
 
+    it("keeps secondary rows in list() and get() so deep links still resolve", async () => {
+        // The sandbox lives under $TMPDIR, so temp-hiding is switched off here to
+        // isolate the hidden/ghost rules (and to exercise the env injection).
+        const { store } = setup({ env: { PI2_WORKSPACE_HIDE_TEMP: "0" } });
+        const bId = workspaceIdForCwd(projectB);
+        await store.update(bId, { hidden: true });
+        const ghostId = workspaceIdForCwd(projectGhost);
+
+        const all = store.list();
+        expect(all).toHaveLength(3);
+        expect(all.map((workspace) => workspace.workspaceId).sort()).toEqual(
+            [workspaceIdForCwd(projectA), bId, ghostId].sort(),
+        );
+
+        expect(store.get(bId)).toMatchObject({ hidden: true, visibility: "secondary", visibilityReason: "hidden" });
+        expect(store.get(ghostId)).toMatchObject({
+            exists: false,
+            visibility: "secondary",
+            visibilityReason: "ghost",
+        });
+        expect(store.get(workspaceIdForCwd(projectA))).toMatchObject({ visibility: "default" });
+        expect(store.get(workspaceIdForCwd(projectA))).not.toHaveProperty("visibilityReason");
+    });
+
+    it("classifies sandbox paths under $TMPDIR as temp when the policy is on", () => {
+        const { store } = setup({ env: {} });
+        expect(store.get(workspaceIdForCwd(projectA))).toMatchObject({
+            visibility: "secondary",
+            visibilityReason: "temp",
+        });
+    });
+
+    it("add() clears hidden on a previously hidden workspace", async () => {
+        const { store, registry } = setup({ env: { PI2_WORKSPACE_HIDE_TEMP: "0" } });
+        const info = await store.add({ cwd: projectA });
+        await store.update(info.workspaceId, { hidden: true });
+        expect(store.get(info.workspaceId)).toMatchObject({
+            hidden: true,
+            visibility: "secondary",
+            visibilityReason: "hidden",
+        });
+
+        const reopened = await store.add({ cwd: projectA });
+        expect(reopened).toMatchObject({ hidden: false, visibility: "default" });
+        expect(reopened).not.toHaveProperty("visibilityReason");
+        expect(registry.get(info.workspaceId)?.entry.hidden).toBe(false);
+        expect(registry.list()).toHaveLength(1);
+    });
+
     it("adds existing, readable, writable directories inside the allowlist", async () => {
         const { store, registry } = setup();
         const info = await store.add({ cwd: projectA, alias: "  Alpha  ", trust: true });

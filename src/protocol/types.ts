@@ -278,7 +278,20 @@ export interface WorkspaceInfo {
     liveCount: number;
     lastActiveAt: number | null;
     instance: InstanceState | null;
+    /**
+     * Derived, non-persisted noise classification (see docs/protocol.md).
+     * `secondary` rows are still served and addressable — a client decides
+     * whether to list them behind a "show hidden" toggle. Older daemons omit
+     * the field; treat a missing value as `default`.
+     */
+    visibility?: WorkspaceVisibility;
+    /** Why a row is `secondary`; absent for `default` rows. */
+    visibilityReason?: WorkspaceVisibilityReason;
 }
+
+export type WorkspaceVisibility = "default" | "secondary";
+
+export type WorkspaceVisibilityReason = "hidden" | "ghost" | "temp" | "outside-roots" | "stale";
 
 export type DaemonCommandMethod =
     | "instance.ensure"

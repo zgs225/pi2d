@@ -2,8 +2,12 @@
  * WorkspaceStore: merges the durable registry, disk discovery and live
  * instance state into the `WorkspaceInfo` shape served by the daemon.
  *
- * Ordering and hiding are intentionally left to the UI; `list()` returns every
- * known workspace (including `hidden` ones) with stable registry-first order.
+ * `list()` returns every known workspace (including `hidden` ones) with stable
+ * registry-first order: rows are never filtered, so `/workspace/<id>` deep
+ * links keep resolving. Instead every row carries a derived, non-persisted
+ * `visibility` (`default` | `secondary`) + `visibilityReason` that the UI uses
+ * to collapse workspace noise (ghosts, temp dirs, …) into a "show hidden"
+ * section. Ordering and presentation stay with the UI.
  */
 
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
@@ -12,7 +16,12 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { InstanceManager, WorkspaceStore as WorkspaceStoreContract } from "../core/interfaces.js";
 import { dataDir, realpathSafe, workspaceIdForCwd } from "../core/paths.js";
 import { ERROR_CODES } from "../protocol/errors.js";
-import type { InstanceState, WorkspaceInfo } from "../protocol/types.js";
+import type {
+    InstanceState,
+    WorkspaceInfo,
+    WorkspaceVisibility,
+    WorkspaceVisibilityReason,
+} from "../protocol/types.js";
 import {
     createDiscovery,
     type DiscoveredWorkspace,
@@ -27,6 +36,8 @@ import {
     type WorkspaceEntry,
     type WorkspacePatch,
 } from "./registry.js";
+
+export type WorkspaceEnv = Record<string, string | undefined>;
 
 export interface WorkspaceStoreOptions {
     /** Defaults to a discovery over `sessionsRoot()`. */
@@ -43,6 +54,13 @@ export interface WorkspaceStoreOptions {
      * anywhere the user already opened nvim.
      */
     roots?: readonly string[];
+    /**
+     * Environment used for `PI2_WORKSPACE_*` (roots + visibility policy);
+     * injectable so tests stay hermetic. Defaults to `process.env`.
+     */
+    env?: WorkspaceEnv;
+    /** Clock for the `PI2_WORKSPACE_STALE_DAYS` comparison; defaults to `Date.now`. */
+    now?: () => number;
 }
 
 export interface WorkspaceStoreHandle extends WorkspaceStoreContract {
@@ -62,9 +80,13 @@ class WorkspaceStore implements WorkspaceStoreHandle {
     private readonly instances: Pick<InstanceManager, "list" | "instanceStates"> | undefined;
     private readonly logger: WorkspaceStoreOptions["logger"] | undefined;
     private readonly roots: readonly string[] | undefined;
+    private readonly env: WorkspaceEnv;
+    private readonly now: () => number;
 
     constructor(options: WorkspaceStoreOptions = {}) {
         this.logger = options.logger;
+        this.env = options.env ?? process.env;
+        this.now = options.now ?? Date.now;
         this.discovery = options.discovery ?? createDiscovery({ ...(options.logger ? { logger: options.logger } : {}) });
         this.registry =
             options.registry ??
@@ -157,15 +179,16 @@ class WorkspaceStore implements WorkspaceStoreHandle {
         }
 
         await this.registry.ensureForCwd(real);
-        const patch: WorkspacePatch = {};
+        // Explicitly reopen: `registry.update()` only touches the keys it is
+        // given, so a previously hidden workspace would otherwise stay hidden
+        // and vanish from the list after the user just asked to open it.
+        const patch: WorkspacePatch = { hidden: false };
         if (input.alias !== undefined) {
             const alias = input.alias.trim();
             patch.alias = alias.length > 0 ? alias : null;
         }
         if (input.trust !== undefined) patch.trusted = input.trust;
-        if (Object.keys(patch).length > 0) {
-            await this.registry.update(workspaceIdForCwd(real), patch);
-        }
+        await this.registry.update(workspaceIdForCwd(real), patch);
 
         return this.requireInfo(workspaceIdForCwd(real));
     }
@@ -274,19 +297,40 @@ class WorkspaceStore implements WorkspaceStoreHandle {
     ): WorkspaceInfo {
         const cwd = entry?.cwd ?? discovered?.cwd ?? "";
         const alias = entry?.alias ?? null;
+        const pinned = entry?.pinned ?? false;
+        const hidden = entry?.hidden ?? false;
+        const trusted = entry?.trusted ?? false;
+        const exists = discovered?.exists ?? isDirectory(cwd);
+        const lastActiveAt = discovered?.lastActiveAt ?? null;
+        const liveCount = views.live.get(workspaceId) ?? 0;
+        const instance = views.instances.get(workspaceId) ?? null;
+        const classification = classifyWorkspace({
+            cwd,
+            hidden,
+            pinned,
+            trusted,
+            exists,
+            lastActiveAt,
+            liveCount,
+            instance,
+            roots: this.allowlist(),
+            env: this.env,
+            now: this.now(),
+        });
         return {
             workspaceId,
             cwd,
             name: alias ?? (basename(cwd) || cwd),
             alias,
-            pinned: entry?.pinned ?? false,
-            hidden: entry?.hidden ?? false,
-            trusted: entry?.trusted ?? false,
-            exists: discovered?.exists ?? isDirectory(cwd),
+            pinned,
+            hidden,
+            trusted,
+            exists,
             sessionCount: discovered?.sessionCount ?? 0,
-            liveCount: views.live.get(workspaceId) ?? 0,
-            lastActiveAt: discovered?.lastActiveAt ?? null,
-            instance: views.instances.get(workspaceId) ?? null,
+            liveCount,
+            lastActiveAt,
+            instance,
+            ...classification,
         };
     }
 
@@ -326,7 +370,7 @@ class WorkspaceStore implements WorkspaceStoreHandle {
         if (configured !== undefined) {
             return configured.map((root) => canonicalRoot(root)).filter((root): root is string => root.length > 0);
         }
-        return rootsFromEnv(process.env.PI2_WORKSPACE_ROOTS);
+        return rootsFromEnv(this.env.PI2_WORKSPACE_ROOTS);
     }
 
     private assertAllowed(candidate: string, roots: readonly string[]): void {
@@ -340,6 +384,131 @@ class WorkspaceStore implements WorkspaceStoreHandle {
 
 export function createWorkspaceStore(options: WorkspaceStoreOptions = {}): WorkspaceStoreHandle {
     return new WorkspaceStore(options);
+}
+
+/* ------------------------------------------------------------------ */
+/* Workspace visibility policy (derived, never persisted)              */
+/* ------------------------------------------------------------------ */
+
+const DAY_MS = 86_400_000;
+const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
+const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
+
+/** Built-in temp roots, in addition to `$TMPDIR` when it is set and absolute. */
+const DEFAULT_TEMP_ROOTS: readonly string[] = ["/tmp", "/var/tmp", "/var/folders", "/private/var/folders"];
+
+export interface ClassifyWorkspaceInput {
+    cwd: string;
+    hidden?: boolean | undefined;
+    pinned?: boolean | undefined;
+    trusted?: boolean | undefined;
+    exists: boolean;
+    lastActiveAt: number | null;
+    /** Live instance for this workspace (`WorkspaceInfo.instance`). */
+    instance?: InstanceState | null | undefined;
+    /** Live sessions reported by the instance (`WorkspaceInfo.liveCount`). */
+    liveCount?: number | undefined;
+    /** Roots for the `outside-roots` rule; defaults to `PI2_WORKSPACE_ROOTS` / `$HOME`. */
+    roots?: readonly string[] | undefined;
+    /** Policy switches; defaults to `process.env`. */
+    env?: WorkspaceEnv | undefined;
+    /** Clock for `PI2_WORKSPACE_STALE_DAYS`; defaults to `Date.now()`. */
+    now?: number | undefined;
+}
+
+export interface WorkspaceClassification {
+    visibility: WorkspaceVisibility;
+    visibilityReason?: WorkspaceVisibilityReason;
+}
+
+/**
+ * Derive the workspace-noise policy for one row. Pure and non-persisted so the
+ * same inputs always produce the same classification. Precedence (first match
+ * wins):
+ *
+ *   1. `hidden`                          → secondary/hidden (explicit intent)
+ *   2. live instance, pinned or trusted  → default (rescue)
+ *   3. `PI2_WORKSPACE_HIDE_TEMP` (1)     → secondary/temp
+ *   4. `PI2_WORKSPACE_HIDE_GHOSTS` (1)   → secondary/ghost
+ *   5. `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS` (0) → secondary/outside-roots
+ *   6. `PI2_WORKSPACE_STALE_DAYS` (0=off)     → secondary/stale
+ *   7. otherwise                         → default
+ */
+export function classifyWorkspace(input: ClassifyWorkspaceInput): WorkspaceClassification {
+    const env = input.env ?? process.env;
+    const cwd = typeof input.cwd === "string" ? input.cwd : "";
+    const real = cwd.length > 0 ? realpathSafe(cwd) : "";
+
+    if (input.hidden === true) return secondary("hidden");
+
+    const liveCount = typeof input.liveCount === "number" && Number.isFinite(input.liveCount) ? input.liveCount : 0;
+    if (input.instance != null || liveCount > 0 || input.pinned === true || input.trusted === true) {
+        return { visibility: "default" };
+    }
+
+    if (parseBooleanEnv(env.PI2_WORKSPACE_HIDE_TEMP, true) && real !== "" && isTempPath(real, env)) {
+        return secondary("temp");
+    }
+
+    if (parseBooleanEnv(env.PI2_WORKSPACE_HIDE_GHOSTS, true) && input.exists === false) {
+        return secondary("ghost");
+    }
+
+    if (parseBooleanEnv(env.PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS, false)) {
+        // Both sides canonicalised, mirroring the `add()` allowlist.
+        const roots = (input.roots ?? rootsFromEnv(env.PI2_WORKSPACE_ROOTS)).map((root) => realpathSafe(root));
+        if (real !== "" && !roots.some((root) => isWithin(root, real))) return secondary("outside-roots");
+    }
+
+    const staleDays = parseNonNegativeInt(env.PI2_WORKSPACE_STALE_DAYS);
+    if (staleDays > 0 && typeof input.lastActiveAt === "number" && Number.isFinite(input.lastActiveAt)) {
+        const now = typeof input.now === "number" && Number.isFinite(input.now) ? input.now : Date.now();
+        if (now - input.lastActiveAt > staleDays * DAY_MS) return secondary("stale");
+    }
+
+    return { visibility: "default" };
+}
+
+/** `1/true/yes/on` enable, `0/false/no/off` disable, anything else → `fallback`. Never throws. */
+export function parseBooleanEnv(raw: string | undefined, fallback: boolean): boolean {
+    if (typeof raw !== "string") return fallback;
+    const value = raw.trim().toLowerCase();
+    if (TRUE_VALUES.has(value)) return true;
+    if (FALSE_VALUES.has(value)) return false;
+    return fallback;
+}
+
+/** Non-negative integer days, or `0` (policy disabled) for garbage. Never throws. */
+export function parseNonNegativeInt(raw: string | undefined): number {
+    if (typeof raw !== "string") return 0;
+    const value = raw.trim();
+    if (!/^\d+$/.test(value)) return 0;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/** `$TMPDIR` (when set) plus the platform defaults, realpath'd and deduped. */
+export function tempRoots(env: WorkspaceEnv = process.env): string[] {
+    const candidates = [env.TMPDIR, ...DEFAULT_TEMP_ROOTS];
+    const roots: string[] = [];
+    for (const candidate of candidates) {
+        if (typeof candidate !== "string") continue;
+        const value = candidate.trim();
+        if (value.length === 0 || !isAbsolute(value)) continue;
+        roots.push(realpathSafe(value));
+    }
+    return [...new Set(roots)];
+}
+
+/** True for a temp root itself or any path below one (both sides realpath'd). */
+export function isTempPath(cwd: string, env: WorkspaceEnv = process.env): boolean {
+    if (typeof cwd !== "string" || cwd.length === 0) return false;
+    const real = realpathSafe(cwd);
+    return tempRoots(env).some((root) => isWithin(root, real));
+}
+
+function secondary(reason: WorkspaceVisibilityReason): WorkspaceClassification {
+    return { visibility: "secondary", visibilityReason: reason };
 }
 
 export function rootsFromEnv(raw: string | undefined, fallback: string = homedir()): string[] {

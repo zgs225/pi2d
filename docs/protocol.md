@@ -90,6 +90,33 @@ Plugin obligations:
 | `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice |
 | `GET /api/v1/diagnostics` | connections, event rates, slow queries, instance table |
 
+Workspace row (`GET /api/v1/workspaces`) — registry entry ∪ disk discovery ∪ live instance state. Every known workspace is returned; rows are never filtered, so `/workspace/<workspaceId>` deep links always resolve:
+
+| Field | Notes |
+|---|---|
+| `workspaceId` | `sha256(realpath(cwd)).slice(0,16)` |
+| `cwd`, `name`, `alias` | `name` falls back to `alias`, then `basename(cwd)` |
+| `pinned`, `hidden`, `trusted` | persisted user intent from `workspaces.json` |
+| `exists` | `false` = ghost (the cwd is gone; the session files are not) |
+| `sessionCount`, `liveCount`, `lastActiveAt` | disk projection (`lastActiveAt` may be `null`) |
+| `instance` | live `InstanceState` or `null` |
+| `visibility?: "default" \| "secondary"` | derived, never persisted: the workspace-noise policy. Missing ⇒ `default` |
+| `visibilityReason?` | `hidden` \| `ghost` \| `temp` \| `outside-roots` \| `stale`; absent for `default` rows |
+
+The classification is advisory and client-side only (precedence, first match wins):
+
+1. `hidden: true` → `secondary`/`hidden` — explicit user intent always wins, no rescue.
+2. A live instance (`instance != null` or `liveCount > 0`), `pinned` or `trusted` → `default` (rescue).
+3. `PI2_WORKSPACE_HIDE_TEMP=1` (default `1`) and `cwd` is under `$TMPDIR`, `/tmp`, `/var/tmp`, `/var/folders` or `/private/var/folders` → `secondary`/`temp`.
+4. `PI2_WORKSPACE_HIDE_GHOSTS=1` (default `1`) and `exists === false` → `secondary`/`ghost`.
+5. `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS=1` (default `0`) and `cwd` is outside `PI2_WORKSPACE_ROOTS` → `secondary`/`outside-roots`.
+6. `PI2_WORKSPACE_STALE_DAYS=<n>` (default `0` = off) and `lastActiveAt` older than `n` days → `secondary`/`stale` (`lastActiveAt: null` never counts).
+7. Otherwise `default`.
+
+A client that lets the user *choose* a workspace should list only `default` rows by
+default; `secondary` rows belong behind a “show hidden” toggle. Lookups by
+`workspaceId` must ignore `visibility` entirely.
+
 Session row (`GET /api/v1/workspaces/:id/sessions`) — a subset of `SessionState` plus list metadata (`usage`, `flags`, `entries` and `attention` arrive via snapshot/events, not on this row):
 
 | Field | Notes |
