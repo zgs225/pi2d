@@ -43,16 +43,16 @@ export function TasksCard({ tasks, loading = false, error = null, onRetry }: Tas
                         <div className="task-row" key={`${task.sessionId}-${task.id}`} title={task.command}>
                             <StatusDot status={TASK_DOT[task.status] ?? "idle"} />
                             <span className="task-cmd mono truncate grow">{task.command}</span>
-                            <span className="task-dur muted">{formatDuration(task.durationMs)}</span>
-                            <span className="task-exit">
-                                {task.exitCode == null ? (
-                                    <span className="badge badge--info">{t("state.running")}</span>
-                                ) : (
-                                    <span className={task.exitCode === 0 ? "badge badge--ok" : "badge badge--err"}>
-                                        exit {task.exitCode}
-                                    </span>
-                                )}
-                            </span>
+                            <span className="task-dur faint tabular">{formatDuration(task.durationMs)}</span>
+                            {task.exitCode != null ? (
+                                <span className={task.exitCode === 0 ? "task-state mono is-ok" : "task-state mono is-err"}>
+                                    exit {task.exitCode}
+                                </span>
+                            ) : (
+                                <span className={task.status === "running" ? "task-state is-run" : "task-state"}>
+                                    {t(`state.${task.status}`, { defaultValue: task.status })}
+                                </span>
+                            )}
                         </div>
                     ))}
                 </div>

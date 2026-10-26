@@ -1,0 +1,263 @@
+/* ============================================================
+   pi2 console — tool family: search (grep) / find (find · glob · ls)
+   contract: design/CHAT-TOOL-RENDER.md §4.4 / §4.5
+   颜色/尺寸只用 styles/tokens.css 变量；本文件不含硬编码色值。
+   ============================================================ */
+
+/* ---------------- search：按文件分组的命中列表 ---------------- */
+.search,
+.find {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-2xs);
+}
+
+.tool--search .tool__body,
+.tool--find .tool__body { padding-top: 4px; }
+
+.search__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.search__group[hidden] { display: none; }
+
+.search__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.search__ico {
+  display: inline-flex;
+  flex: none;
+  color: var(--faint);
+}
+.search__ico svg { width: 12px; height: 12px; }
+
+.search__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+}
+
+.search__file .badge {
+  flex: none;
+  font-size: var(--fs-2xs);
+}
+
+.search__hits {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.search__hit {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  line-height: 1.6;
+}
+.search__hit[hidden] { display: none; }
+
+.search__ln {
+  flex: none;
+  width: 3.4em;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.search__code {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.search__mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: color-mix(in oklch, var(--warn) 26%, transparent);
+  color: var(--foreground);
+}
+
+.search__foot {
+  display: flex;
+  padding-top: 2px;
+}
+.search__foot--all { padding-left: var(--space-2); }
+
+/* 折叠按钮：安静的文字按钮（还有 N 处 / N 个文件） */
+.search__more,
+.find__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.search__more:hover,
+.find__more:hover { background: var(--surface-1); color: var(--foreground); }
+.search__more:focus-visible,
+.find__more:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 0 命中：安静的两行文案，不报错 */
+.search__empty {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 2px;
+}
+.search__empty-title {
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+}
+.search__empty-hint {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+/* ---------------- find：平铺列表（不画树） ---------------- */
+.find__group-box {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.find__group-box[hidden] { display: none; }
+
+.find__group {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  padding: 3px 4px 1px;
+}
+
+.find__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.find__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 1.5rem;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.find__item:hover { background: var(--surface-1); }
+.find__item[hidden] { display: none; }
+
+.find__ico {
+  display: inline-flex;
+  flex: none;
+  color: var(--faint);
+}
+.find__ico svg { width: 12px; height: 12px; }
+
+.find__path {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+}
+
+.find__dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.find__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.find__size {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.find__foot {
+  display: flex;
+  padding-top: 2px;
+}
+
+/* ---------------- 移动端：路径可换行，无横向溢出 ---------------- */
+@media (max-width: 599px) {
+  .search__hits {
+    padding-left: var(--space-1);
+    border-left-color: var(--border-subtle);
+  }
+  .search__hit { gap: 6px; }
+  .search__ln { width: 2.8em; }
+  .search__file { gap: 4px; }
+
+  /* 触屏：折叠按钮（还有 N 处 / N 项）命中区 ≥44px */
+  .search__more,
+  .find__more { min-height: 44px; }
+
+  .find__item { align-items: flex-start; padding-block: 2px; }
+  .find__path { flex-wrap: wrap; }
+  .find__dir,
+  .find__name {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .find__size { align-self: flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search__more,
+  .find__more,
+  .find__item { transition: none; }
+}

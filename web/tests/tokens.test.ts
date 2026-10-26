@@ -4,15 +4,18 @@ import appCss from "@/styles/app.css?raw";
 import tokensCss from "@/styles/tokens.css?raw";
 
 function block(source: string, selector: string): string {
-    const start = source.indexOf(selector);
+    // Strip comments first: the file header mentions `html[data-theme="dark"]`,
+    // which would otherwise make `indexOf` land inside the header and return `:root`.
+    const text = source.replace(/\/\*[\s\S]*?\*\//g, "");
+    const start = text.indexOf(selector);
     expect(start, `missing selector ${selector}`).toBeGreaterThanOrEqual(0);
-    const open = source.indexOf("{", start);
+    const open = text.indexOf("{", start);
     let depth = 0;
-    for (let i = open; i < source.length; i += 1) {
-        if (source[i] === "{") depth += 1;
-        if (source[i] === "}") {
+    for (let i = open; i < text.length; i += 1) {
+        if (text[i] === "{") depth += 1;
+        if (text[i] === "}") {
             depth -= 1;
-            if (depth === 0) return source.slice(open + 1, i);
+            if (depth === 0) return text.slice(open + 1, i);
         }
     }
     throw new Error(`unclosed block ${selector}`);
@@ -70,15 +73,32 @@ describe("design tokens", () => {
             "topbar-h",
             "sidebar-w",
             "rail-w",
-            "tabbar-h",
+            // v0.1.1 additions (pi2-web-ui-design CHG-2026-10-23-01 / -04 / -20)
+            "faint",
+            "border-subtle",
+            "surface-1",
+            "surface-2",
+            "overlay",
+            "focus-ring",
+            "fs-2xs",
+            "fs-body",
+            "fs-xl",
+            "fw-strong",
+            "radius-pill",
+            "reading-max",
+            "dur-fast",
+            "ease-out",
         ]) {
             expect(light[name], `--${name}`).toBeTruthy();
         }
+        // CHG-2026-10-26-20 removed the mobile tabbar; the token must be gone.
+        expect(light["tabbar-h"]).toBeUndefined();
+        expect(dark["tabbar-h"]).toBeUndefined();
     });
 
     it("overrides the same surfaces in the dark data-theme block", () => {
-        expect(light.background).toBe("oklch(0.985 0.004 90)");
-        expect(dark.background).toBe("oklch(0.145 0.008 60)");
+        expect(light.background).toBe("oklch(0.987 0.003 85)");
+        expect(dark.background).toBe("oklch(0.148 0.006 65)");
         expect(light.foreground).not.toBe(dark.foreground);
         for (const name of ["background", "foreground", "card", "muted", "muted-foreground", "primary", "border", "input", "ok", "warn", "role-user", "role-agent", "role-thinking"]) {
             expect(dark[name], `--${name} dark override`).toBeTruthy();
@@ -131,12 +151,12 @@ describe("design tokens", () => {
 
         document.documentElement.dataset.theme = "light";
         expect(getComputedStyle(document.documentElement).getPropertyValue("--background").trim()).toBe(
-            "oklch(0.985 0.004 90)",
+            "oklch(0.987 0.003 85)",
         );
 
         document.documentElement.dataset.theme = "dark";
         expect(getComputedStyle(document.documentElement).getPropertyValue("--background").trim()).toBe(
-            "oklch(0.145 0.008 60)",
+            "oklch(0.148 0.006 65)",
         );
 
         style.remove();

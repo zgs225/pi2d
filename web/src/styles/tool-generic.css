@@ -1,0 +1,50 @@
+/* ============================================================
+   pi2 console — generic 兜底族（未注册工具 / MCP）
+   contract: design/CHAT-TOOL-RENDER.md §4.11
+   只写 .generic__* ；section / pre / json 折叠样式来自 tool-core.css。
+   ============================================================ */
+
+.generic__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.generic__section {
+  min-width: 0;
+}
+
+.generic__section .tool__pre {
+  max-height: 22rem;
+  color: var(--muted-foreground);
+}
+
+.generic__section .tool__foot {
+  margin-top: 4px;
+}
+
+@media (max-width: 599px) {
+  .generic__section .tool__pre {
+    max-height: 16rem;
+    padding: 6px 8px;
+  }
+}
+
+/* pi2d 移植补充：折叠报数行沿用 `.tool__foot`（token 已在 tool-core.css）。 */
+.generic__section .tool__foot-count {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+}
+
+@media (max-width: 599px) {
+  /* 触屏：折叠按钮命中区 ≥44px（折叠全文的唯一操作） */
+  .generic__section .tool__pre { max-height: 16rem; padding: 6px 8px; }
+  .generic__section .tool__foot .btn { min-height: 44px; min-width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generic__section .tool__pre { scroll-behavior: auto; }
+  .generic__section .tool__foot .btn { transition: none; }
+}

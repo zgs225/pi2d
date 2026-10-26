@@ -1,5 +1,5 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
@@ -9,13 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/dialog";
 import { KV } from "@/components/ui/kv";
+import { StatusDot } from "@/components/ui/status-dot";
 import { toast } from "@/components/ui/toast";
+import { ConnectHero } from "@/features/connect/hero";
 import { ManualConnectForm, pairErrorMessage, type ManualConnectInput } from "@/features/connect/manual-form";
 import {
     clearPairMeta,
     isPairCode,
     maskSecret,
     normalizePairCode,
+    parseEndpoint,
     readPairMeta,
     redeemPairing,
     safePairNext,
@@ -27,7 +30,7 @@ import {
 import { ScanDialog } from "@/features/connect/scan-dialog";
 import { deriveServerIdentity, formatUptime, type InfoExtras } from "@/features/status/server";
 import { useInfoQuery } from "@/features/status/queries";
-import { setDeviceToken } from "@/lib/api";
+import { getDeviceToken, setDeviceToken } from "@/lib/api";
 import { useConnectionStore } from "@/stores/connection";
 
 import "@/styles/pages/connect.css";
@@ -37,6 +40,18 @@ function scopeTone(scope: string): "default" | "info" | "ok" {
     if (scope === "steer") return "info";
     if (scope === "apply") return "ok";
     return "default";
+}
+
+/**
+ * Port default for the manual form. The loaded daemon info wins; otherwise the
+ * port this console was served from, else the scheme default. Never a literal.
+ */
+function defaultPortFor(infoPort: number | null | undefined): string {
+    if (typeof infoPort === "number" && Number.isFinite(infoPort) && infoPort > 0) return String(infoPort);
+    if (typeof window === "undefined") return "";
+    const { port, protocol } = window.location;
+    if (port) return port;
+    return protocol === "https:" ? "443" : "80";
 }
 
 export function ConnectPage() {
@@ -66,8 +81,27 @@ export function ConnectPage() {
     const [pending, setPending] = useState<PairTarget | null>(null);
     const [pairError, setPairError] = useState<string | null>(null);
     const [redeeming, setRedeeming] = useState(false);
+    /** Manual pairing form: collapsed by default in both states. */
+    const [manualOpen, setManualOpen] = useState(() => codeParam !== "");
+    /** Connected state: the re-pair panel expands in place. */
+    const [repairOpen, setRepairOpen] = useState(false);
+    const [repairManualOpen, setRepairManualOpen] = useState(false);
+    /** `/connect?…&auto=1` (from a scanned `/pair/<CODE>` link): pair with no input. */
+    const autoParam = useMemo(() => {
+        const raw = search.get("auto");
+        return raw === "1" || raw === "true";
+    }, [search]);
+    const originTarget = useMemo(() => {
+        if (typeof window === "undefined") return null;
+        const parsed = parseEndpoint(window.location.origin, "");
+        return "error" in parsed ? null : parsed;
+    }, []);
+    const autoAttempted = useRef(false);
+    const [autoPairing, setAutoPairing] = useState(() => autoParam && codeParam !== "" && !paired);
+    const [autoError, setAutoError] = useState<string | null>(null);
     const [disconnectOpen, setDisconnectOpen] = useState(false);
     const hostInputRef = useRef<HTMLInputElement | null>(null);
+    const formId = useId();
 
     useEffect(() => {
         refreshFromStorage();
@@ -91,6 +125,7 @@ export function ConnectPage() {
     const osLabel = info.data?.os || info.data?.platform || server.os || "—";
     const uptimeSeconds =
         typeof info.data?.uptimeMs === "number" ? info.data.uptimeMs / 1000 : server.uptimeSec;
+    const defaultPort = defaultPortFor(info.data?.port ?? server.port);
 
     /**
      * One pairing path for the scan/confirm dialog and the manual form:
@@ -121,9 +156,41 @@ export function ConnectPage() {
         [connect, navigate, next, t],
     );
 
+    /**
+     * A pairing link carries everything the form would ask for: the endpoint is
+     * the origin the page was loaded from (host + port), the code is in the URL,
+     * and the device name is the localized default. Redeem it immediately; only a
+     * rejected/expired code falls back to the prefilled form.
+     */
+    useEffect(() => {
+        if (!autoParam || !codeParam || paired || originTarget === null || autoAttempted.current) return;
+        autoAttempted.current = true;
+        setAutoPairing(true);
+        setAutoError(null);
+        void (async () => {
+            try {
+                await finishPairing(
+                    {
+                        endpoint: originTarget.endpoint,
+                        code: codeParam,
+                        name: originTarget.hostname,
+                        hostname: originTarget.hostname,
+                        port: originTarget.port,
+                    },
+                    defaultDeviceName,
+                );
+            } catch (error) {
+                const message = t(pairErrorMessage(error));
+                setAutoError(message);
+                toast.error(message);
+                setAutoPairing(false);
+            }
+        })();
+    }, [autoParam, codeParam, paired, originTarget, finishPairing, defaultDeviceName, t]);
+
     async function handleManual(input: ManualConnectInput) {
         let hostname = "";
-        let port = 4321;
+        let port = originTarget?.port ?? 0;
         try {
             const url = new URL(input.endpoint);
             hostname = url.hostname;
@@ -162,124 +229,253 @@ export function ConnectPage() {
         disconnect();
         clearPairMeta();
         setMeta(null);
+        setRepairOpen(false);
+        setManualOpen(false);
         toast.success(t("connect.disconnected"));
     }
 
-    const title = t("connect.title");
-    const subtitle = t("connect.subtitle");
+    function toggleRepair() {
+        setRepairOpen((open) => {
+            const nextOpen = !open;
+            // Collapsing also collapses the form so re-opening is never "half open".
+            if (!nextOpen) setRepairManualOpen(false);
+            return nextOpen;
+        });
+    }
 
-    return (
-        <div className="cn">
-            <header className="cn-head">
-                <h1>{title}</h1>
-                <p className="cn-sub">{subtitle}</p>
-                <p className="cn-note">
-                    <span className="cn-ico">
-                        <Icon name="alert" />
-                    </span>
-                    <span>{t("connect.secureNote")}</span>
-                </p>
-            </header>
+    function renderManualForm(expanded: boolean, primary: boolean) {
+        return (
+            <ManualConnectForm
+                id={formId}
+                expanded={expanded}
+                primary={primary}
+                onConnect={handleManual}
+                hostInputRef={hostInputRef}
+                defaultDeviceName={defaultDeviceName}
+                defaultPort={defaultPort}
+                initialCode={codeParam}
+                initialHost={autoParam ? originTarget?.hostname : undefined}
+                initialPort={autoParam && originTarget ? String(originTarget.port) : undefined}
+            />
+        );
+    }
 
-            {paired ? (
-                <section className="card cn-card cn-summary">
-                    <div className="card__head">
-                        <div className="grow">
-                            <h2 className="cn-card__title">
-                                <span className="cn-ico">
-                                    <Icon name="check" />
-                                </span>
-                                {t("connect.summary")}
-                            </h2>
-                            <div className="card__sub">{t("connect.statePaired")}</div>
-                        </div>
-                        <Badge tone="ok">{t("connect.statePaired")}</Badge>
-                    </div>
+    function manualToggle(expanded: boolean, onToggle: () => void) {
+        return (
+            <Button
+                variant="ghost"
+                className="cn-toggle"
+                aria-expanded={expanded}
+                aria-controls={formId}
+                aria-label={
+                    expanded
+                        ? t("connect.collapseManual", { defaultValue: "Hide manual connection" })
+                        : t("connect.expandManual", { defaultValue: "Show manual connection" })
+                }
+                onClick={onToggle}
+            >
+                <span className="cn-ico cn-toggle__chev">
+                    <Icon name="chevron-down" />
+                </span>
+                <span>{t("connect.manual")}</span>
+            </Button>
+        );
+    }
 
-                    <div className="cn-kvs">
-                        <KV label={t("connect.server")}>{server.name || "—"}</KV>
-                        <KV label={t("connect.hostname")} mono>
-                            {info.data?.hostname || server.hostname || "—"}
-                        </KV>
-                        <KV label={t("connect.endpoint")} mono>
-                            {storedEndpoint || server.endpoint || "—"}
-                        </KV>
-                        <KV label={t("connect.os")}>{osLabel}</KV>
-                        <KV label={t("connect.version")}>
-                            {info.data?.version || meta?.server?.version || "—"}
-                        </KV>
-                        <KV label={t("connect.pluginVersion")}>
-                            {info.data?.pluginVersion || meta?.server?.pluginVersion || "—"}
-                        </KV>
-                        <KV label={t("connect.uptime")}>{formatUptime(uptimeSeconds)}</KV>
-                        <KV label={t("connect.device")}>{storedDeviceName || meta?.deviceName || "—"}</KV>
-                        <KV label={t("connect.scopes")} className="cn-kv--badges">
-                            {scopes.length ? (
-                                <span className="cn-scopes">
-                                    {scopes.map((scope) => (
-                                        <Badge
-                                            key={scope}
-                                            tone={scopeTone(scope)}
-                                            title={t("connect.scopeHint", { scope })}
-                                        >
-                                            {t(`connect.scope.${scope}`, { defaultValue: scope })}
-                                        </Badge>
-                                    ))}
-                                </span>
-                            ) : (
-                                <span className="muted">—</span>
-                            )}
-                        </KV>
-                        <KV label={t("connect.lastConnected")}>
-                            <RelativeTime ts={connectedAt || meta?.pairedAt || null} />
-                        </KV>
-                    </div>
+    /** Connected: summary + back (primary by default) / re-pair / disconnect. */
+    function connectedPanel() {
+        return (
+            <section className="card card--quiet cn-card cn-state" aria-labelledby="cn-state-name">
+                <div className="cn-state__head">
+                    <StatusDot status="ok" className="dot--lg" />
+                    <h2 className="cn-state__name" id="cn-state-name">
+                        {server.name || "—"}
+                    </h2>
+                    <Badge className="badge--outline cn-state__badge">{t("connect.statePaired")}</Badge>
+                </div>
 
-                    <div className="cn-summary__actions">
-                        <Link to="/workspaces" className="btn btn--primary">
+                <div className="cn-kvs">
+                    <KV label={t("connect.hostname")} mono>
+                        {info.data?.hostname || server.hostname || "—"}
+                    </KV>
+                    <KV label={t("connect.endpoint")} mono>
+                        {storedEndpoint || server.endpoint || "—"}
+                    </KV>
+                    <KV label={t("connect.version")}>{info.data?.version || meta?.server?.version || "—"}</KV>
+                    <KV label={t("connect.device")}>{storedDeviceName || meta?.deviceName || "—"}</KV>
+                    <KV label={t("connect.scopes")} className="cn-kv--badges">
+                        {scopes.length ? (
+                            <span className="cn-scopes">
+                                {scopes.map((scope) => (
+                                    <Badge
+                                        key={scope}
+                                        className="badge--outline"
+                                        tone={scopeTone(scope)}
+                                        title={t("connect.scopeHint", { scope })}
+                                    >
+                                        {t(`connect.scope.${scope}`, { defaultValue: scope })}
+                                    </Badge>
+                                ))}
+                            </span>
+                        ) : (
+                            <span className="faint">—</span>
+                        )}
+                    </KV>
+                    <KV label={t("connect.lastConnected")}>
+                        <RelativeTime ts={connectedAt || meta?.pairedAt || null} />
+                    </KV>
+                </div>
+
+                <div className="cn-actions">
+                    <div className="cn-actions__main">
+                        <Link
+                            to="/workspaces"
+                            className={repairOpen ? "btn" : "btn btn--primary"}
+                            data-testid="connect-back"
+                        >
                             <Icon name="folder" />
                             {t("connect.backToWorkspaces")}
                         </Link>
-                        <Button variant="ghost" onClick={() => setScanOpen(true)}>
+                        <Button
+                            variant="ghost"
+                            className="cn-actions__repair"
+                            aria-expanded={repairOpen}
+                            aria-controls="cn-repair"
+                            data-testid="connect-repair"
+                            onClick={toggleRepair}
+                        >
                             <Icon name="scan" />
                             {t("connect.reconnect")}
                         </Button>
-                        <Button variant="danger" onClick={() => setDisconnectOpen(true)}>
-                            <Icon name="x" />
-                            {t("connect.disconnect")}
-                        </Button>
                     </div>
-                </section>
-            ) : (
-                <>
-                    <div className="cn-actions">
+                    <Button
+                        variant="danger"
+                        className="cn-actions__danger"
+                        data-testid="connect-disconnect"
+                        onClick={() => setDisconnectOpen(true)}
+                    >
+                        <Icon name="plug" />
+                        {t("connect.disconnect")}
+                    </Button>
+                </div>
+
+                <div className="cn-repair" id="cn-repair" hidden={!repairOpen} data-testid="connect-repair-panel">
+                    <div className="cn-pair">
                         <Button
-                            variant="primary"
-                            className="cn-action"
-                            data-testid="connect-scan"
+                            variant={repairOpen && !repairManualOpen ? "primary" : "default"}
+                            className="cn-pair__btn"
+                            data-testid="connect-repair-scan"
                             onClick={() => setScanOpen(true)}
                         >
                             <Icon name="scan" />
                             {t("connect.scan")}
                         </Button>
-                        <Button
-                            variant="ghost"
-                            className="cn-action"
-                            data-testid="connect-manual"
-                            onClick={() => hostInputRef.current?.focus()}
-                        >
-                            <Icon name="server" />
-                            {t("connect.manual")}
-                        </Button>
+                        <div className="cn-or" aria-hidden="true">
+                            <span>{t("connect.or", { defaultValue: "or" })}</span>
+                        </div>
+                        {manualToggle(repairManualOpen, () => setRepairManualOpen((open) => !open))}
                     </div>
-                    <ManualConnectForm
-                        onConnect={handleManual}
-                        hostInputRef={hostInputRef}
-                        defaultDeviceName={defaultDeviceName}
-                        initialCode={codeParam}
-                    />
-                </>
-            )}
+                    {renderManualForm(repairManualOpen, repairOpen && repairManualOpen)}
+                </div>
+
+                <details className="cn-details">
+                    <summary>
+                        <span className="cn-ico cn-details__chev">
+                            <Icon name="chevron-down" />
+                        </span>
+                        <span>{t("connect.details", { defaultValue: "Connection details" })}</span>
+                    </summary>
+                    <div className="cn-details__body">
+                        <KV label={t("connect.token")} mono>
+                            {maskSecret(getDeviceToken() ?? "") || "—"}
+                        </KV>
+                        <KV label={t("connect.pluginVersion")}>
+                            {info.data?.pluginVersion || meta?.server?.pluginVersion || "—"}
+                        </KV>
+                        <KV label={t("connect.os")}>{osLabel}</KV>
+                        <KV label={t("connect.uptime")}>{formatUptime(uptimeSeconds)}</KV>
+                        <p className="cn-note">
+                            <span className="cn-ico">
+                                <Icon name="alert" />
+                            </span>
+                            <span>{t("connect.secureNote")}</span>
+                        </p>
+                        <p className="cn-note">
+                            <span className="cn-ico">
+                                <Icon name="alert" />
+                            </span>
+                            <span>{t("connect.scanWarning")}</span>
+                        </p>
+                    </div>
+                </details>
+            </section>
+        );
+    }
+
+    /** Unconnected: scan-to-pair is the single primary until the form opens. */
+    function unconnectedPanel() {
+        return (
+            <section className="card card--quiet cn-card" aria-labelledby="cn-card-title">
+                <div className="cn-card__head">
+                    <h2 className="cn-card__title" id="cn-card-title">
+                        {t("connect.emptyTitle")}
+                    </h2>
+                    <p className="cn-card__sub">{t("connect.emptyText")}</p>
+                </div>
+
+                <div className="cn-qr" aria-hidden="true">
+                    <Icon name="qr" />
+                </div>
+
+                {autoError ? (
+                    <div className="cn-error" role="alert" data-testid="connect-auto-error">
+                        <span className="cn-ico">
+                            <Icon name="alert" />
+                        </span>
+                        <span>{autoError}</span>
+                    </div>
+                ) : null}
+
+                <div className="cn-pair">
+                    <Button
+                        variant={manualOpen ? "default" : "primary"}
+                        className="cn-pair__btn"
+                        data-testid="connect-scan"
+                        onClick={() => setScanOpen(true)}
+                    >
+                        <Icon name="scan" />
+                        {t("connect.scan")}
+                    </Button>
+                    <div className="cn-or" aria-hidden="true">
+                        <span>{t("connect.or", { defaultValue: "or" })}</span>
+                    </div>
+                    {manualToggle(manualOpen, () => setManualOpen((open) => !open))}
+                </div>
+
+                {renderManualForm(manualOpen, manualOpen)}
+            </section>
+        );
+    }
+
+    return (
+        <div className="cn">
+            <div className="cn-shell">
+                <ConnectHero />
+                <div className="cn-col">
+                    {paired ? (
+                        connectedPanel()
+                    ) : autoPairing ? (
+                        <section className="card card--quiet cn-card" data-testid="connect-auto">
+                            <div className="cn-card__head">
+                                <h2 className="cn-card__title">{t("connect.pairingAuto")}</h2>
+                                <p className="cn-card__sub">{t("connect.connecting")}</p>
+                            </div>
+                        </section>
+                    ) : (
+                        unconnectedPanel()
+                    )}
+                </div>
+            </div>
 
             <ScanDialog
                 open={scanOpen}

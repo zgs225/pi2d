@@ -1,0 +1,318 @@
+/* ============================================================
+   pi2 console — tool family: read / write（unified diff 查看器）
+   contract: design/CHAT-TOOL-RENDER.md §4.2 / §4.3
+   只写 .diff* / .file__* / .tool--read* / .tool--write* 前缀；
+   颜色一律 token（--diff-add-bg / --diff-del-bg / --diff-*-gutter），无 hex/rgb。
+   ============================================================ */
+
+/* ---------------- read（inline 行，无 body） ---------------- */
+.tool--read .tool__meta .tool__fact { font-variant-numeric: tabular-nums; }
+
+/* ---------------- write / edit 外壳 ---------------- */
+.tool--write .tool__body { padding-top: 0; }
+
+/* ---------------- diff 顶层 ---------------- */
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+
+/* 工具条：仅多文件时出现 */
+.diff__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 2px 2px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.diff__bar-files { font-family: var(--font-mono); }
+
+.diff__bar-btn {
+  min-height: 22px;
+  padding: 0 6px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+.diff__bar-btn:hover { color: var(--foreground); }
+.diff__bar-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.diff__bar-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.diff__bar-copy svg { width: 12px; height: 12px; }
+
+.diff__files { display: flex; flex-direction: column; min-width: 0; }
+
+/* ---------------- 文件手风琴 ---------------- */
+.diff__file { min-width: 0; border-radius: var(--radius-sm); }
+.diff__file.is-open { background: color-mix(in oklch, var(--surface-1) 60%, transparent); }
+
+.diff__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--faint);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.diff__head:hover { background: var(--surface-1); color: var(--muted-foreground); }
+.diff__head:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.diff__caret {
+  display: inline-flex;
+  flex: none;
+  color: var(--faint);
+  transform: rotate(-90deg);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.diff__caret svg { width: 12px; height: 12px; }
+.diff__file.is-open .diff__caret { transform: none; }
+
+.diff__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+}
+.diff__file.is-open .diff__path { color: var(--foreground); }
+
+/* 状态 badge（新文件 / 已删除）；modified 不显示 */
+.diff__tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.diff__head .diff__stat,
+.tool__meta .diff__stat { flex: none; white-space: nowrap; }
+
+/* ---------------- hunk ---------------- */
+.diff__body { min-width: 0; }
+
+.diff__hunk {
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.diff__hunk + .diff__hunk { margin-top: 4px; }
+
+.diff__hunkhead {
+  padding: 3px 8px;
+  background: var(--surface-2);
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 行 = 老行号 / 新行号 / 前缀 + 文本（三列 flex） */
+.diff__line {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.7;
+}
+
+.diff__num {
+  flex: none;
+  width: 3.2em;
+  padding: 0 4px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+}
+.diff__num--new { margin-right: 4px; }
+
+.diff__code {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.diff__sign {
+  flex: none;
+  width: 1ch;
+  color: var(--faint);
+  text-align: center;
+  user-select: none;
+}
+
+.diff__text {
+  min-width: 0;
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 三态：只有 + / − 行有背景，不整行染色文字 */
+.diff__line--add { background: var(--diff-add-bg); }
+.diff__line--del { background: var(--diff-del-bg); }
+.diff__line--add .diff__num { background: var(--diff-add-gutter); }
+.diff__line--del .diff__num { background: var(--diff-del-gutter); }
+.diff__line--add .diff__text,
+.diff__line--del .diff__text { color: var(--foreground); }
+/* 行号落在着色 gutter 上：用 muted 而不是 faint（对比度 ≥4.5，设计红线「颜色可读」） */
+.diff__line--add .diff__num,
+.diff__line--del .diff__num { color: var(--muted-foreground); }
+.diff__line--ctx { background: transparent; }
+
+/* 折叠占位（大 hunk 中间 / 多余 hunk）：报数 + 纯 DOM 展开 */
+.diff__more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 0;
+  background: var(--surface-1);
+  color: var(--faint);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.diff__more:hover { background: var(--surface-2); color: var(--muted-foreground); }
+.diff__more:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.diff__more-cta {
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.diff__more:hover .diff__more-cta { color: var(--foreground); }
+
+.diff__lines-rest,
+.diff__hunks-rest { min-width: 0; }
+.diff__lines-rest[hidden],
+.diff__hunks-rest[hidden] { display: none; }
+
+/* 无 diff 数据（回放 / 缺原文）：安静降级，不报错 */
+.diff__empty {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 3px 8px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+}
+.diff__empty-text { min-width: 0; overflow-wrap: anywhere; }
+.diff__empty-path {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted-foreground);
+}
+
+/* ---------------- 移动端：行号收窄，正文可断行，不横向溢出 ---------------- */
+@media (max-width: 599px) {
+  .diff__head { min-height: 44px; }
+  .diff__bar-btn { min-height: 44px; padding-inline: 8px; }
+  .diff__bar-copy { margin-left: 0; }
+  .diff__num { width: 2.4em; padding-inline: 3px; }
+  .diff__num--new { margin-right: 2px; }
+  .diff__code { padding-right: 4px; }
+  .diff__hunkhead,
+  .diff__more,
+  .diff__empty { padding-inline: 6px; }
+  .diff__more { min-height: 44px; }
+  .diff__text { overflow-wrap: anywhere; }
+  .diff__bar { row-gap: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff__head,
+  .diff__caret,
+  .diff__more,
+  .diff__bar-btn { transition: none; }
+  .diff__caret { transition: none; }
+}
+
+/* ============================================================
+   pi2d 移植补充：`styles/pages/chat.css` 仍保留 v0.1.0 的 `.diff__*` 卡片样式
+   （边框、单色整行、block 行）。用 `.tool[data-kind="write"]` 前缀提高优先级，
+   保证 diff 查看器「不套卡片边框、只有 +/- 行底、flex 三列」的形态权威。
+   ============================================================ */
+
+.tool[data-kind="write"] .diff {
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+.tool[data-kind="write"] .diff__file { border: 0; }
+.tool[data-kind="write"] .diff__file.is-open {
+  background: color-mix(in oklch, var(--surface-1) 60%, transparent);
+}
+
+.tool[data-kind="write"] .diff__head {
+  padding: 2px 6px;
+  font-size: var(--fs-2xs);
+  background: transparent;
+}
+.tool[data-kind="write"] .diff__head:hover { background: var(--surface-1); }
+
+.tool[data-kind="write"] .diff__caret { transform: rotate(-90deg); }
+.tool[data-kind="write"] .diff__file.is-open .diff__caret { transform: none; }
+
+.tool[data-kind="write"] .diff__hunk { border: 0; }
+.tool[data-kind="write"] .diff__hunkhead {
+  color: var(--faint);
+  background: var(--surface-2);
+  padding: 3px 8px;
+  font-size: var(--fs-2xs);
+}
+
+.tool[data-kind="write"] .diff__line {
+  display: flex;
+  padding: 0;
+  color: inherit;
+  white-space: normal;
+}
+.tool[data-kind="write"] .diff__line--ctx { background: transparent; }
+.tool[data-kind="write"] .diff__line--add { background: var(--diff-add-bg); }
+.tool[data-kind="write"] .diff__line--del { background: var(--diff-del-bg); }
+.tool[data-kind="write"] .diff__line--add .diff__num { background: var(--diff-add-gutter); }
+.tool[data-kind="write"] .diff__line--del .diff__num { background: var(--diff-del-gutter); }
+.tool[data-kind="write"] .diff__line--add .diff__num,
+.tool[data-kind="write"] .diff__line--del .diff__num { color: var(--muted-foreground); }
+.tool[data-kind="write"] .diff__line--add .diff__text,
+.tool[data-kind="write"] .diff__line--del .diff__text { color: var(--foreground); }
+
+.tool[data-kind="write"] .diff__empty { padding: 3px 8px; }

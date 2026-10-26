@@ -16,13 +16,6 @@ const KIND_ICON: Record<string, IconName> = {
     laptop: "laptop",
 };
 
-function scopeTone(scope: string): "default" | "info" | "ok" {
-    if (scope === "read") return "default";
-    if (scope === "steer") return "info";
-    if (scope === "apply") return "ok";
-    return "default";
-}
-
 export function deviceKey(device: DeviceEntry): string {
     return device.id || device.deviceId || device.name;
 }
@@ -76,26 +69,28 @@ export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: Devi
                                 </span>
                                 <div className="grow device-main">
                                     <div className="device-name truncate">{device.name}</div>
-                                    <div className="device-badges">
-                                        {scopes.map((scope) => (
-                                            <Badge key={scope} tone={scopeTone(scope)}>
-                                                {scope}
-                                            </Badge>
-                                        ))}
+                                    <div className="device-meta">
+                                        <span className="status-scopes">
+                                            {scopes.map((scope) => (
+                                                <Badge key={scope} className="badge--outline">
+                                                    {scope}
+                                                </Badge>
+                                            ))}
+                                        </span>
                                     </div>
                                 </div>
-                                <span className="device-time muted">
+                                <span className="device-time faint">
                                     <RelativeTime ts={deviceLastActive(device)} />
                                 </span>
                                 <Button
                                     variant="ghost"
-                                    size="sm"
-                                    className="status-revoke"
+                                    size="icon"
+                                    className="status-icon-btn"
                                     aria-label={`${t("status.revoke")} ${device.name}`}
+                                    title={t("status.revoke")}
                                     onClick={() => setTarget(device)}
                                 >
                                     <Icon name="revoke" />
-                                    {t("status.revoke")}
                                 </Button>
                             </div>
                         );

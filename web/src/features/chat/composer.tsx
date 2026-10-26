@@ -4,10 +4,11 @@ import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { Modal } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/toast";
+import { plural } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import "@/styles/pages/chat-composer.css";
 import { promptImage, type PromptImage, type PromptMode } from "./commands";
 import type { ModelGroup } from "./data";
 import { withCurrentModel } from "./data";
@@ -19,13 +20,26 @@ export interface ComposerProps {
     models: ModelGroup[];
     connected: boolean;
     paired?: boolean;
+    /**
+     * The optimistic first message of a send. The composer never renders its body
+     * any more (CHG-2026-10-26-16): it only adds to the pending count while the
+     * daemon has not projected the message into `session.queue` yet.
+     */
     sending?: { text: string } | null;
     /** `mode` is `follow_up` when the run is busy (queued) and `steer` for an interrupt. */
     onSend: (text: string, images: PromptImage[], mode?: PromptMode) => void;
     onAbort: () => void;
     onRemoveQueue: (id: string) => void;
-    /** Steering is a session-wide mode, not a per-message flag. */
+    /**
+     * Kept for signature compatibility (`pages/chat.tsx` still passes it). Steering
+     * is a session-wide mode (`queue.setSteer {mode}`), so the composer renders no
+     * per-message toggle any more — the queued footer in the stream owns it.
+     */
     onSetSteer: (steer: boolean) => void;
+    /** Session-level bulk clear for the status bar; falls back to `onRemoveQueue`. */
+    onClearQueue?: () => void;
+    /** Authoritative pending count (e.g. including an in-stream queued entity). */
+    queuedCount?: number;
     onSetModel: (model: ModelRef) => void;
     onSetThinking: (level: ThinkingLevel) => void;
     disabled?: boolean;
@@ -36,7 +50,10 @@ function attachmentId(file: File): string {
     return `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Bottom composer: auto-growing textarea, queue chips, model/thinking, send/abort. */
+/**
+ * Bottom composer: auto-growing textarea, a `role="status"` pending bar (no queue
+ * bodies), model/thinking pickers and one circular send slot that turns into abort.
+ */
 export function Composer({
     session,
     models,
@@ -46,7 +63,8 @@ export function Composer({
     onSend,
     onAbort,
     onRemoveQueue,
-    onSetSteer,
+    onClearQueue,
+    queuedCount,
     onSetModel,
     onSetThinking,
     disabled = false,
@@ -67,6 +85,17 @@ export function Composer({
     const thinking = session?.thinking ?? "off";
     const groups = withCurrentModel(models, model);
     const hint = !paired ? t("chat.unpairedHint") : !connected ? t("chat.offlineHint") : null;
+    // The stream owns the single queued entity; the composer only counts. `sending`
+    // counts once and only until `queue_update` projects the same message.
+    const pending = Math.max(queuedCount ?? (queue.length || (sending ? 1 : 0)), 0);
+    const inline = queue.filter((item) => item.steer).length;
+    const pendingLabel = plural("chat.queueCount", pending, {
+        defaultValue: pending === 1 ? "{n} pending message" : "{n} pending messages",
+    });
+    const hintLabel =
+        inline > 0
+            ? t("chat.queueCountInline", { n: inline, defaultValue: "{n} inserting now" })
+            : t("chat.queueAfterTurn", { defaultValue: "Sends after this turn" });
 
     useLayoutEffect(() => {
         const element = textareaRef.current;
@@ -90,6 +119,18 @@ export function Composer({
         setAttachments([]);
         // A busy session queues the message as a follow-up; idle sends a plain prompt.
         onSend(trimmed, images, mode ?? (busy ? "follow_up" : undefined));
+    }
+
+    /**
+     * The protocol has no bulk `queue.clear`: `onClearQueue` (one session-level
+     * command) wins; the fallback removes the projected items one by one.
+     */
+    function clearQueue() {
+        if (onClearQueue) {
+            onClearQueue();
+            return;
+        }
+        for (const item of queue) onRemoveQueue(item.id);
     }
 
     async function addFiles(files: FileList | File[] | null) {
@@ -117,185 +158,152 @@ export function Composer({
 
     return (
         <div className={cn("composer", className)}>
-            {queue.length || sending ? (
-                <div className="composer__queue">
-                    {sending ? (
-                        <Chip className="chip--queue chip--sending">
-                            <Icon name="clock" />
-                            <span>{t("chat.sending")}</span>
-                            {sending.text ? <span className="truncate">{sending.text}</span> : null}
-                        </Chip>
-                    ) : null}
-                    {queue.map((item) => (
-                        <Chip key={item.id} className="chip--queue">
-                            <Icon name="clock" />
-                            <span>{t("state.queued")}</span>
-                            <span className="truncate" title={item.text}>
-                                {item.text}
-                            </span>
-                            <label className="q-steer-wrap">
-                                <input
-                                    type="checkbox"
-                                    className="q-steer"
-                                    checked={item.steer}
-                                    aria-label={t("chat.steer")}
-                                    onChange={(event) => onSetSteer(event.target.checked)}
-                                />
-                                <span>{t("chat.steer")}</span>
-                            </label>
-                            <button
-                                type="button"
-                                className="icon-btn"
-                                title={t("chat.removeQueued")}
-                                aria-label={t("chat.removeQueued")}
-                                onClick={() => onRemoveQueue(item.id)}
-                            >
-                                <Icon name="x" />
-                            </button>
-                        </Chip>
-                    ))}
-                </div>
-            ) : null}
-
-            <div className={cn("composer__box", !enabled && "is-disabled")}>
-                {attachments.length ? (
-                    <div className="composer__attachments">
-                        {attachments.map((attachment) => (
-                            <span key={attachment.id} className="composer__att">
-                                <img src={attachment.preview} alt="" className="composer__att-img" />
-                                <span className="truncate">{attachment.name}</span>
-                                <button
-                                    type="button"
-                                    className="icon-btn"
-                                    aria-label={t("chat.removeAttachment")}
-                                    title={t("chat.removeAttachment")}
-                                    onClick={() =>
-                                        setAttachments((current) =>
-                                            current.filter((item) => item.id !== attachment.id),
-                                        )
-                                    }
-                                >
-                                    <Icon name="x" />
-                                </button>
-                            </span>
-                        ))}
-                    </div>
-                ) : null}
-                <textarea
-                    ref={textareaRef}
-                    className="textarea composer__ta"
-                    rows={1}
-                    value={text}
-                    placeholder={t("chat.composerPlaceholder")}
-                    aria-label={t("chat.composerAria")}
-                    data-testid="composer-input"
-                    disabled={!enabled}
-                    onChange={(event) => setText(event.target.value)}
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-                        event.preventDefault();
-                        submit();
-                    }}
-                />
-                <div className="composer__bar">
+            <div className="composer__inner">
+                <div
+                    className={cn("composer__queue", pending === 0 && "is-empty")}
+                    role="status"
+                    aria-live="polite"
+                    data-testid="composer-queue"
+                >
+                    <span className="queue-bar__ico" aria-hidden="true">
+                        <Icon name={inline > 0 ? "zap" : "clock"} />
+                    </span>
+                    <span className="queue-bar__label">{pendingLabel}</span>
+                    <span className="tsep" aria-hidden="true">
+                        ·
+                    </span>
+                    <span className="queue-bar__hint">{hintLabel}</span>
+                    <div className="spacer" />
                     <button
                         type="button"
-                        className="btn btn--icon btn--ghost"
-                        title={t("chat.addAttachment")}
-                        aria-label={t("chat.addAttachment")}
-                        disabled={!enabled}
-                        onClick={() => setAttachOpen(true)}
+                        className="btn btn--sm btn--ghost queue-bar__clear"
+                        data-testid="composer-queue-clear"
+                        disabled={!enabled || pending === 0}
+                        onClick={clearQueue}
                     >
-                        <Icon name="plus" />
+                        {t("chat.queueClear", { defaultValue: "Clear queue" })}
                     </button>
-                    <select
-                        className="select composer__sel"
-                        aria-label={t("chat.model")}
-                        data-testid="composer-model"
-                        value={model ? `${model.provider}/${model.id}` : ""}
-                        disabled={!enabled || !groups.length}
-                        onChange={(event) => {
-                            const slash = event.target.value.indexOf("/");
-                            if (slash <= 0) return;
-                            onSetModel({
-                                provider: event.target.value.slice(0, slash),
-                                id: event.target.value.slice(slash + 1),
-                            });
-                        }}
-                    >
-                        {groups.length ? null : (
-                            <option value="">{model ? `${model.provider}/${model.id}` : t("chat.model")}</option>
-                        )}
-                        {groups.map((group) => (
-                            <optgroup key={group.provider} label={group.provider}>
-                                {group.models.map((item) => (
-                                    <option key={`${group.provider}/${item.id}`} value={`${group.provider}/${item.id}`}>
-                                        {item.id}
-                                    </option>
-                                ))}
-                            </optgroup>
-                        ))}
-                    </select>
-                    <select
-                        className="select composer__sel"
-                        aria-label={t("chat.thinkingAria")}
-                        data-testid="composer-thinking"
-                        value={thinking}
-                        disabled={!enabled}
-                        onChange={(event) => onSetThinking(event.target.value as ThinkingLevel)}
-                    >
-                        {THINKING_LEVELS.map((level) => (
-                            <option key={level} value={level}>
-                                {level}
-                            </option>
-                        ))}
-                    </select>
-                    <div className="spacer" />
-                    {busy ? (
-                        <>
-                            <Button
-                                variant="ghost"
-                                className="composer__steer"
-                                title={t("chat.steer")}
-                                data-testid="composer-steer"
-                                disabled={!enabled || !text.trim()}
-                                onClick={() => submit("steer")}
-                            >
-                                <Icon name="alert" />
-                                {t("chat.steer")}
-                            </Button>
-                            <Button
-                                variant="danger"
-                                className="composer__abort"
-                                title={t("chat.abortTitle")}
-                                data-testid="composer-abort"
-                                disabled={!connected}
-                                onClick={onAbort}
-                            >
-                                <Icon name="stop" />
-                                {t("chat.abort")}
-                            </Button>
-                        </>
+                </div>
+
+                <div className={cn("composer__box", !enabled && "is-disabled")}>
+                    {attachments.length ? (
+                        <div className="composer__attachments">
+                            {attachments.map((attachment) => (
+                                <span key={attachment.id} className="composer__att">
+                                    <img src={attachment.preview} alt="" className="composer__att-img" />
+                                    <span className="truncate">{attachment.name}</span>
+                                    <button
+                                        type="button"
+                                        className="icon-btn"
+                                        aria-label={t("chat.removeAttachment")}
+                                        title={t("chat.removeAttachment")}
+                                        onClick={() =>
+                                            setAttachments((current) =>
+                                                current.filter((item) => item.id !== attachment.id),
+                                            )
+                                        }
+                                    >
+                                        <Icon name="x" />
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
                     ) : null}
-                    <Button
-                        variant="primary"
-                        className="composer__send"
-                        title={t("chat.sendTitle")}
-                        data-testid="composer-send"
-                        disabled={!enabled || !text.trim()}
-                        onClick={() => submit()}
-                    >
-                        <Icon name="send" />
-                        {t("chat.send")}
-                    </Button>
+                    <textarea
+                        ref={textareaRef}
+                        className="textarea composer__ta"
+                        rows={1}
+                        value={text}
+                        placeholder={t("chat.composerPlaceholder")}
+                        aria-label={t("chat.composerAria")}
+                        data-testid="composer-input"
+                        disabled={!enabled}
+                        onChange={(event) => setText(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                            event.preventDefault();
+                            submit();
+                        }}
+                    />
+                    <div className="composer__bar">
+                        <button
+                            type="button"
+                            className="btn btn--icon btn--ghost"
+                            title={t("chat.addAttachment")}
+                            aria-label={t("chat.addAttachment")}
+                            disabled={!enabled}
+                            onClick={() => setAttachOpen(true)}
+                        >
+                            <Icon name="plus" />
+                        </button>
+                        <select
+                            className="select composer__sel"
+                            aria-label={t("chat.model")}
+                            data-testid="composer-model"
+                            value={model ? `${model.provider}/${model.id}` : ""}
+                            disabled={!enabled || !groups.length}
+                            onChange={(event) => {
+                                const slash = event.target.value.indexOf("/");
+                                if (slash <= 0) return;
+                                onSetModel({
+                                    provider: event.target.value.slice(0, slash),
+                                    id: event.target.value.slice(slash + 1),
+                                });
+                            }}
+                        >
+                            {groups.length ? null : (
+                                <option value="">{model ? `${model.provider}/${model.id}` : t("chat.model")}</option>
+                            )}
+                            {groups.map((group) => (
+                                <optgroup key={group.provider} label={group.provider}>
+                                    {group.models.map((item) => (
+                                        <option key={`${group.provider}/${item.id}`} value={`${group.provider}/${item.id}`}>
+                                            {item.id}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            ))}
+                        </select>
+                        <select
+                            className="select composer__sel"
+                            aria-label={t("chat.thinkingAria")}
+                            data-testid="composer-thinking"
+                            value={thinking}
+                            disabled={!enabled}
+                            onChange={(event) => onSetThinking(event.target.value as ThinkingLevel)}
+                        >
+                            {THINKING_LEVELS.map((level) => (
+                                <option key={level} value={level}>
+                                    {level}
+                                </option>
+                            ))}
+                        </select>
+                        <div className="spacer" />
+                        {/*
+                         * One circular slot: send while idle, abort while busy. The
+                         * text label stays screen-reader only so the button keeps a
+                         * textContent of `Send` for the Playwright facts.
+                         */}
+                        <Button
+                            variant={busy ? "danger" : "primary"}
+                            className={cn("composer__send", busy && "is-busy")}
+                            title={busy ? t("chat.abortTitle") : t("chat.sendTitle")}
+                            data-testid={busy ? "composer-abort" : "composer-send"}
+                            disabled={busy ? !connected : !enabled || !text.trim()}
+                            onClick={busy ? onAbort : () => submit()}
+                        >
+                            <Icon name={busy ? "stop" : "send"} />
+                            <span className="visually-hidden">{busy ? t("chat.abort") : t("chat.send")}</span>
+                        </Button>
+                    </div>
                 </div>
+                {hint ? (
+                    <div className="composer__hint" role="status">
+                        <Icon name="alert" />
+                        {hint}
+                    </div>
+                ) : null}
             </div>
-            {hint ? (
-                <div className="composer__hint" role="status">
-                    <Icon name="alert" />
-                    {hint}
-                </div>
-            ) : null}
 
             <Modal
                 open={attachOpen}

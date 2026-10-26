@@ -8,7 +8,7 @@ import type {
 } from "@protocol/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
@@ -19,7 +19,6 @@ import { StatusDot } from "@/components/ui/status-dot";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { ApiError, errorI18nKey } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/stores/connection";
 import { useSessionsStore } from "@/stores/sessions";
 import { AttentionDialog } from "@/features/chat/attention";
@@ -32,20 +31,33 @@ import {
     useChatWorkspaces,
     useSessionLookup,
 } from "@/features/chat/data";
+import { truncate } from "@/features/chat/format";
+import { HeadChips } from "@/features/chat/head-chips";
 import { useSessionHistory } from "@/features/chat/history";
 import { ChatLayout } from "@/features/chat/layout";
 import { MessageStream } from "@/features/chat/message-stream";
 import { onSessionMigration, replaceChatUrl } from "@/features/chat/migration";
-import { DispatchModal, RenameDialog, SubagentModal, TaskOutputModal, type DispatchInput } from "@/features/chat/modals";
-import { flattenSubagents, emptySessionState, sessionDot, sessionStatusKey } from "@/features/chat/session-state";
+import { DispatchModal, RenameDialog, TaskOutputModal, type DispatchInput } from "@/features/chat/modals";
+import { SessionTray } from "@/features/chat/session-tray";
+import {
+    findSubagent,
+    flattenSubagents,
+    emptySessionState,
+    sessionDot,
+    sessionStatusKey,
+} from "@/features/chat/session-state";
 import { SessionTree } from "@/features/chat/session-tree";
-import { SidePanel } from "@/features/chat/side-panel";
-import { useChatStore } from "@/features/chat/store";
-import type { PanelTab } from "@/features/chat/store";
+import { SubagentView } from "@/features/chat/subagent-view";
+import { useChatStore, type TrayTab } from "@/features/chat/store";
+import { Telemetry } from "@/features/chat/telemetry";
 
 import "@/styles/pages/chat.css";
 
 const NO_ENTRIES: [] = [];
+
+function escapeAttr(value: string): string {
+    return value.replace(/["\\]/g, "\\$&");
+}
 
 type RenameTarget =
     | { kind: "session"; session: SessionState }
@@ -114,33 +126,96 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     const showHidden = useChatStore((state) => state.showHidden);
     const toggleShowHidden = useChatStore((state) => state.toggleShowHidden);
     const setAllCollapsed = useChatStore((state) => state.setAllCollapsed);
-    const tab = useChatStore((state) => state.tab);
-    const setTab = useChatStore((state) => state.setTab);
     const treeOpen = useChatStore((state) => state.treeOpen);
-    const panelOpen = useChatStore((state) => state.panelOpen);
-    const treeCollapsed = useChatStore((state) => state.treeCollapsed);
-    const treeWidth = useChatStore((state) => state.treeWidth);
-    const panelWidth = useChatStore((state) => state.panelWidth);
     const setTreeOpen = useChatStore((state) => state.setTreeOpen);
-    const setPanelOpen = useChatStore((state) => state.setPanelOpen);
-    const setTreeCollapsed = useChatStore((state) => state.setTreeCollapsed);
-    const setWidths = useChatStore((state) => state.setWidths);
     const closeDrawers = useChatStore((state) => state.closeDrawers);
+    const trayTab = useChatStore((state) => state.trayTab);
+    const trayOpen = useChatStore((state) => state.trayOpen);
+    const toggleTray = useChatStore((state) => state.toggleTray);
+    const setTrayOpen = useChatStore((state) => state.setTrayOpen);
+    const setTrayTab = useChatStore((state) => state.setTrayTab);
+    const activeOnly = useChatStore((state) => state.activeOnly);
+    const toggleActiveOnly = useChatStore((state) => state.toggleActiveOnly);
+    const activeSubagentId = useChatStore((state) => state.activeSubagentId);
+    const setActiveSubagentId = useChatStore((state) => state.setActiveSubagentId);
+    const rowMenuId = useChatStore((state) => state.rowMenuId);
+    const setRowMenuId = useChatStore((state) => state.setRowMenuId);
+    const wsMenuOpen = useChatStore((state) => state.wsMenuOpen);
+    const setWsMenuOpen = useChatStore((state) => state.setWsMenuOpen);
     const sending = useChatStore((state) => state.sending);
     const setSending = useChatStore((state) => state.setSending);
 
     const [creating, setCreating] = useState(false);
     const [dispatchOpen, setDispatchOpen] = useState(false);
-    const [preview, setPreview] = useState<{ session: SessionState; subagent: Subagent } | null>(null);
     const [renaming, setRenaming] = useState<RenameTarget | null>(null);
     const [closing, setClosing] = useState<SessionState | null>(null);
     const [stoppingTask, setStoppingTask] = useState<TaskItem | null>(null);
     const [taskOutput, setTaskOutput] = useState<TaskItem | null>(null);
+    /** Chip elements, so closing the tray can hand focus back to its trigger. */
+    const chipRefs = useRef<Partial<Record<TrayTab, HTMLButtonElement | null>>>({});
+    const streamNameRef = useRef<HTMLHeadingElement | null>(null);
+
+    // `?sub=<id>` is the child view: the in-place subagent page, no modal and no
+    // separate route (the parent session row stays selected in the tree).
+    const subParam = typeof routeSearch.sub === "string" ? routeSearch.sub : undefined;
+    const activeSub = useMemo(
+        () =>
+            activeSubagentId
+                ? (findSubagent(active?.subagents, (item) => item.id === activeSubagentId) ?? null)
+                : null,
+        [active, activeSubagentId],
+    );
 
     const emptySession = useMemo(
         () => emptySessionState({ sessionId: "", workspaceId: workspaceId ?? "" }),
         [workspaceId],
     );
+
+    // URL → store: `?sub=` is the only writer of the child-view state (deep link,
+    // back/forward). Selecting a session row drops it by navigating without it.
+    useEffect(() => {
+        const next = subParam ?? null;
+        if ((activeSubagentId ?? null) !== next) setActiveSubagentId(next);
+    }, [activeSubagentId, setActiveSubagentId, subParam]);
+
+    // A stale `?sub=` (subagent missing from this session) is dropped instead of
+    // rendering a dead child view.
+    useEffect(() => {
+        if (!activeSubagentId || activeSub || !active || !sessionsQuery.loaded) return;
+        setActiveSubagentId(null);
+        void navigate({
+            to: "/chat/$sessionId",
+            params: { sessionId: active.sessionId },
+            search: workspaceId ? { workspace: workspaceId } : {},
+            replace: true,
+        });
+    }, [active, activeSub, activeSubagentId, navigate, sessionsQuery.loaded, setActiveSubagentId, workspaceId]);
+
+    // Single-layer Esc chain (modals win, the tray closes itself):
+    // ws menu → row menu → child view → tree drawer.
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (document.querySelector(".modal-backdrop")) return;
+            if (trayOpen) return;
+            if (wsMenuOpen) {
+                setWsMenuOpen(false);
+                return;
+            }
+            if (rowMenuId) {
+                setRowMenuId(null);
+                return;
+            }
+            if (activeSubagentId) {
+                event.preventDefault();
+                closeSubagentView(true);
+                return;
+            }
+            if (treeOpen) closeDrawers();
+        };
+        document.addEventListener("keydown", onKeyDown);
+        return () => document.removeEventListener("keydown", onKeyDown);
+    }, [activeSubagentId, closeDrawers, rowMenuId, setRowMenuId, setWsMenuOpen, treeOpen, trayOpen]);
 
     useEffect(() => {
         const title = active?.name?.trim() || (sessionMissing ? t("errors.sessionNotFound") : t("nav.chat"));
@@ -214,7 +289,63 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
 
     function navigateWorkspace(id: string) {
         closeDrawers();
+        setTrayOpen(false);
         void navigate({ to: "/chat", search: { workspace: id } });
+    }
+
+    /** Close the tray and hand focus back to the chip that opened it. */
+    function closeTray() {
+        const tab = trayTab;
+        const hadFocus = document.getElementById("chat-tray")?.contains(document.activeElement) ?? false;
+        setTrayOpen(false);
+        if (!hadFocus) return;
+        requestAnimationFrame(() => chipRefs.current[tab]?.focus({ preventScroll: true }));
+    }
+
+    /** Tree row / sub-report click → in-place child view (`?sub=`). */
+    function openSubagentView(sessionId: string, subagentId: string) {
+        setTrayOpen(false);
+        setRowMenuId(null);
+        setActiveSubagentId(subagentId);
+        void navigate({
+            to: "/chat/$sessionId",
+            params: { sessionId },
+            search: { ...(workspaceId ? { workspace: workspaceId } : {}), sub: subagentId },
+        });
+        requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(".sub-back")?.focus({ preventScroll: true });
+        });
+    }
+
+    /** `← 父级` / Esc: back to the session stream and refocus the tree row. */
+    function closeSubagentView(restoreFocus = true) {
+        const subagentId = activeSubagentId;
+        const sessionId = active?.sessionId;
+        setActiveSubagentId(null);
+        setTrayOpen(false);
+        if (sessionId) {
+            void navigate({
+                to: "/chat/$sessionId",
+                params: { sessionId },
+                search: workspaceId ? { workspace: workspaceId } : {},
+                replace: true,
+            });
+        }
+        if (!restoreFocus) return;
+        // Two frames: the tree has to re-render (row no longer `aria-current`)
+        // before the row regains focus.
+        requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+                const row = subagentId
+                    ? document.querySelector<HTMLElement>(`[data-sub-id="${escapeAttr(subagentId)}"]`)
+                    : null;
+                if (row?.focus) {
+                    row.focus({ preventScroll: true });
+                    return;
+                }
+                streamNameRef.current?.focus({ preventScroll: true });
+            }),
+        );
     }
 
     async function handleSend(text: string, images: PromptImage[], mode?: PromptMode) {
@@ -239,6 +370,21 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         try {
             await runCommand(chatCommands.setQueueSteer(sessionId, steer));
             toast.success(`${t("chat.steer")}: ${mode}`);
+        } catch (error) {
+            toast.error(t("chat.commandFailed", { error: errorText(error, t) }));
+        }
+    }
+
+    /**
+     * Child view: steer targets the subagent by display name (the same identity
+     * the tree row and the sub-report use), never the session.
+     */
+    async function steerSubagent(text: string) {
+        if (!active || !activeSub) return;
+        const target = activeSub.name?.trim() || activeSub.id;
+        try {
+            await runCommand(chatCommands.steerSubagent(active.sessionId, target, text));
+            toast.success(t("chat.steerSent", { text: truncate(text, 60) }));
         } catch (error) {
             toast.error(t("chat.commandFailed", { error: errorText(error, t) }));
         }
@@ -331,24 +477,30 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
             ? active.parentId
             : null;
 
+    const planDone = active?.todos.filter((item) => item.status === "completed").length ?? 0;
+    const planTotal = active?.todos.length ?? 0;
+    const taskCount = active?.tasks.length ?? 0;
+    const runningTasks = active?.tasks.filter((item) => item.status === "running").length ?? 0;
+
+    // The session stream head. The child view owns its own `.stream-head--sub`
+    // (`subagent-view.tsx`), so this one never renders while `?sub=` is set.
     const streamHead = (
-        <div className="stream-head">
+        <div
+            className="stream-head"
+            // Identity + the two chips only. Workspace / model / thinking move to
+            // the tooltip; context usage lives in the telemetry line, never here.
+            title={
+                [workspace?.cwd, active?.model?.id, active?.thinking].filter(Boolean).join(" · ") || undefined
+            }
+        >
             <button
                 type="button"
-                className="btn btn--sm btn--ghost chat-btn--tree"
+                className="btn btn--sm btn--ghost stream-head__tree"
+                aria-label={t("chat.expandTree")}
+                title={t("chat.expandTree")}
                 onClick={() => setTreeOpen(true)}
             >
                 <Icon name="branch" />
-                {t("chat.sessions")}
-            </button>
-            <button
-                type="button"
-                className="btn btn--sm btn--ghost chat-btn--collapse"
-                title={t("chat.collapseTree")}
-                aria-label={t("chat.collapseTree")}
-                onClick={() => setTreeCollapsed(!treeCollapsed)}
-            >
-                <Icon name="chevron-right" />
             </button>
             {parentSessionId ? (
                 // A sub-session row is reachable from the tree and by deep link;
@@ -362,10 +514,12 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 </button>
             ) : null}
             <div className="stream-title">
-                {active ? <StatusDot status={sessionDot(active)} title={t(`state.${sessionStatusKey(active)}`)} /> : null}
-                <span className="stream-name truncate">
+                {active ? (
+                    <StatusDot status={sessionDot(active)} title={t(`state.${sessionStatusKey(active)}`)} />
+                ) : null}
+                <h2 className="stream-name truncate" tabIndex={-1} ref={streamNameRef}>
                     {active?.name?.trim() || (active ? active.sessionId : (workspace?.name ?? t("nav.chat")))}
-                </span>
+                </h2>
                 {active?.flags.attention && active.attention.length ? (
                     <Badge tone="warn">{t("chat.pending", { n: active.attention.length })}</Badge>
                 ) : null}
@@ -374,24 +528,20 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 ) : null}
             </div>
             <div className="spacer" />
-            <span className={cn("chat-conn", connected ? "is-on" : "is-off")}>
-                <StatusDot status={connected ? "ok" : "exited"} />
-                <span>{t(connected ? "state.online" : "state.offline")}</span>
-            </span>
-            <span className="muted truncate stream-meta" title={workspace?.cwd ?? ""}>
-                {workspace?.name ?? t("chat.workspace")}
-                {active?.contextUsage
-                    ? ` · ctx ${active.contextUsage.tokens}/${active.contextUsage.window}`
-                    : ""}
-            </span>
-            <button
-                type="button"
-                className="btn btn--sm chat-btn--panel"
-                onClick={() => setPanelOpen(true)}
-            >
-                <Icon name="branch" />
-                {t("chat.panel")}
-            </button>
+            {active ? (
+                <HeadChips
+                    planDone={planDone}
+                    planTotal={planTotal}
+                    taskCount={taskCount}
+                    runningTasks={runningTasks}
+                    trayTab={trayTab}
+                    trayOpen={trayOpen}
+                    onToggle={toggleTray}
+                    registerTrigger={(tab, element) => {
+                        chipRefs.current[tab] = element;
+                    }}
+                />
+            ) : null}
         </div>
     );
 
@@ -399,40 +549,41 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         <>
             <ChatLayout
                 treeOpen={treeOpen}
-                panelOpen={panelOpen}
-                treeCollapsed={treeCollapsed}
-                treeWidth={treeWidth}
-                panelWidth={panelWidth}
-                onWidths={setWidths}
                 onCloseDrawers={closeDrawers}
                 tree={
                     <SessionTree
                         sessions={sessions}
                         workspaces={workspaces}
-                        activeWorkspaceId={workspaceId}
+                        activeWorkspaceId={workspaceId ?? null}
                         selectedId={active?.sessionId ?? null}
+                        activeSubagentId={activeSubagentId}
                         filter={filter}
                         collapsed={collapsed}
+                        activeOnly={activeOnly}
                         showHidden={showHidden}
                         connected={connected}
                         creating={creating}
                         onFilter={setFilter}
                         onToggleCollapse={toggleCollapsed}
                         onToggleAll={() => setAllCollapsed(allIds, anyOpen)}
+                        onToggleActiveOnly={toggleActiveOnly}
                         onToggleShowHidden={toggleShowHidden}
                         onSelectSession={navigateSession}
                         onSelectWorkspace={navigateWorkspace}
+                        onSelectSubagent={openSubagentView}
                         onNewSession={() => void handleNewSession()}
                         onRenameSession={(session) => setRenaming({ kind: "session", session })}
                         onCloseSession={setClosing}
-                        onOpenSubagent={(session, subagent) => setPreview({ session, subagent })}
+                        onDispatchSubagent={(id) => {
+                            if (id === active?.sessionId) setDispatchOpen(true);
+                        }}
                         onRenameSubagent={(subagent) => setRenaming({ kind: "subagent", subagent })}
                         onCloseDrawer={() => setTreeOpen(false)}
                     />
                 }
                 stream={
                     <>
-                        {streamHead}
+                        {activeSub ? null : streamHead}
                         {sessionMissing ? (
                             <div className="stream-body stream-blank">
                                 <div className="stream-status stream-status--err" data-testid="session-not-found">
@@ -461,6 +612,29 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                                     />
                                 </div>
                             </div>
+                        ) : active && activeSub ? (
+                            <SubagentView
+                                session={active}
+                                subagent={activeSub}
+                                entries={history.entries}
+                                onBack={() => closeSubagentView(true)}
+                                onOpenTray={() => setTrayOpen(true)}
+                                onOpenTree={() => setTreeOpen(true)}
+                                onSteer={(text) => void steerSubagent(text)}
+                                chips={{
+                                    planDone,
+                                    planTotal,
+                                    taskCount,
+                                    runningTasks,
+                                    trayTab,
+                                    trayOpen,
+                                    onToggle: toggleTray,
+                                    registerTrigger: (tab: TrayTab, element: HTMLButtonElement | null) => {
+                                        chipRefs.current[tab] = element;
+                                    },
+                                }}
+                                composer={{ models, connected, paired }}
+                            />
                         ) : active ? (
                             <MessageStream
                                 session={active}
@@ -470,7 +644,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                                 error={history.error}
                                 onLoadOlder={history.loadOlder}
                                 onRetry={history.retry}
-                                onOpenSubagent={(subagent) => setPreview({ session: active, subagent })}
+                                onOpenSubagent={(subagent) => openSubagentView(active.sessionId, subagent.id)}
                             />
                         ) : (
                             <div className="stream-body stream-blank">
@@ -498,7 +672,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                                 )}
                             </div>
                         )}
-                        {sessionMissing ? null : (
+                        {sessionMissing || activeSub ? null : (
                             <Composer
                                 session={active ?? null}
                                 models={models}
@@ -530,21 +704,20 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                                 }
                             />
                         )}
+                        {sessionMissing ? null : (
+                            <Telemetry session={active ?? null} subagent={activeSub} entries={history.entries} />
+                        )}
+                        <SessionTray
+                            open={trayOpen && Boolean(active)}
+                            tab={trayTab}
+                            session={active ?? null}
+                            subagent={activeSub}
+                            onTab={setTrayTab}
+                            onClose={closeTray}
+                            onOpenTask={setTaskOutput}
+                            onStopTask={setStoppingTask}
+                        />
                     </>
-                }
-                panel={
-                    <SidePanel
-                        session={active ?? emptySession}
-                        tab={tab as PanelTab}
-                        onTab={setTab}
-                        onDispatch={() => setDispatchOpen(true)}
-                        onOpenSubagent={(subagent) => {
-                            if (active) setPreview({ session: active, subagent });
-                        }}
-                        onOpenTask={setTaskOutput}
-                        onStopTask={setStoppingTask}
-                        onCloseDrawer={() => setPanelOpen(false)}
-                    />
                 }
             />
 
@@ -562,29 +735,6 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 models={models}
                 onClose={() => setDispatchOpen(false)}
                 onDispatch={(input) => dispatchSubagent(input)}
-            />
-
-            <SubagentModal
-                open={Boolean(preview)}
-                session={preview?.session ?? active ?? emptySession}
-                subagent={preview?.subagent ?? null}
-                onClose={() => setPreview(null)}
-                onBack={() => {
-                    if (preview) {
-                        navigateSession(preview.session.sessionId);
-                        toast.success(t("chat.returnedParent", { name: preview.session.name ?? preview.session.sessionId }));
-                    }
-                    setPreview(null);
-                }}
-                onSteer={(subagent, message) => {
-                    const sessionId = active?.sessionId ?? preview?.session.sessionId;
-                    if (!sessionId) return;
-                    void exec(
-                        chatCommands.steerSubagent(sessionId, subagent.name ?? subagent.id, message),
-                        "chat.steerSent",
-                        { text: message },
-                    );
-                }}
             />
 
             <TaskOutputModal

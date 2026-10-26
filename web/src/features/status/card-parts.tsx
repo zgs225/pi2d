@@ -13,10 +13,10 @@ export interface StatusCardProps {
     children: ReactNode;
 }
 
-/** `.card.status-card` with the design's icon + title + right-side meta. */
+/** `.card.card--quiet.status-card` — 1px --border-subtle, --radius-lg, 18px padding. */
 export function StatusCard({ title, icon, headExtra, className, children }: StatusCardProps) {
     return (
-        <section className={className ? `card status-card ${className}` : "card status-card"}>
+        <section className={className ? `card card--quiet status-card ${className}` : "card card--quiet status-card"}>
             <div className="card__head">
                 <div className="card__title">
                     <Icon name={icon} />

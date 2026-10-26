@@ -15,23 +15,36 @@ export interface HealthCardProps {
     onRetry: () => void;
 }
 
-/** Card 2 — per-check ✓/✗ list with an overall healthy/degraded badge. */
+/** Card 2 — per-check ✓ / ! list with an overall "all passed" / "N failed" badge. */
 export function HealthCard({ health, checkedAt, loading, error, onRetry }: HealthCardProps) {
     const { t } = useTranslation();
     const items = health?.items ?? [];
-    const allOk = items.length > 0 && items.every((item) => item.ok);
+    const failed = items.filter((item) => !item.ok).length;
 
     return (
         <StatusCard
             title={t("status.health")}
             icon="status"
             headExtra={
-                <div className="status-health-meta">
-                    {items.length ? (
-                        <Badge tone={allOk ? "ok" : "warn"}>{t(allOk ? "status.healthy" : "state.degraded")}</Badge>
-                    ) : null}
-                    {checkedAt ? <span className="card__sub"><RelativeTime ts={checkedAt} /></span> : null}
-                </div>
+                items.length ? (
+                    <div className="status-health-meta">
+                        <Badge tone={failed ? "err" : "ok"}>
+                            {failed === 0
+                                ? t("status.healthOk", { defaultValue: "All checks passed" })
+                                : failed === 1
+                                  ? t("status.healthFail.one", { n: 1, defaultValue: "{n} check failed" })
+                                  : t("status.healthFail.other", {
+                                        n: failed,
+                                        defaultValue: "{n} checks failed",
+                                    })}
+                        </Badge>
+                        {checkedAt ? (
+                            <span className="card__sub">
+                                <RelativeTime ts={checkedAt} />
+                            </span>
+                        ) : null}
+                    </div>
+                ) : null
             }
         >
             {error ? (
@@ -49,11 +62,11 @@ export function HealthCard({ health, checkedAt, loading, error, onRetry }: Healt
                                 title={t(item.ok ? "status.pass" : "status.fail")}
                                 aria-label={t(item.ok ? "status.pass" : "status.fail")}
                             >
-                                <Icon name={item.ok ? "check" : "x"} size={15} />
+                                <Icon name={item.ok ? "check" : "alert"} size={14} />
                             </span>
-                            <div className="grow">
-                                <div className="health-name">{item.name}</div>
-                                {item.detail ? <div className="health-detail muted">{item.detail}</div> : null}
+                            <div className="grow health-main">
+                                <div className="health-name truncate">{item.name}</div>
+                                {item.detail ? <div className="health-detail faint truncate">{item.detail}</div> : null}
                             </div>
                         </div>
                     ))}

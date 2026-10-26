@@ -1,29 +1,21 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { Panel } from "@/components/ui/card";
 import { Empty } from "@/components/ui/empty";
 import { toast } from "@/components/ui/toast";
 import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
 import { useInfoQuery, useWorkspacesQuery } from "@/features/status/queries";
-import { openWorkspace } from "@/features/workspaces/commands";
+import { ActivityColumn } from "@/features/workspaces/activity-column";
+import { openWorkspace, workspaceSessionCount } from "@/features/workspaces/commands";
 import { NewWorkspaceDialog, type NewWorkspaceInput } from "@/features/workspaces/new-workspace-dialog";
-import {
-    countSecondary,
-    partitionWorkspaces,
-    readShowAll,
-    writeShowAll,
-} from "@/features/workspaces/visibility";
-import {
-    ServerContextBar,
-    WorkspaceRow,
-    WorkspacesSkeleton,
-} from "@/features/workspaces/workspace-row";
+import { WorkspaceStatusLine } from "@/features/workspaces/status-line";
+import { countSecondary, partitionWorkspaces, readShowAll, writeShowAll } from "@/features/workspaces/visibility";
+import { WorkspaceCard, WorkspacesSkeleton } from "@/features/workspaces/workspace-card";
 import { ApiError, errorI18nKey } from "@/lib/api";
 import type { WorkspaceInfo } from "@/lib/protocol";
 import { useConnectionStore } from "@/stores/connection";
@@ -41,6 +33,14 @@ function basename(path: string): string {
     return segments[segments.length - 1] || path;
 }
 
+/**
+ * Workspaces page — pi2-web-ui-design v0.1.1 "Quiet Workbench" (§5.1):
+ * page head (the only primary is "new workspace") → single-line server status
+ * strip → card grid (2 columns ≥1100px) + 320px recent-activity column.
+ *
+ * The page owns layout and queries only; rows, the status line and the activity
+ * column live in `features/workspaces/`.
+ */
 export function WorkspacesPage() {
     const { t } = useTranslation();
     const navigate = useNavigate();
@@ -71,9 +71,10 @@ export function WorkspacesPage() {
     const { primary, secondary } = useMemo(() => partitionWorkspaces(all, showAll), [all, showAll]);
     const items = showAll ? [...primary, ...secondary].sort(compareWorkspaces) : primary;
     const sessionCount = useMemo(
-        () => primary.reduce((total, workspace) => total + Math.max(workspace.liveCount || 0, workspace.sessionCount || 0), 0),
-        [primary],
+        () => all.reduce((total, workspace) => total + workspaceSessionCount(workspace), 0),
+        [all],
     );
+    const runningCount = useMemo(() => all.filter((workspace) => (workspace.liveCount || 0) > 0).length, [all]);
 
     const server = deriveServerIdentity({
         info: info.data as InfoExtras | undefined,
@@ -92,9 +93,103 @@ export function WorkspacesPage() {
     }
 
     const errorText =
-        workspaces.error instanceof ApiError
-            ? t(errorI18nKey(workspaces.error.code))
-            : t("workspaces.loadErrorText");
+        workspaces.error instanceof ApiError ? t(errorI18nKey(workspaces.error.code)) : t("workspaces.loadErrorText");
+
+    const hasCards = workspaces.isSuccess && items.length > 0;
+    // Empty/loading/error states own the primary, so a screen never shows two.
+    const showHiddenToggle = items.length > 0 && secondaryCount > 0;
+
+    let main: ReactNode;
+    if (workspaces.isPending) {
+        main = (
+            <div className="ws-grid">
+                <WorkspacesSkeleton />
+                <WorkspacesSkeleton />
+                <WorkspacesSkeleton />
+            </div>
+        );
+    } else if (workspaces.isError) {
+        main = (
+            <section className="ws-empty">
+                <Empty
+                    icon={<Icon name="alert" size={22} />}
+                    title={t("workspaces.loadErrorTitle")}
+                    description={`${t("workspaces.loadErrorText")} (${errorText})`}
+                    action={
+                        <Button variant="ghost" onClick={() => void workspaces.refetch()}>
+                            <Icon name="refresh" />
+                            {t("common.retry")}
+                        </Button>
+                    }
+                />
+            </section>
+        );
+    } else if (all.length === 0) {
+        main = (
+            <section className="ws-empty">
+                <Empty
+                    icon={<Icon name="folder" size={22} />}
+                    title={t("workspaces.emptyTitle")}
+                    description={t("workspaces.emptyText")}
+                    action={
+                        <Button variant="primary" onClick={() => setDialogOpen(true)}>
+                            <Icon name="plus" />
+                            {t("workspaces.new")}
+                        </Button>
+                    }
+                />
+            </section>
+        );
+    } else if (primary.length === 0 && !showAll) {
+        main = (
+            <section className="ws-empty">
+                <Empty
+                    icon={<Icon name="eye" size={22} />}
+                    title={t("workspaces.allHidden")}
+                    description={t("workspaces.allHiddenText", { n: secondaryCount })}
+                    action={
+                        <Button
+                            variant="ghost"
+                            aria-pressed={false}
+                            aria-label={t("workspaces.showHiddenAria")}
+                            data-testid="workspaces-show-all"
+                            onClick={toggleShowAll}
+                        >
+                            <Icon name="eye" />
+                            {t("workspaces.showHidden", { n: secondaryCount })}
+                        </Button>
+                    }
+                />
+            </section>
+        );
+    } else {
+        main = (
+            <>
+                <div className="ws-grid">
+                    {items.map((workspace) => (
+                        <WorkspaceCard key={workspace.workspaceId} workspace={workspace} />
+                    ))}
+                </div>
+                {showHiddenToggle ? (
+                    <div className="ws-hidden-bar">
+                        <button
+                            type="button"
+                            className="ws-hidden-toggle"
+                            aria-pressed={showAll}
+                            aria-label={t(showAll ? "workspaces.hideHidden" : "workspaces.showHiddenAria")}
+                            data-testid="workspaces-show-all"
+                            onClick={toggleShowAll}
+                        >
+                            <Icon name="eye" />
+                            <span>{t(showAll ? "workspaces.hideHidden" : "workspaces.showHidden", { n: secondaryCount })}</span>
+                            <Icon name="chevron-right" className={showAll ? "ws-hidden-toggle__chevron is-open" : "ws-hidden-toggle__chevron"} />
+                        </button>
+                        {showAll ? null : <span className="ws-hidden-bar__hint faint">{t("workspaces.hiddenHint")}</span>}
+                    </div>
+                ) : null}
+            </>
+        );
+    }
 
     return (
         <div className="ws-page">
@@ -103,81 +198,26 @@ export function WorkspacesPage() {
                 subtitle={t("workspaces.subtitle")}
                 docTitle={t("nav.workspaces")}
                 actions={
-                    <>
-                        {secondaryCount > 0 ? (
-                            <Button
-                                variant={showAll ? "default" : "ghost"}
-                                aria-pressed={showAll}
-                                aria-label={t("workspaces.showHiddenAria")}
-                                data-testid="workspaces-show-all"
-                                onClick={toggleShowAll}
-                            >
-                                <Icon name="eye" />
-                                {t(showAll ? "workspaces.hideHidden" : "workspaces.showHidden", { n: secondaryCount })}
-                            </Button>
-                        ) : null}
+                    hasCards ? (
                         <Button variant="primary" onClick={() => setDialogOpen(true)}>
                             <Icon name="plus" />
                             {t("workspaces.new")}
                         </Button>
-                    </>
+                    ) : null
                 }
             />
 
-            <ServerContextBar server={server} workspaceCount={items.length} sessionCount={sessionCount} />
+            <WorkspaceStatusLine
+                server={server}
+                workspaceCount={items.length}
+                sessionCount={sessionCount}
+                runningCount={runningCount}
+            />
 
-            {workspaces.isPending ? (
-                <Panel className="ws-panel">
-                    <div className="panel__body ws-panel__body">
-                        <WorkspacesSkeleton />
-                        <WorkspacesSkeleton />
-                        <WorkspacesSkeleton />
-                    </div>
-                </Panel>
-            ) : workspaces.isError ? (
-                <Panel>
-                    <Empty
-                        icon={<Icon name="alert" size={28} />}
-                        title={t("workspaces.loadErrorTitle")}
-                        description={`${t("workspaces.loadErrorText")} (${errorText})`}
-                        action={
-                            <Button variant="primary" onClick={() => void workspaces.refetch()}>
-                                <Icon name="refresh" />
-                                {t("common.retry")}
-                            </Button>
-                        }
-                    />
-                </Panel>
-            ) : all.length === 0 || (primary.length === 0 && !showAll) ? (
-                <Panel>
-                    <Empty
-                        icon={<Icon name="folder" size={28} />}
-                        title={all.length === 0 ? t("workspaces.emptyTitle") : t("workspaces.allHidden")}
-                        description={all.length === 0 ? t("workspaces.emptyText") : t("workspaces.allHiddenText", { n: secondaryCount })}
-                        action={
-                            all.length === 0 ? (
-                                <Button variant="primary" onClick={() => setDialogOpen(true)}>
-                                    <Icon name="plus" />
-                                    {t("workspaces.new")}
-                                </Button>
-                            ) : (
-                                <Button variant="ghost" onClick={toggleShowAll}>
-                                    <Icon name="eye" />
-                                    {t("workspaces.showHidden", { n: secondaryCount })}
-                                </Button>
-                            )
-                        }
-                    />
-                </Panel>
-            ) : (
-                <Panel className="ws-panel">
-                    <div className="panel__body ws-panel__body">
-                        {items.map((workspace) => (
-                            <WorkspaceRow key={workspace.workspaceId} workspace={workspace} />
-                        ))}
-                    </div>
-                </Panel>
-            )}
+            <div className="ws-layout">
+                <div className="ws-main">{main}</div>
+                <ActivityColumn workspaces={items} />
+            </div>
 
             <NewWorkspaceDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreate={createWorkspace} />
         </div>

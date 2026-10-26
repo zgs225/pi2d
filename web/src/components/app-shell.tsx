@@ -1,11 +1,12 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Icon, type IconName } from "@/components/icons";
-import { LangMenu } from "@/components/shared/lang-menu";
+import { Icon } from "@/components/icons";
+import { CommandPalette } from "@/components/shared/command-palette";
+import { NavList, pageName } from "@/components/shared/nav-list";
+import { PagePill } from "@/components/shared/page-pill";
+import { PrefsMenu } from "@/components/shared/prefs-menu";
 import { ServerChip } from "@/components/shared/server-chip";
-import { ThemeMenu } from "@/components/shared/theme-menu";
-import { SidebarItem } from "@/components/ui/sidebar-item";
 import { clearPairMeta } from "@/features/connect/pairing";
 import { api, getDeviceToken, onUnauthorized } from "@/lib/api";
 import { CONNECT_PATH, safeNext } from "@/lib/routing";
@@ -15,31 +16,6 @@ import { useSessionsStore } from "@/stores/sessions";
 import { useWorkspacesStore } from "@/stores/workspaces";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-
-interface NavItem {
-    to: "/workspaces" | "/chat" | "/status";
-    labelKey: string;
-    icon: IconName;
-    match: (pathname: string) => boolean;
-}
-
-const NAV: NavItem[] = [
-    {
-        to: "/workspaces",
-        labelKey: "nav.workspaces",
-        icon: "folder",
-        match: (p) => p === "/workspaces" || p.startsWith("/workspace/"),
-    },
-    { to: "/chat", labelKey: "nav.chat", icon: "chat", match: (p) => p.startsWith("/chat") },
-    { to: "/status", labelKey: "nav.status", icon: "status", match: (p) => p.startsWith("/status") },
-];
-
-function pageName(pathname: string): string {
-    if (pathname.startsWith("/connect")) return "connect";
-    if (pathname.startsWith("/status")) return "status";
-    if (pathname.startsWith("/chat")) return "chat";
-    return "workspaces";
-}
 
 function RouteTitle({ pathname }: { pathname: string }) {
     const { t } = useTranslation();
@@ -91,19 +67,28 @@ function RouteTitle({ pathname }: { pathname: string }) {
     );
 }
 
-function NavLinks({ pathname }: { pathname: string }) {
+/** Topbar palette entry: icon + label (≤1099 label hidden) + platform kbd hint. */
+function PaletteTrigger({ onOpen }: { onOpen: () => void }) {
     const { t } = useTranslation();
+    const [kbd, setKbd] = useState("Ctrl K");
+
+    useEffect(() => {
+        const platform = typeof navigator === "undefined" ? "" : navigator.platform || "";
+        setKbd(/Mac|iPhone|iPad/.test(platform) ? "⌘K" : "Ctrl K");
+    }, []);
+
     return (
-        <>
-            {NAV.map((item) => (
-                <SidebarItem key={item.to} active={item.match(pathname)} asChild>
-                    <Link to={item.to}>
-                        <Icon name={item.icon} />
-                        <span>{t(item.labelKey)}</span>
-                    </Link>
-                </SidebarItem>
-            ))}
-        </>
+        <button
+            type="button"
+            className="btn btn--ghost btn--sm palette-trigger"
+            aria-label={t("shell.searchHint")}
+            title={t("shell.searchHint")}
+            onClick={onOpen}
+        >
+            <Icon name="search" />
+            <span className="palette-trigger__label">{t("shell.searchAction")}</span>
+            <span className="kbd palette-trigger__kbd">{kbd}</span>
+        </button>
     );
 }
 
@@ -122,6 +107,7 @@ export function AppShell() {
     const ownsSocket = !pathname.startsWith("/chat");
     const page = pageName(pathname);
     const redirectingRef = useRef(false);
+    const [paletteOpen, setPaletteOpen] = useState(false);
 
     const info = useQuery({
         queryKey: ["info"],
@@ -191,28 +177,42 @@ export function AppShell() {
         };
     }, [disconnect, href, isConnect, navigate, ownsSocket, paired, setWsState]);
 
+    /** ⌘K / Ctrl-K opens the palette on every navigation page (never on /connect). */
+    useEffect(() => {
+        if (!paired || isConnect) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+            if (event.defaultPrevented) return;
+            event.preventDefault();
+            setPaletteOpen(true);
+        };
+        document.addEventListener("keydown", onKeyDown);
+        return () => document.removeEventListener("keydown", onKeyDown);
+    }, [paired, isConnect]);
+
     const connectionLost = paired && !isConnect && (wsState === "reconnecting" || wsState === "closed");
 
     return (
         <div className="shell bg-background text-foreground" data-ws-state={wsState} data-paired={paired ? "true" : "false"}>
             <header className="topbar">
-                <Link to="/workspaces" className="brand">
+                <Link to="/workspaces" className="brand" aria-label="pi2.nvim">
                     <img
                         className="brand__logo"
                         src="/pi2-nvim.png"
                         alt=""
-                        width={24}
-                        height={24}
+                        width={22}
+                        height={22}
                         decoding="async"
                     />
                     <span className="brand__text">pi2.nvim</span>
                 </Link>
+                {isConnect ? null : <PagePill page={page} onSearch={() => setPaletteOpen(true)} />}
                 <RouteTitle pathname={pathname} />
                 <div className="spacer" />
                 <div className="actions">
+                    {isConnect ? null : <PaletteTrigger onOpen={() => setPaletteOpen(true)} />}
                     {isConnect ? null : <ServerChip />}
-                    <LangMenu />
-                    <ThemeMenu />
+                    <PrefsMenu />
                 </div>
             </header>
 
@@ -231,15 +231,11 @@ export function AppShell() {
             ) : null}
 
             <div className="body">
+                {/* <600 has no persistent navigation strip: the page pill owns navigation. */}
                 {isConnect ? null : (
                     <>
-                        <aside className="sidebar">
-                            <div className="nav-label">{t("shell.navLabel")}</div>
-                            <NavLinks pathname={pathname} />
-                        </aside>
-                        <aside className="rail">
-                            <NavLinks pathname={pathname} />
-                        </aside>
+                        <NavList variant="sidebar" page={page} />
+                        <NavList variant="rail" page={page} />
                     </>
                 )}
                 <main className="main">
@@ -247,11 +243,7 @@ export function AppShell() {
                 </main>
             </div>
 
-            {isConnect ? null : (
-                <nav className="tabbar">
-                    <NavLinks pathname={pathname} />
-                </nav>
-            )}
+            {isConnect ? null : <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />}
         </div>
     );
 }

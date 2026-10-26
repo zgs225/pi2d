@@ -1,4 +1,4 @@
-import type { Batch, Entry, SessionState, Subagent, TodoItem } from "@protocol/types";
+import type { Batch, Entry, QueueItem, SessionState, Subagent, TodoItem } from "@protocol/types";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -9,23 +9,43 @@ import { Empty } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { ProjectedEntry } from "@/lib/entry-projection";
 import { cn } from "@/lib/utils";
+import "@/styles/pages/chat-stream.css";
 import { BatchBlock, EntryBlock, TodoBlock } from "./blocks";
+import { QueuedMessage, type QueuedMessageActions } from "./queued-messages";
 import { findSubagent } from "./session-state";
 
 /** Below this many items the DOM list is cheaper than virtualizer bookkeeping. */
 export const VIRTUALIZE_THRESHOLD = 30;
 
+/** Synthesised id for the optimistic prompt the daemon has not echoed as an entry yet. */
+export const SENDING_QUEUE_ID = "__sending__";
+
 export type StreamItem =
     | { kind: "entry"; key: string; entry: Entry; turnStart: boolean }
     | { kind: "todo"; key: string; todos: TodoItem[] }
-    | { kind: "batch"; key: string; batch: Batch };
+    | { kind: "batch"; key: string; batch: Batch }
+    /**
+     * A pending prompt. `session.queue` is not part of `entries` in pi2d (it is a
+     * `queue_update` projection with no `ts`), so it is appended as one
+     * synthetic entity per item — the stream is the only place a pending prompt
+     * is shown as text. `sending` is the optimistic prompt, folded in as one
+     * more queued variant.
+     */
+    | { kind: "queued"; key: string; item: QueueItem; sending?: boolean };
 
 /**
  * Combine entry-backed messages with the session-level panels (todo, batches)
- * into one ordered stream. Historical `pi2-todo` checkpoints stay inline; when
- * history has none, the current todo list is appended as a live block.
+ * and the pending queue into one ordered stream. Historical `pi2-todo`
+ * checkpoints stay inline; when history has none, the current todo list is
+ * appended as a live block. Queued entities always go last, in queue order
+ * (`queue_update` sends steering items before follow-ups), with the optimistic
+ * `sending` prompt ahead of them.
  */
-export function buildStreamItems(session: SessionState, entries: Entry[]): StreamItem[] {
+export function buildStreamItems(
+    session: SessionState,
+    entries: Entry[],
+    sending?: { text: string } | null,
+): StreamItem[] {
     const items: StreamItem[] = [];
     let hasTodoEntry = false;
     entries.forEach((entry, index) => {
@@ -45,15 +65,33 @@ export function buildStreamItems(session: SessionState, entries: Entry[]): Strea
     for (const batch of session.batches) {
         items.push({ kind: "batch", key: `batch:${batch.batchId}`, batch });
     }
+    if (sending) {
+        items.push({
+            kind: "queued",
+            key: `queued:${SENDING_QUEUE_ID}`,
+            item: { id: SENDING_QUEUE_ID, text: sending.text, steer: false },
+            sending: true,
+        });
+    }
+    for (const item of session.queue) {
+        items.push({ kind: "queued", key: `queued:${item.id}`, item });
+    }
     return items;
 }
 
-export interface MessageStreamProps {
+/** `queue.setSteer` is a session-wide mode: it is on when every queued item steers. */
+export function steerAllOf(queue: QueueItem[]): boolean {
+    return queue.length > 0 && queue.every((item) => item.steer);
+}
+
+export interface MessageStreamProps extends QueuedMessageActions {
     session: SessionState;
     entries: Entry[];
     hasMore: boolean;
     loadingOlder: boolean;
     error: string | null;
+    /** Optimistic prompt already handed to the plugin (rendered as a queued variant). */
+    sending?: { text: string } | null;
     onLoadOlder: () => void;
     onRetry: () => void;
     onOpenSubagent: (subagent: Subagent) => void;
@@ -66,17 +104,25 @@ export function MessageStream({
     hasMore,
     loadingOlder,
     error,
+    sending = null,
     onLoadOlder,
     onRetry,
     onOpenSubagent,
+    onRecallQueued,
+    onRemoveQueued,
+    onSetSteerAll,
     className,
 }: MessageStreamProps) {
     const { t } = useTranslation();
-    const items = buildStreamItems(session, entries);
+    const allItems = buildStreamItems(session, entries, sending);
+    // Queued entities always live at the tail, so they are rendered outside the
+    // virtual window (absolute positioning) as a plain flex column.
+    const items = allItems.filter((item) => item.kind !== "queued");
+    const queued = allItems.filter((item) => item.kind === "queued");
+    const steerAll = steerAllOf(session.queue);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const [following, setFollowing] = useState(true);
     const followingRef = useRef(true);
-    const [showTop, setShowTop] = useState(false);
     const pendingPrepend = useRef<number | null>(null);
     const loadRequested = useRef(false);
     const rafRef = useRef<number | null>(null);
@@ -132,7 +178,6 @@ export function MessageStream({
         if (!element) return;
         const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
         setFollow(distance < 80);
-        setShowTop(element.scrollTop > 400);
         if (element.scrollTop < 120 && hasMore && !loadingOlder && !loadRequested.current) {
             loadRequested.current = true;
             pendingPrepend.current = element.scrollHeight;
@@ -162,9 +207,33 @@ export function MessageStream({
                     return <TodoBlock items={item.todos} />;
                 case "batch":
                     return <BatchBlock batch={item.batch} onOpenSubagent={openByName} canOpen={canOpen} />;
+                case "queued":
+                    return (
+                        <QueuedMessage
+                            item={item.item}
+                            sending={item.sending}
+                            steerAll={steerAll}
+                            onRecallQueued={onRecallQueued}
+                            onRemoveQueued={onRemoveQueued}
+                            onSetSteerAll={onSetSteerAll}
+                        />
+                    );
             }
         },
-        [canOpen, openByName],
+        [canOpen, onRecallQueued, onRemoveQueued, onSetSteerAll, openByName, steerAll],
+    );
+
+    const itemClassName = useCallback(
+        (item: StreamItem) =>
+            cn(
+                "stream-item",
+                // A turn spans its user message + everything until the next user
+                // message: 28px before it, 18px inside it.
+                item.kind === "entry" && item.turnStart && "turn-start",
+                item.kind === "queued" && "user-start stream-item--queued",
+                item.kind === "entry" && item.entry.role === "user" && "user-start",
+            ),
+        [],
     );
 
     const status = (
@@ -194,43 +263,54 @@ export function MessageStream({
         </div>
     );
 
-    const body = items.length ? (
-        virtualize ? (
-            <div
-                className="stream-list stream-list--virtual"
-                style={{ height: `${virtualizer.getTotalSize()}px` }}
-            >
-                {virtualizer.getVirtualItems().map((virtualItem) => {
-                    const item = items[virtualItem.index];
-                    if (!item) return null;
-                    return (
-                        <div
-                            key={item.key}
-                            data-index={virtualItem.index}
-                            ref={(node) => {
-                                virtualizer.measureElement(node);
-                            }}
-                            className={cn("stream-item", item.kind === "entry" && item.turnStart && "turn-start")}
-                            style={{ transform: `translateY(${virtualItem.start}px)` }}
-                        >
+    const body = items.length || queued.length ? (
+        <>
+            {items.length ? (
+                virtualize ? (
+                    <div
+                        className="stream-list stream-inner stream-list--virtual"
+                        style={{ height: `${virtualizer.getTotalSize()}px` }}
+                    >
+                        {virtualizer.getVirtualItems().map((virtualItem) => {
+                            const item = items[virtualItem.index];
+                            if (!item) return null;
+                            return (
+                                <div
+                                    key={item.key}
+                                    data-index={virtualItem.index}
+                                    ref={(node) => {
+                                        virtualizer.measureElement(node);
+                                    }}
+                                    className={itemClassName(item)}
+                                    style={{ transform: `translateY(${virtualItem.start}px)` }}
+                                >
+                                    {renderItem(item)}
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <div className="stream-list stream-inner">
+                        {items.map((item) => (
+                            <div className={itemClassName(item)} key={item.key}>
+                                {renderItem(item)}
+                            </div>
+                        ))}
+                        {queued.length ? null : <div className="stream-end" />}
+                    </div>
+                )
+            ) : null}
+            {queued.length ? (
+                <div className="stream-list stream-inner stream-list--queued" data-testid="stream-queued">
+                    {queued.map((item) => (
+                        <div className={itemClassName(item)} key={item.key}>
                             {renderItem(item)}
                         </div>
-                    );
-                })}
-            </div>
-        ) : (
-            <div className="stream-list">
-                {items.map((item) => (
-                    <div
-                        className={cn("stream-item", item.kind === "entry" && item.turnStart && "turn-start")}
-                        key={item.key}
-                    >
-                        {renderItem(item)}
-                    </div>
-                ))}
-                <div className="stream-end" />
-            </div>
-        )
+                    ))}
+                    <div className="stream-end" />
+                </div>
+            ) : null}
+        </>
     ) : (
         <Empty
             className="stream-empty"
@@ -253,29 +333,20 @@ export function MessageStream({
                 {status}
                 {body}
             </div>
+            {/* Exactly one floating button: back to latest. Top is End/Home. */}
             <div className="stream-fab">
                 <button
                     type="button"
-                    className={cn("fab fab--top", showTop && "is-visible")}
-                    title={t("chat.toTop")}
-                    onClick={() => {
-                        scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-                        setFollow(false);
-                        setShowTop(false);
-                    }}
-                >
-                    {t("chat.top")}
-                </button>
-                <button
-                    type="button"
                     className={cn("fab fab--latest", !following && "is-visible")}
+                    aria-label={t("chat.backToLatest")}
                     title={t("chat.backToLatest")}
                     onClick={() => {
                         setFollow(true);
                         scrollToBottom(true);
                     }}
                 >
-                    {t("chat.latest")}
+                    <Icon name="chevron-down" size={14} />
+                    <span>{t("chat.latest")}</span>
                 </button>
             </div>
         </div>

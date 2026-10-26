@@ -1,0 +1,178 @@
+/* ============================================================
+   message stream — reading column, spacing, queued entity, FAB
+   v0.1.1 CHG-2026-10-26-06 / -09 / -14 / -16
+
+   Imported from `features/chat/message-stream.tsx`. Deliberately separate from
+   `styles/pages/chat.css` (the chat shell's sheet) so stream-internal layout
+   changes never collide with the IA/tree work. Selectors here are anchored on
+   `.stream-body` so they win over the legacy stream rules in chat.css
+   regardless of bundling order.
+
+   Values follow the design contract:
+     reading column   min(100%, var(--reading-max)) = 52rem, centred
+     item gap         18px between adjacent items
+     section gap      28px for a turn's first item and for every user message
+   ============================================================ */
+
+/* ---------- reading column ---------- */
+.stream-body .stream-inner {
+    width: min(100%, var(--reading-max));
+    margin-inline: auto;
+}
+
+/* Scroll container padding comes from the prototype: 18px top, no bottom
+   padding (the `.stream-end` spacer owns the tail whitespace). */
+.stream-body > .stream-scroll {
+    padding-top: 18px;
+}
+
+/* ---------- spacing (DOM branch) ---------- */
+.stream-body .stream-list:not(.stream-list--virtual) > .stream-item + .stream-item {
+    margin-top: 18px;
+}
+/* A turn opens on 28px, and so does every user message (it starts a turn). */
+.stream-body .stream-list:not(.stream-list--virtual) > .stream-item.turn-start {
+    margin-top: 28px;
+}
+.stream-body .stream-list:not(.stream-list--virtual) > .stream-item.user-start {
+    margin-top: 28px;
+}
+
+/* ---------- spacing (virtualized branch) ----------
+   Virtual items are absolutely positioned, so the gap lives in padding-bottom.
+   Keep these two numbers identical to the DOM branch above or the two branches
+   drift apart: 18px base, 28px on turn/user starts. */
+.stream-body .stream-list--virtual > .stream-item {
+    padding-bottom: 18px;
+}
+.stream-body .stream-list--virtual > .stream-item.turn-start,
+.stream-body .stream-list--virtual > .stream-item.user-start {
+    padding-bottom: 28px;
+}
+
+/* Queued entities sit after the virtual window (always at the tail), so they
+   are laid out as a normal flex column and must not stretch. */
+.stream-body .stream-list--queued {
+    flex: none;
+}
+
+/* ---------- queued entity (CHG-16: single body entity) ---------- */
+/* Only the rail changes: dashed + a pale warn tint. Colour stays token-only and
+   no background block is introduced — the rail is the one allowed structural
+   colour block. `border-style` is side-agnostic so the rule holds whichever
+   rail side `.msg--user` uses. `.msg.msg--queued` outranks `.msg--user`, whose
+   `border` shorthand would otherwise re-solidify the rail. */
+.msg.msg--queued {
+    border-style: dashed;
+    border-color: color-mix(in oklch, var(--warn) 60%, var(--role-user));
+}
+.msg.msg--queued .msg__text {
+    color: var(--muted-foreground);
+}
+.msg.msg--queued .msg__meta {
+    color: var(--faint);
+}
+.msg__queue-foot {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.msg__queue-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-right: auto;
+    color: var(--muted-foreground);
+}
+.msg__queue-state svg {
+    flex: none;
+    width: 12px;
+    height: 12px;
+}
+.msg__queue-state .tsep {
+    color: var(--faint);
+}
+.msg__queue-state.is-inline {
+    color: var(--secondary-foreground);
+}
+/* Session-wide steer scope note (never a per-message toggle). */
+.msg__queue-scope {
+    color: var(--faint);
+}
+.msg__queue-btn {
+    min-height: 26px;
+    padding: 0 7px;
+    font-size: var(--fs-2xs);
+}
+.msg__queue-btn.is-active {
+    color: var(--primary);
+    background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.msg__queue-btn.is-danger {
+    color: var(--muted-foreground);
+}
+.msg__queue-btn.is-danger:hover {
+    color: var(--destructive);
+}
+
+/* ---------- back-to-latest FAB (exactly one floating button) ---------- */
+/* Anchored to the right edge of the reading column, not the pane edge, so it
+   never drifts away from the text on wide screens. */
+.stream-body .stream-fab {
+    right: max(var(--stream-pad, 20px), calc((100% - var(--reading-max)) / 2));
+    bottom: 10px;
+    gap: 0;
+}
+.stream-fab .fab {
+    height: 32px;
+    padding: 0 12px;
+    border-radius: var(--radius-pill);
+    color: var(--muted-foreground);
+    font-size: var(--fs-xs);
+    box-shadow: var(--elevation-2);
+    transform: translateY(6px);
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        opacity var(--dur) var(--ease-out),
+        transform var(--dur) var(--ease-out),
+        color var(--dur-fast) var(--ease-out);
+}
+.stream-fab .fab:hover {
+    color: var(--foreground);
+}
+.stream-fab .fab svg {
+    width: 14px;
+    height: 14px;
+}
+.stream-fab .fab.is-visible {
+    transform: translateY(0);
+}
+
+/* ---------- <600: 44px hit targets ---------- */
+@media (max-width: 599px) {
+    .msg__queue-foot {
+        gap: 6px;
+    }
+    .msg__queue-btn {
+        min-height: 44px;
+        padding: 0 10px;
+    }
+    .stream-fab .fab {
+        height: 44px;
+    }
+}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+    .stream-fab .fab {
+        transform: none;
+        transition: none;
+    }
+    .stream-fab .fab.is-visible {
+        transform: none;
+    }
+}

@@ -66,6 +66,7 @@ export function ModelsCard({ providers, loading, error, onRetry }: ModelsCardPro
                         <Icon name="search" />
                         <Input
                             type="search"
+                            className="model-search__input"
                             placeholder={t("status.modelSearchPlaceholder")}
                             aria-label={t("status.modelSearchAria")}
                             value={query}
@@ -85,13 +86,13 @@ export function ModelsCard({ providers, loading, error, onRetry }: ModelsCardPro
                                     <div className={expanded ? "model-group open" : "model-group"} key={group.provider}>
                                         <button
                                             type="button"
-                                            className="panel__head model-group__head"
+                                            className="model-group__head"
                                             aria-expanded={expanded}
                                             onClick={() => toggle(group.provider)}
                                         >
                                             <Icon name="chevron-right" />
-                                            <span className="model-provider">{group.provider}</span>
-                                            <span className="badge model-count">{group.models.length}</span>
+                                            <span className="model-provider truncate">{group.provider}</span>
+                                            <span className="model-count faint tabular">{group.models.length}</span>
                                             <span className="spacer" />
                                         </button>
                                         {expanded ? (
@@ -99,11 +100,13 @@ export function ModelsCard({ providers, loading, error, onRetry }: ModelsCardPro
                                                 {group.models.map((model) => (
                                                     <div className="model-row" key={model.id}>
                                                         <span className="model-id mono truncate grow">{model.id}</span>
-                                                        <span className="model-ctx muted">
+                                                        <span className="model-ctx faint tabular">
                                                             {formatContextWindow(model.contextWindow)}
                                                         </span>
                                                         {model.reasoning ? (
-                                                            <Badge tone="info">{t("status.reasoning")}</Badge>
+                                                            <Badge className="badge--outline">
+                                                                {t("status.reasoning")}
+                                                            </Badge>
                                                         ) : null}
                                                         {group.provider === "cliproxyapi" ? (
                                                             <Badge>{t("status.scoped")}</Badge>

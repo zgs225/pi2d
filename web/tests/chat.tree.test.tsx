@@ -15,44 +15,72 @@ beforeAll(async () => {
     await setLanguage("en");
 });
 
+const workspaceFixture = () => ({
+    workspaceId: "W1",
+    cwd: "/work/w1",
+    name: "W1",
+    trusted: true,
+    exists: true,
+    sessionCount: 2,
+    liveCount: 0,
+    lastActiveAt: 0,
+    instance: null,
+});
+
 const defaultSessions = () => [
     sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [subagentFixture()] }),
     sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
 ];
 
 /** The tree element with inert handlers, so a test can rerender with new props. */
-function treeElement(props: Partial<ComponentProps<typeof SessionTree>> = {}) {
+function treeElement(overrides: Partial<ComponentProps<typeof SessionTree>> = {}) {
     return (
         <SessionTree
             sessions={defaultSessions()}
+            workspaces={[workspaceFixture()]}
+            activeWorkspaceId="W1"
             selectedId="s1"
+            activeSubagentId={null}
             filter=""
             collapsed={{}}
+            activeOnly={false}
             showHidden={false}
             connected
+            creating={false}
             onFilter={vi.fn()}
             onToggleCollapse={vi.fn()}
             onToggleAll={vi.fn()}
+            onToggleActiveOnly={vi.fn()}
             onToggleShowHidden={vi.fn()}
             onSelectSession={vi.fn()}
+            onSelectWorkspace={vi.fn()}
+            onSelectSubagent={vi.fn()}
             onNewSession={vi.fn()}
             onRenameSession={vi.fn()}
             onCloseSession={vi.fn()}
-            {...props}
+            onDispatchSubagent={vi.fn()}
+            onRenameSubagent={vi.fn()}
+            {...overrides}
         />
     );
 }
 
-function renderTree(props: Partial<ComponentProps<typeof SessionTree>> = {}) {
-    const onSelectSession = vi.fn();
-    const onToggleCollapse = vi.fn();
-    const onToggleAll = vi.fn();
-    const onToggleShowHidden = vi.fn();
-    const sessions = props.sessions ?? defaultSessions();
-    const utils = render(
-        treeElement({ sessions, onSelectSession, onToggleCollapse, onToggleAll, onToggleShowHidden, ...props }),
-    );
-    return { ...utils, sessions, onSelectSession, onToggleCollapse, onToggleAll, onToggleShowHidden };
+function renderTree(overrides: Partial<ComponentProps<typeof SessionTree>> = {}) {
+    const spies = {
+        onSelectSession: vi.fn(),
+        onSelectSubagent: vi.fn(),
+        onToggleCollapse: vi.fn(),
+        onToggleAll: vi.fn(),
+        onToggleActiveOnly: vi.fn(),
+        onToggleShowHidden: vi.fn(),
+        onRenameSession: vi.fn(),
+        onCloseSession: vi.fn(),
+        onDispatchSubagent: vi.fn(),
+        onFilter: vi.fn(),
+    };
+    const sessions = overrides.sessions ?? defaultSessions();
+    const utils = render(treeElement({ ...spies, sessions, ...overrides }));
+    return { ...utils, sessions, ...spies };
 }
 
 /** `SessionState` for a sub-session row (`parentId` set, `visible` defaults true). */
@@ -60,19 +88,110 @@ function childSession(overrides: Parameters<typeof sessionFixture>[0] = {}) {
     return sessionFixture({ sessionId: "c1", name: "Child session", parentId: "s1", ...overrides });
 }
 
-describe("session tree", () => {
-    it("selects a session and shows the nested subagent", () => {
-        const { onSelectSession } = renderTree();
-        fireEvent.click(screen.getByRole("button", { name: "Beta" }));
+function row(sessionId: string): HTMLElement {
+    const element = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
+    if (!element) throw new Error(`no tree row for ${sessionId}`);
+    return element;
+}
+
+function rowMain(sessionId: string): HTMLElement {
+    const element = row(sessionId).querySelector<HTMLElement>(".tree-row__main");
+    if (!element) throw new Error(`no main button in row ${sessionId}`);
+    return element;
+}
+
+function moreButton(sessionId: string): HTMLElement {
+    const element = row(sessionId).querySelector<HTMLElement>(".t-more");
+    if (!element) throw new Error(`no … button in row ${sessionId}`);
+    return element;
+}
+
+function menu(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('[data-testid="session-row-menu"]');
+}
+
+function menuItem(action: string): HTMLElement {
+    const element = menu()?.querySelector<HTMLElement>(`[data-menu-action="${action}"]`);
+    if (!element) throw new Error(`no menu item ${action}`);
+    return element;
+}
+
+function menuItems(): HTMLElement[] {
+    return Array.from(menu()?.querySelectorAll<HTMLElement>("[data-menu-item]") ?? []);
+}
+
+describe("session tree rows", () => {
+    it("renders every session row as a single line: dot + name + attention", () => {
+        renderTree({
+            sessions: [
+                sessionFixture({
+                    sessionId: "s1",
+                    name: "Alpha",
+                    subagents: [],
+                    attention: [
+                        { requestId: "r1", method: "ask", createdAt: 1, receivedAt: 2 },
+                        { requestId: "r2", method: "ask", createdAt: 3, receivedAt: 4 },
+                    ],
+                }),
+                sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
+            ],
+            selectedId: "s1",
+        });
+
+        const main = rowMain("s1");
+        // Single line: dot + name + `!N` only.
+        expect(main.querySelector(".dot")).not.toBeNull();
+        expect(main.querySelector(".t-name")).toHaveTextContent("Alpha");
+        expect(main.querySelector(".t-attn")).toHaveTextContent("!2");
+        // No second line, no child count, no inline row actions.
+        expect(main.querySelector(".t-sub")).toBeNull();
+        expect(main.querySelector(".t-meta")).toBeNull();
+        expect(row("s1").querySelector(".t-actions")).toBeNull();
+        expect(row("s1").querySelector(".badge")).toBeNull();
+        // model · thinking moved into the tooltip.
+        expect(main.textContent ?? "").not.toContain("claude-sonnet-4-5");
+        expect(main.getAttribute("title")).toContain("claude-sonnet-4-5");
+
+        // The row is toggle + main + `…`, nothing else.
+        const rowChildren = Array.from(row("s1").children);
+        expect(rowChildren).toHaveLength(3);
+        expect(rowChildren[0]).toHaveClass("tree-toggle");
+        expect(rowChildren[1]).toHaveClass("tree-row__main");
+        expect(rowChildren[2]).toHaveClass("t-more");
+
+        // A row without attention keeps no badge at all.
+        expect(rowMain("s2").querySelector(".t-attn")).toBeNull();
+    });
+
+    it("draws child rows as a single line without a child-count badge", () => {
+        renderTree({
+            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
+        });
+
+        const childRow = row("c1");
+        expect(childRow).toHaveClass("tree-row", "tree-row--sub", "sub-d1");
+        expect(within(childRow).getByText("Child session")).toBeInTheDocument();
+        expect(childRow.querySelector(".t-sub")).toBeNull();
+        expect(childRow.querySelector(".t-meta")).toBeNull();
+        // The old "(1)" child-count badge is gone; the toggle reads as fold/unfold.
+        expect(screen.queryByText("(1)")).toBeNull();
+    });
+
+    it("selects a session, a child session and a subagent", () => {
+        const { onSelectSession, onSelectSubagent } = renderTree();
+
+        fireEvent.click(rowMain("s2"));
         expect(onSelectSession).toHaveBeenCalledWith("s2");
-        expect(screen.getByText("researcher")).toBeInTheDocument();
-        expect(screen.getByText("claude-sonnet-4-5 · low")).toBeInTheDocument();
+
+        // Manifest subagent row navigates to the in-place child view.
+        const subRow = document.querySelector<HTMLElement>('[data-subagent-id="sa1"]');
+        fireEvent.click((subRow as HTMLElement).querySelector(".tree-row__main") as HTMLElement);
+        expect(onSelectSubagent).toHaveBeenCalledWith("s1", "sa1");
     });
 
     it("folds a parent without drawing vertical guides", () => {
         const { onToggleCollapse, rerender, sessions } = renderTree();
-        const row = screen.getByRole("button", { name: "Alpha" });
-        fireEvent.click(within(row).getByLabelText("Collapse"));
+        fireEvent.click(within(row("s1")).getByLabelText("Collapse"));
         expect(onToggleCollapse).toHaveBeenCalledWith("s1");
 
         rerender(treeElement({ sessions, collapsed: { s1: true } }));
@@ -80,7 +199,15 @@ describe("session tree", () => {
     });
 
     it("filters sessions by name and toggles all rows", () => {
-        const { onToggleAll } = renderTree({ filter: "Beta" });
+        const { onToggleAll } = renderTree({
+            filter: "Beta",
+            // No children: a parent with a rendered child is kept as the match's
+            // ancestor, which is a different (tree) rule than the name filter.
+            sessions: [
+                sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }),
+                sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
+            ],
+        });
         expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
         expect(screen.getByText("Beta")).toBeInTheDocument();
 
@@ -88,39 +215,29 @@ describe("session tree", () => {
         expect(onToggleAll).toHaveBeenCalledTimes(1);
     });
 
-    it("nests a child session row under its parent and opens its own transcript", () => {
+    it("nests a child session under its parent and opens its own transcript", () => {
         const { onSelectSession } = renderTree({
             sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
         });
 
-        const parentRow = document.querySelector('[data-session-id="s1"]');
-        const childRow = document.querySelector('[data-session-id="c1"]');
-        expect(childRow).not.toBeNull();
-        expect(childRow).toHaveClass("tree-row", "tree-row--sub");
-        // Nested under the parent row instead of a flat sibling.
-        expect(parentRow?.closest("li")).toContainElement(childRow as HTMLElement);
-        expect(parentRow?.parentElement?.querySelector("ul")).toContainElement(childRow as HTMLElement);
-        expect(screen.getByText("(1)")).toBeInTheDocument();
+        const childRow = row("c1");
+        expect(row("s1").closest("li")).toContainElement(childRow);
+        expect(row("s1").parentElement?.querySelector("ul")).toContainElement(childRow);
 
-        fireEvent.click(childRow as HTMLElement);
+        fireEvent.click(rowMain("c1"));
         expect(onSelectSession).toHaveBeenCalledWith("c1");
     });
 
-    it("hides hidden sub-sessions by default and reveals them with the toggle", () => {
-        const sessions = [
-            sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }),
-            childSession({ visible: false }),
-        ];
-        const { rerender, onToggleShowHidden } = renderTree({ sessions });
+    it("keeps the routed child row visible under a folded parent", () => {
+        renderTree({
+            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
+            collapsed: { s1: true },
+            selectedId: "c1",
+        });
 
-        expect(document.querySelector('[data-session-id="c1"]')).toBeNull();
-        fireEvent.click(screen.getByRole("button", { name: "Show hidden sub-sessions" }));
-        expect(onToggleShowHidden).toHaveBeenCalledTimes(1);
-
-        rerender(treeElement({ sessions, showHidden: true }));
-        const childRow = document.querySelector('[data-session-id="c1"]');
-        expect(childRow).not.toBeNull();
-        expect(childRow).toHaveAttribute("data-hidden", "true");
+        // A fold must never hide the row the route points at.
+        expect(row("c1")).not.toBeNull();
+        expect(rowMain("c1")).toHaveAttribute("aria-current", "true");
     });
 
     it("renders a sub-session once when the manifest lists it too", () => {
@@ -138,34 +255,230 @@ describe("session tree", () => {
         expect(document.querySelectorAll('[data-session-id="c1"]')).toHaveLength(1);
         expect(document.querySelectorAll("[data-subagent-id]")).toHaveLength(0);
     });
+});
 
-    it("keeps the routed sub-session visible under a folded parent", () => {
-        renderTree({
-            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession()],
-            collapsed: { s1: true },
-            selectedId: "c1",
-        });
+describe("session tree IA filters", () => {
+    /** One live root, one finished root, one root whose only child is policy-hidden. */
+    const lensSessions = () => [
+        sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }),
+        sessionFixture({ sessionId: "s2", name: "Beta", status: "exited", subagents: [] }),
+        childSession({ visible: false }),
+    ];
 
-        // A fold must never hide the row the route points at.
-        const childRow = document.querySelector('[data-session-id="c1"]');
-        expect(childRow).not.toBeNull();
-        expect(childRow).toHaveAttribute("aria-current", "true");
+    it("keeps activeOnly and showHidden independent", () => {
+        const sessions = lensSessions();
+        const { rerender } = renderTree({ sessions, activeOnly: true, showHidden: false, selectedId: null });
+
+        // activeOnly drops the finished session, showHidden keeps the policy-hidden child out.
+        expect(document.querySelector('[data-session-id="s1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-id="s2"]')).toBeNull();
+        expect(document.querySelector('[data-session-id="c1"]')).toBeNull();
+        expect(screen.getByTestId("tree-hidden-sessions")).toBeInTheDocument();
+        expect(screen.getByTestId("tree-hidden-policy")).toBeInTheDocument();
+
+        // Turning the IA lens off must not reveal policy-hidden rows.
+        rerender(treeElement({ sessions, activeOnly: false, showHidden: false, selectedId: null }));
+        expect(document.querySelector('[data-session-id="s2"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-id="c1"]')).toBeNull();
+        expect(screen.queryByTestId("tree-hidden-sessions")).toBeNull();
+        expect(screen.getByTestId("tree-hidden-policy")).toBeInTheDocument();
+
+        // Turning showHidden on must not resurrect the IA-filtered session.
+        rerender(treeElement({ sessions, activeOnly: true, showHidden: true, selectedId: null }));
+        expect(document.querySelector('[data-session-id="s2"]')).toBeNull();
+        const child = document.querySelector<HTMLElement>('[data-session-id="c1"]');
+        expect(child).not.toBeNull();
+        expect(child).toHaveAttribute("data-hidden", "true");
+        expect(screen.getByTestId("tree-hidden-sessions")).toBeInTheDocument();
+        expect(screen.queryByTestId("tree-hidden-policy")).toBeNull();
     });
 
-    it("explains an all-hidden list instead of reporting no matches", () => {
-        renderTree({
-            sessions: [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }), childSession({ visible: false })],
-            filter: "",
+    it("exposes the two filters through the hidden-count affordances", () => {
+        const sessions = lensSessions();
+        const { onToggleActiveOnly, onToggleShowHidden } = renderTree({
+            sessions,
+            activeOnly: true,
+            showHidden: false,
+            selectedId: null,
         });
 
-        // The only child is hidden by policy; the parent is still shown, so the
-        // "no matching sessions" copy would be wrong. (Parent row present.)
-        expect(document.querySelector('[data-session-id="s1"]')).not.toBeNull();
+        fireEvent.click(screen.getByTestId("tree-hidden-sessions"));
+        expect(onToggleActiveOnly).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByTestId("tree-hidden-policy"));
+        expect(onToggleShowHidden).toHaveBeenCalledTimes(1);
+    });
 
-        renderTree({ sessions: [childSession({ visible: false, parentId: null })] });
-        expect(screen.getByText("All sub-sessions are hidden")).toBeInTheDocument();
-        // Both the toolbar toggle and the empty-state action expose the label.
-        expect(screen.getAllByRole("button", { name: /Show hidden sub-sessions/i }).length).toBeGreaterThan(0);
+    it("offers a way out when the active lens hides every session", () => {
+        const { onToggleActiveOnly } = renderTree({
+            sessions: [sessionFixture({ sessionId: "s2", name: "Beta", status: "exited" })],
+            activeOnly: true,
+            selectedId: null,
+        });
+
+        expect(document.querySelector("[data-session-id]")).toBeNull();
+        const empty = document.querySelector<HTMLElement>(".pane-scroll .empty");
+        expect(empty).not.toBeNull();
+        fireEvent.click(within(empty as HTMLElement).getByRole("button"));
+        expect(onToggleActiveOnly).toHaveBeenCalledTimes(1);
+    });
+
+    it("offers the show-hidden toggle when the policy hides every session", () => {
+        const { onToggleShowHidden } = renderTree({
+            sessions: [childSession({ parentId: null, visible: false })],
+            activeOnly: false,
+            selectedId: null,
+        });
+
+        expect(document.querySelector("[data-session-id]")).toBeNull();
+        const empty = document.querySelector<HTMLElement>(".pane-scroll .empty");
+        expect(empty).not.toBeNull();
+        fireEvent.click(within(empty as HTMLElement).getByRole("button"));
+        expect(onToggleShowHidden).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the search empty state separate from the filter empty state", () => {
+        renderTree({
+            filter: "zzz",
+            sessions: [sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] })],
+        });
+        const empty = document.querySelector<HTMLElement>(".pane-scroll .empty");
+        expect(empty).not.toBeNull();
+        // No action button: a bad keyword is not a lens problem.
+        expect(within(empty as HTMLElement).queryByRole("button")).toBeNull();
+    });
+});
+
+describe("session row actions popover", () => {
+    it("is portalled to the body, anchored to the row, with radio checks", () => {
+        renderTree({ activeOnly: false });
+
+        fireEvent.click(moreButton("s1"));
+
+        const pop = menu();
+        expect(pop).not.toBeNull();
+        // Body-level: never clipped by the tree's scroll container.
+        expect(pop?.parentElement).toBe(document.body);
+        expect(row("s1").contains(pop as HTMLElement)).toBe(false);
+        expect(pop).toHaveAttribute("role", "menu");
+        expect(pop).toHaveAttribute("aria-label", "Manage");
+        // position: fixed with an inline left/top computed from the anchor.
+        expect(pop?.className).toContain("tree-pop");
+        expect((pop as HTMLElement).style.left).toMatch(/px$/);
+        expect((pop as HTMLElement).style.top).toMatch(/px$/);
+
+        // Row state: is-menu + aria-expanded on the trigger.
+        expect(row("s1")).toHaveClass("is-menu");
+        expect(moreButton("s1")).toHaveAttribute("aria-expanded", "true");
+
+        // Five items; the two filter entries are radios, exactly one is checked.
+        expect(menuItems()).toHaveLength(5);
+        const radios = pop?.querySelectorAll('[role="menuitemradio"]') ?? [];
+        expect(radios).toHaveLength(2);
+        expect(radios[0]).toHaveAttribute("aria-checked", "false");
+        expect(radios[1]).toHaveAttribute("aria-checked", "true");
+        expect(pop?.querySelectorAll('[role="menuitem"]')).toHaveLength(3);
+
+        // Clicking the trigger again closes it.
+        fireEvent.click(moreButton("s1"));
+        expect(menu()).toBeNull();
+        expect(moreButton("s1")).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("focuses the first item and wraps with ↑/↓/Home/End", () => {
+        renderTree();
+        fireEvent.click(moreButton("s1"));
+
+        const pop = menu() as HTMLElement;
+        expect(document.activeElement).toBe(menuItems()[0]);
+
+        fireEvent.keyDown(pop, { key: "ArrowDown" });
+        expect(document.activeElement).toBe(menuItems()[1]);
+        fireEvent.keyDown(pop, { key: "End" });
+        expect(document.activeElement).toBe(menuItems()[4]);
+        fireEvent.keyDown(pop, { key: "ArrowDown" });
+        expect(document.activeElement).toBe(menuItems()[0]);
+        fireEvent.keyDown(pop, { key: "ArrowUp" });
+        expect(document.activeElement).toBe(menuItems()[4]);
+        fireEvent.keyDown(pop, { key: "Home" });
+        expect(document.activeElement).toBe(menuItems()[0]);
+    });
+
+    it("closes on Esc and hands focus back to the … button", () => {
+        renderTree();
+        fireEvent.click(moreButton("s1"));
+
+        fireEvent.keyDown(menu() as HTMLElement, { key: "Escape" });
+
+        expect(menu()).toBeNull();
+        expect(moreButton("s1")).toHaveAttribute("aria-expanded", "false");
+        expect(row("s1")).not.toHaveClass("is-menu");
+        expect(document.activeElement).toBe(moreButton("s1"));
+    });
+
+    it("closes on Tab (focus returns to the trigger) and on an outside click", () => {
+        renderTree();
+        fireEvent.click(moreButton("s1"));
+        fireEvent.keyDown(menu() as HTMLElement, { key: "Tab" });
+        expect(menu()).toBeNull();
+        expect(document.activeElement).toBe(moreButton("s1"));
+
+        fireEvent.click(moreButton("s1"));
+        fireEvent.pointerDown(document.body);
+        expect(menu()).toBeNull();
+    });
+
+    it("closes when the tree scrolls or the window resizes", () => {
+        renderTree();
+        fireEvent.click(moreButton("s1"));
+        fireEvent.scroll(window);
+        expect(menu()).toBeNull();
+
+        fireEvent.click(moreButton("s1"));
+        fireEvent(window, new Event("resize"));
+        expect(menu()).toBeNull();
+    });
+
+    it("runs the filter radios through onToggleActiveOnly", () => {
+        const { onToggleActiveOnly } = renderTree({ activeOnly: false });
+        fireEvent.click(moreButton("s1"));
+
+        // "Active only" is unchecked → choosing it flips the lens.
+        fireEvent.click(menuItem("active-only"));
+        expect(onToggleActiveOnly).toHaveBeenCalledTimes(1);
+        expect(menu()).toBeNull();
+    });
+
+    it("dispatches, renames and closes through the host callbacks", () => {
+        const { onDispatchSubagent, onRenameSession, onCloseSession, sessions } = renderTree();
+        const alpha = sessions[0] as (typeof sessions)[number];
+
+        fireEvent.click(moreButton("s1"));
+        fireEvent.click(menuItem("dispatch"));
+        expect(onDispatchSubagent).toHaveBeenCalledWith("s1");
+        expect(menu()).toBeNull();
+
+        fireEvent.click(moreButton("s1"));
+        fireEvent.click(menuItem("rename"));
+        expect(onRenameSession).toHaveBeenCalledWith(alpha);
+        expect(menu()).toBeNull();
+
+        // `关闭进程` is danger-styled and delegates the second confirmation to the
+        // host's confirm dialog (never kills the process from the menu itself).
+        fireEvent.click(moreButton("s1"));
+        expect(menuItem("close").className).toContain("is-danger");
+        fireEvent.click(menuItem("close"));
+        expect(onCloseSession).toHaveBeenCalledWith(alpha);
+        expect(menu()).toBeNull();
+    });
+
+    it("moves the popover to whichever row opened it", () => {
+        renderTree();
+        fireEvent.click(moreButton("s1"));
+        expect(menu()).toHaveAttribute("data-menu-session", "s1");
+
+        fireEvent.click(moreButton("s2"));
+        expect(menu()).toHaveAttribute("data-menu-session", "s2");
+        expect(document.querySelectorAll('[data-testid="session-row-menu"]')).toHaveLength(1);
     });
 });
 
@@ -193,19 +506,7 @@ function silentSocket(): void {
 }
 
 function workspaceBody() {
-    return [
-        {
-            workspaceId: "W1",
-            cwd: "/work/w1",
-            name: "W1",
-            trusted: true,
-            exists: true,
-            sessionCount: 2,
-            liveCount: 0,
-            lastActiveAt: 0,
-            instance: null,
-        },
-    ];
+    return [workspaceFixture()];
 }
 
 function sessionsBody() {
@@ -304,7 +605,7 @@ describe("chat session deep link", () => {
         // ... and no composer for a session that does not exist.
         expect(within(streamPane()).queryByLabelText("Message input")).toBeNull();
         // No tree row claims to be the current session either.
-        expect(document.querySelector('[data-session-id][aria-current="true"]')).toBeNull();
+        expect(document.querySelector('.tree-row__main[aria-current="true"]')).toBeNull();
         // The unknown id is never used to fetch entries.
         expect(requestedUrls(fetchMock).some((url) => url.includes(BOGUS))).toBe(false);
 
@@ -327,8 +628,8 @@ describe("chat session deep link", () => {
         await renderPage(chatRoutes(), "/chat/s2?workspace=W1");
 
         await waitFor(() => expect(document.querySelector('[data-session-id="s2"]')).not.toBeNull());
-        expect(document.querySelector('[data-session-id="s2"]')).toHaveAttribute("aria-current", "true");
-        expect(document.querySelector('[data-session-id="s1"]')).not.toHaveAttribute("aria-current", "true");
+        expect(rowMain("s2")).toHaveAttribute("aria-current", "true");
+        expect(rowMain("s1")).not.toHaveAttribute("aria-current", "true");
 
         expect(await screen.findByText("Beta first message")).toBeInTheDocument();
         expect(screen.queryByTestId("session-not-found")).toBeNull();
@@ -365,10 +666,10 @@ describe("chat session deep link", () => {
         await renderPage(chatRoutes(), "/chat/c1?workspace=W1");
 
         await waitFor(() => {
-            expect(document.querySelector('[data-session-id="c1"]')).toHaveAttribute("aria-current", "true");
+            expect(rowMain("c1")).toHaveAttribute("aria-current", "true");
         });
         // Hidden by the plugin policy, but the routed row still renders (muted).
-        expect(document.querySelector('[data-session-id="c1"]')).toHaveAttribute("data-hidden", "true");
+        expect(row("c1")).toHaveAttribute("data-hidden", "true");
         expect(await screen.findByText("Child first message")).toBeInTheDocument();
         expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Child session");
 
@@ -376,9 +677,9 @@ describe("chat session deep link", () => {
         expect(await screen.findByText("Parent first message")).toBeInTheDocument();
         expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Alpha");
         await waitFor(() => {
-            expect(document.querySelector('[data-session-id="s1"]')).toHaveAttribute("aria-current", "true");
+            expect(rowMain("s1")).toHaveAttribute("aria-current", "true");
         });
-    });
+    }, 15_000);
 
     it("prefers a root session for the /chat index when a child row comes first", async () => {
         mockApi([

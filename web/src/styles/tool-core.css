@@ -1,0 +1,351 @@
+/* ============================================================
+   pi2 console — tool call row anatomy
+   contract: design/CHAT-TOOL-RENDER.md §2/§3
+   只有行解剖、状态、展开体骨架；每族正文在 styles/tool-<family>.css。
+   ============================================================ */
+
+.tool {
+  --tool-indent: 0px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-sm);
+}
+
+.tool + .tool { margin-top: 2px; }
+
+.tool__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: var(--tool-row-h);
+  padding-right: 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.tool__row:hover,
+.tool__row:focus-within { background: var(--surface-1); }
+
+/* 失败态：唯一允许的结构色块（2px 左 rail） */
+.tool--failed .tool__row,
+.tool--timeout .tool__row {
+  box-shadow: inset 2px 0 0 var(--err);
+  padding-left: 6px;
+}
+
+.tool__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tool-row-h);
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.tool__head:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.tool__row:hover .tool__head,
+.tool__head:focus-visible { color: var(--foreground); }
+
+.tool.is-inline .tool__head { cursor: default; }
+
+/* 状态位（spinner / ✓ / ✗ / ⊘ …） */
+.tool__state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+}
+
+.tool__state .spinner { width: 11px; height: 11px; border-width: 1.5px; }
+.tool__state-ico { width: 13px; height: 13px; stroke-width: 2; }
+.tool__state-ico.is-err { color: var(--err); }
+.tool__state-ico.is-warn { color: var(--warn); }
+.tool__state-ico.is-muted,
+.tool__state-ico.is-queued { color: var(--faint); }
+
+/* 族图标 */
+.tool__icon { display: inline-flex; flex: none; color: var(--faint); }
+.tool__icon svg { width: 13px; height: 13px; }
+.tool__row:hover .tool__icon { color: var(--muted-foreground); }
+
+.tool__verb {
+  flex: none;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.tool__verb.is-err { color: var(--err); }
+
+.tool__target {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  opacity: 0.86;
+}
+
+.tool__row:hover .tool__target { opacity: 1; }
+
+.tool__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+.tool__meta .tsep { color: var(--faint); opacity: 0.55; }
+.tool__fact { color: var(--faint); }
+
+.tool__stat { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); }
+.tool__stat .is-add,
+.diff__stat .is-add { color: var(--ok); }
+.tool__stat .is-del,
+.diff__stat .is-del { color: var(--err); }
+.diff__stat { display: inline-flex; gap: 4px; font-family: var(--font-mono); font-size: var(--fs-2xs); }
+
+.tool__dur {
+  flex: none;
+  min-width: 2.6em;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  text-align: right;
+}
+.tool__dur:empty { display: none; }
+
+.tool__caret {
+  display: inline-flex;
+  flex: none;
+  color: var(--faint);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.tool__caret svg { width: 12px; height: 12px; }
+.tool.is-open .tool__caret { transform: rotate(180deg); }
+
+/* hover / focus 操作区 */
+.tool__ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.tool__row:hover .tool__ops,
+.tool__row:focus-within .tool__ops { opacity: 1; }
+.tool__ops[hidden] { display: none; }
+.tool__op { width: 24px; height: 24px; }
+.tool__op svg { width: 13px; height: 13px; }
+
+/* 完成态整体淡出，hover 恢复（色阶而非 opacity，DESIGN-SPEC §1） */
+.tool--done .tool__verb,
+.tool--done .tool__target { color: var(--muted-foreground); }
+.tool--done .tool__row:hover .tool__verb,
+.tool--done .tool__row:hover .tool__target { color: var(--foreground); }
+.tool--cancelled .tool__verb,
+.tool--cancelled .tool__target { color: var(--faint); }
+.tool--interrupted .tool__verb,
+.tool--rejected .tool__verb { color: var(--warn); }
+
+/* 失败信息行 */
+.tool__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 6px 4px 30px;
+  color: var(--err);
+  font-size: var(--fs-2xs);
+  line-height: 1.55;
+}
+.tool__error-ico { flex: none; display: inline-flex; margin-top: 2px; }
+.tool__error-ico svg { width: 12px; height: 12px; }
+.tool__error-text { min-width: 0; overflow-wrap: anywhere; }
+.tool__error[role="button"] { cursor: pointer; }
+.tool--interrupted .tool__error,
+.tool--rejected .tool__error,
+.tool--cancelled .tool__error { color: var(--warn); }
+.tool__error[role="button"]:hover .tool__error-text { text-decoration: underline dotted; }
+
+/* 展开体 */
+.tool__body {
+  margin: 2px 0 8px 30px;
+  padding: 2px 0 0;
+  min-width: 0;
+}
+.tool__body[hidden] { display: none; }
+
+.tool__pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 20rem;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.tool-empty {
+  padding: 6px 2px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+/* 共享文本行（read 预览 / vision 描述 / generic） */
+.tool-lines { display: flex; flex-direction: column; gap: 1px; }
+.tool-line { display: flex; gap: 10px; min-width: 0; font-size: var(--fs-2xs); line-height: 1.6; }
+.tool-line__n {
+  flex: none;
+  width: 3.2em;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  text-align: right;
+  user-select: none;
+}
+.tool-line__txt { min-width: 0; color: var(--muted-foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 小节（入参/结果/输出） */
+.ts + .ts { margin-top: 8px; }
+.ts__title {
+  margin: 0 0 4px;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+@media (max-width: 599px) {
+  .tool { --tool-row-h: 2.75rem; }
+  .tool__row { padding-right: 0; }
+  .tool__head { gap: 6px; padding-inline: 2px; }
+  .tool__verb { font-size: var(--fs-2xs); }
+  .tool__meta { display: none; }
+  .tool__dur { min-width: 0; }
+  .tool__body { margin-left: 0; }
+  .tool__error { margin-left: 0; }
+  .tool__row:hover,
+  .tool__row:focus-within { background: transparent; }
+  .tool__row:active { background: var(--surface-1); }
+
+  /* 触屏没有 hover（契约 §2）：只常驻最后一个操作，且命中区 ≥44px */
+  .tool__ops { opacity: 1; }
+  .tool__op { width: 44px; height: 44px; }
+  .tool__ops .tool__op:not(:last-child) { display: none; }
+
+  /* 展开体（族样式内）的操作控件统一 44px 触控高度 */
+  .tool button:not(.tool__head) { min-height: 44px; }
+  .tool .btn { min-width: 44px; }
+  .tool__error[role="button"] { min-height: 44px; align-items: center; }
+  .tool__error[role="button"] .tool__error-ico { margin-top: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool__row,
+  .tool__head,
+  .tool__caret,
+  .tool__ops { transition: none; }
+  /* spinner 降级为静态点（契约 §0.10）：无动画、无过渡 */
+  .tool__state .spinner,
+  .spinner {
+    animation: none;
+    animation-duration: 0s;
+    transition: none;
+    border-top-color: var(--border);
+    border-left-color: var(--role-agent);
+  }
+}
+
+/* ============================================================
+   pi2d 移植补充（prototype 之外的必要适配，均只用 token）
+   1) `.badge--outline` / `.badge--sm`：原型由 App 的 badge 组件提供，本仓库只有
+      `.badge` 基类；行内 tag 事实（新文件等）需要 outline 变体。
+   2) 加载顺序护栏：`styles/pages/chat.css` 仍保留 v0.1.0 的 `.tool` 卡片规则
+      （padding/overflow/border/opacity）。那里的文件不在本模块范围内，用
+      `.tool[data-kind]` 这一更具体的选择器让行解剖保持权威。
+   ============================================================ */
+
+.tool .badge--outline {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.tool .badge--sm {
+  padding: 0 5px;
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+}
+
+.tool[data-kind] {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.tool[data-kind] + .tool[data-kind] { margin-top: 2px; }
+
+.tool[data-kind] .tool__head {
+  flex: 1 1 auto;
+  width: auto;
+  padding: 0 6px;
+  background: transparent;
+  opacity: 1;
+}
+
+.tool[data-kind] .tool__head:hover { background: transparent; }
+.tool[data-kind] .tool__row:hover .tool__head { color: var(--foreground); }
+
+.tool[data-kind] .tool__body {
+  margin: 2px 0 8px 30px;
+  padding: 2px 0 0;
+}
+
+.tool[data-kind] .tool__pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 20rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--muted-foreground);
+}
+
+.tool[data-kind] .tool__dur {
+  font-size: var(--fs-2xs);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 599px) {
+  .tool[data-kind] .tool__body { margin-left: 0; }
+}

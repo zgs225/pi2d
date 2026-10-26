@@ -1,0 +1,125 @@
+/* ============================================================
+   pi2d console — chat composer
+   Port of the prototype (CHG-2026-10-26-16): the stream owns the single queued
+   entity, so the composer only carries a `role="status"` pending bar and one
+   circular send slot that turns into abort while the run is busy.
+
+   This file is imported by `features/chat/composer.tsx`; it loads before
+   `styles/pages/chat.css` (owned by the chat-IA workflow), so every rule that
+   has to win a tie repeats the class (`.composer.composer`) or anchors on a
+   parent (`.composer__inner .composer__queue`).
+   ============================================================ */
+
+/* ---------- shell + safe area ---------- */
+.composer.composer {
+    padding: 8px var(--stream-pad, 20px) calc(12px + env(safe-area-inset-bottom));
+}
+
+.composer__inner {
+    width: min(100%, var(--reading-max));
+    margin-inline: auto;
+}
+
+.composer__inner .composer__box {
+    border-radius: var(--radius-xl);
+    box-shadow: var(--elevation-1);
+}
+
+/* ---------- pending bar (counts only, never bodies) ---------- */
+.composer__inner .composer__queue {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px 2px;
+    margin-bottom: 0;
+    font-size: var(--fs-2xs);
+    color: var(--muted-foreground);
+}
+.composer__inner .composer__queue.is-empty {
+    display: none;
+}
+.queue-bar__ico {
+    display: inline-flex;
+    flex: none;
+    color: var(--faint);
+}
+.queue-bar__ico svg {
+    width: 13px;
+    height: 13px;
+}
+.queue-bar__label {
+    flex: none;
+    font-weight: var(--fw-semibold, 600);
+    color: var(--secondary-foreground);
+}
+.queue-bar__hint {
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--faint);
+}
+.composer__inner .composer__queue .tsep {
+    color: var(--faint);
+}
+.queue-bar__clear {
+    flex: none;
+    min-height: 24px;
+    padding: 0 8px;
+    font-size: var(--fs-2xs);
+}
+
+/* ---------- one circular slot: send while idle, abort while busy ---------- */
+.composer__bar .composer__send {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 999px;
+}
+.composer__bar .composer__send svg {
+    width: 16px;
+    height: 16px;
+}
+/* Busy: the very same button turns red, it is not a second control. */
+.composer__bar .composer__send.is-busy {
+    background: var(--destructive);
+    border-color: var(--destructive);
+    color: var(--destructive-foreground);
+}
+.composer__bar .composer__send.is-busy:hover {
+    background: var(--destructive);
+    filter: brightness(1.07);
+}
+
+/* ---------- touch targets (<600) ---------- */
+@media (max-width: 599px) {
+    .composer__bar .btn--icon,
+    .composer__bar .composer__send {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
+    }
+    .composer__bar .composer__send svg {
+        width: 18px;
+        height: 18px;
+    }
+    .composer__bar .composer__sel {
+        height: 44px;
+        min-height: 44px;
+    }
+    .queue-bar__clear {
+        min-height: 44px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .composer__bar .composer__send {
+        transition: none;
+    }
+}

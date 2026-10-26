@@ -1,0 +1,132 @@
+/* ============================================================
+   pi2 console — shell / task 工具族
+   contract: design/CHAT-TOOL-RENDER.md §4.1 / §4.9
+   只写 .shell__* / .tool--shell* / .tool--task* ；行解剖在 tool-core.css。
+   ============================================================ */
+
+.shell__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ---- 命令块：$ 前缀 + mono + --surface-1 底 + 最多 3 行 ---- */
+.shell__cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.shell__prompt {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.55;
+  user-select: none;
+}
+
+.shell__cmd-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  max-height: calc(3 * 1.55em);
+  overflow: hidden;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.shell__copy {
+  flex: none;
+  gap: 4px;
+  color: var(--faint);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.shell__copy svg { width: 12px; height: 12px; }
+.shell__cmd:hover .shell__copy,
+.shell__cmd:focus-within .shell__copy { color: var(--foreground); }
+
+/* ---- 输出：mono --fs-2xs / 行高 1.55 / 18rem 内滚 ---- */
+.shell__log {
+  min-width: 0;
+  max-height: 18rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px 2px;
+  font-size: var(--fs-2xs);
+  line-height: 1.55;
+}
+
+.shell__line {
+  display: block;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.tool--running .shell__log .shell__line:last-child { color: var(--foreground); }
+
+/* ---- 报数折叠：… 省略 N 行 + 展开全部 ---- */
+.shell__omitted {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+  font-size: var(--fs-2xs);
+}
+.shell__omitted-text { color: var(--faint); }
+.shell__show-all { flex: none; }
+
+/* ---- footer：exit N · dur · N 行（仅失败/中断）+ 停止（仅 task） ---- */
+.shell__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+.shell__foot .tsep { color: var(--faint); }
+.shell__foot-item {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.shell__stop { flex: none; gap: 4px; }
+.shell__stop svg { width: 12px; height: 12px; }
+
+/* ---- 响应式：<600px 不横向溢出、触屏常驻操作 ---- */
+@media (max-width: 599px) {
+  .shell__body { gap: 4px; }
+  .shell__log { max-height: 14rem; }
+  .shell__copy-label { display: none; }
+  /* 触屏：复制命令 / 停止任务 命中区 ≥44px */
+  .shell__copy,
+  .shell__stop { min-height: 44px; min-width: 44px; justify-content: center; }
+  .shell__cmd { padding: 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell__copy { transition: none; }
+}

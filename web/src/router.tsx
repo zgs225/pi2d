@@ -82,10 +82,14 @@ const statusRoute = createRoute({
 const connectRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/connect",
-    validateSearch: (search: Record<string, unknown>): { next?: string; code?: string } => ({
+    validateSearch: (search: Record<string, unknown>): { next?: string; code?: string; auto?: boolean } => ({
         next: typeof search.next === "string" ? safeNext(search.next) : undefined,
         // `?code=` prefills the manual pairing field (used by the /pair/$code redirect).
         code: typeof search.code === "string" ? normalizePairCode(search.code) : undefined,
+        // `auto=1` means the visitor arrived through a pairing link: the page
+        // redeems the code with no further input. TanStack's default parser turns
+        // `1` into the number 1, so accept every spelling.
+        auto: search.auto === "1" || search.auto === 1 || search.auto === true,
     }),
     component: ConnectPage,
 });
@@ -105,6 +109,8 @@ const pairRoute = createRoute({
         const query = new URLSearchParams();
         if (isPairCode(code)) query.set("code", code);
         if (search.next) query.set("next", safeNext(search.next));
+        // A `/pair/<CODE>` link only exists to be scanned: pair without asking.
+        if (isPairCode(code)) query.set("auto", "1");
         const suffix = query.size ? `?${query.toString()}` : "";
         throw redirect({ href: `${CONNECT_PATH}${suffix}` });
     },

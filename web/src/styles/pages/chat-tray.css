@@ -1,0 +1,425 @@
+/* ============================================================
+   pi2 console — chat tray / head chips / subagent child view
+   Companion to styles/pages/chat.css (owned by the chat-page
+   workflow). Everything here is token-driven: no raw colours, no
+   box-shadow literals, no px font sizes.
+
+   Contents
+   1. two-column shell (v0.1.1 Chat IA v3 breakpoints)
+   2. head chips (计划 c/t · 任务 n)
+   3. subagent child view header (.stream-head--sub / .sub-back)
+   4. session tray (Todo / Tasks) + <600 bottom sheet
+   ============================================================ */
+
+/* ---------- 1. shell: tree + stream, no right panel ---------- */
+/*
+ * `--tree-w` is fixed per breakpoint and there is no resize handle and no
+ * desktop collapse. The extra `--v3` class keeps these rules independent of
+ * whatever the older `.chat-page` block still says while both files coexist.
+ */
+.chat-page.chat-page--v3 {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    height: calc(100dvh - var(--topbar-h));
+    overflow: hidden;
+}
+/* 1000–1099: the tree narrows to 240px and the stream keeps ≥480px. */
+@media (max-width: 1099px) and (min-width: 1000px) {
+    .chat-page.chat-page--v3 {
+        grid-template-columns: 240px minmax(0, 1fr);
+    }
+}
+/* <1000: single column; the tree becomes a left drawer (`tree-open`). */
+@media (max-width: 999px) {
+    .chat-page.chat-page--v3 {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* ---------- 2. head chips ---------- */
+.head-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+}
+.head-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 8px;
+    flex: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-pill);
+    background: var(--surface-1);
+    color: var(--muted-foreground);
+    font-size: var(--fs-2xs);
+    font-weight: 550;
+    white-space: nowrap;
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        color var(--dur-fast) var(--ease-out),
+        border-color var(--dur-fast) var(--ease-out);
+}
+.head-chip:hover {
+    background: var(--accent);
+    color: var(--foreground);
+    border-color: var(--border);
+}
+.head-chip:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+.head-chip.is-open {
+    background: var(--card);
+    color: var(--foreground);
+    border-color: var(--border);
+    box-shadow: var(--shadow-sm);
+}
+.head-chip.has-running {
+    color: var(--foreground);
+}
+.head-chip svg {
+    width: 13px;
+    height: 13px;
+    flex: none;
+}
+.head-chip .dot {
+    flex: none;
+}
+.head-chip__count {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.head-chip.is-open .head-chip__count {
+    color: var(--foreground);
+}
+@media (max-width: 1150px) {
+    .head-chip__label {
+        display: none;
+    }
+}
+@media (max-width: 999px) {
+    .head-chip {
+        height: 30px;
+        padding: 0 7px;
+    }
+}
+@media (max-width: 599px) {
+    /* 44px hit area is a design red line on touch. */
+    .head-chip,
+    .stream-head--sub .head-chip {
+        min-height: 44px;
+    }
+}
+
+/* ---------- 3. subagent child view ---------- */
+.stream-head--sub {
+    gap: 6px;
+}
+.stream-head--sub .stream-name {
+    flex: 0 1 auto;
+    max-width: 15rem;
+}
+.sub-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    height: 28px;
+    padding: 0 7px 0 5px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--muted-foreground);
+    font-size: var(--fs-xs);
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        color var(--dur-fast) var(--ease-out);
+}
+.sub-back:hover {
+    background: var(--surface-1);
+    color: var(--foreground);
+}
+.sub-back:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+.sub-back svg {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    /* `chevron-right` is the only chevron in the icon set; flip it. */
+    transform: rotate(180deg);
+}
+.sub-back__label {
+    white-space: nowrap;
+}
+@media (max-width: 599px) {
+    .stream-head--sub {
+        height: auto;
+        min-height: 48px;
+        padding-block: 7px;
+        flex-wrap: wrap;
+        row-gap: 4px;
+    }
+    .stream-head--sub .stream-name {
+        max-width: none;
+    }
+    .sub-back {
+        min-width: 44px;
+        height: 44px;
+        padding: 0 6px;
+        justify-content: center;
+    }
+    .sub-back__label {
+        display: none;
+    }
+}
+
+.subagent-view {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-4) var(--stream-pad, 18px);
+}
+.subagent-view .empty {
+    margin: auto;
+}
+.subagent-view__note {
+    max-width: 34rem;
+    margin-top: var(--space-2);
+    font-size: var(--fs-xs);
+    text-align: center;
+}
+.subagent-view__meta {
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    text-align: center;
+}
+
+/* ---------- 4. session tray ---------- */
+.session-tray {
+    position: absolute;
+    z-index: 9;
+    top: 54px;
+    right: var(--stream-pad, 18px);
+    width: min(400px, calc(100% - 2 * var(--stream-pad, 18px)));
+    max-height: min(62%, 34rem);
+    display: flex;
+    flex-direction: column;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    transform: translateY(-4px) scale(0.995);
+    transition:
+        opacity var(--dur-fast) var(--ease-out),
+        transform var(--dur-fast) var(--ease-out);
+}
+/* `hidden` must beat `display:flex` while the tray is closed. */
+.session-tray[hidden] {
+    display: none;
+}
+.session-tray.is-open {
+    opacity: 1;
+    transform: none;
+}
+.tray-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 10px 10px 8px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.tray-head__title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    font-size: var(--fs-sm);
+    font-weight: 650;
+}
+.tray-head__title svg {
+    color: var(--faint);
+    flex: none;
+}
+.tray-close {
+    margin-left: auto;
+    flex: none;
+}
+.tray-scope {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px 0;
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.tray-scope__label {
+    color: var(--muted-foreground);
+    font-weight: 600;
+}
+.tray-scope__note {
+    line-height: 1.45;
+}
+.tray-tabs {
+    margin: 8px 10px 0;
+    align-self: flex-start;
+    flex: none;
+}
+.tray-tabs .tray-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: calc(var(--radius) - 2px);
+    font-size: var(--fs-xs);
+    color: var(--muted-foreground);
+}
+.tray-tabs .tray-tab:hover {
+    color: var(--foreground);
+}
+.tray-tabs .tray-tab.active {
+    background: var(--card);
+    color: var(--foreground);
+    box-shadow: var(--shadow-sm);
+}
+.tray-tabs .tray-tab:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+.tray-tab .badge {
+    margin-left: 5px;
+}
+.tray-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: 10px;
+    overflow-y: auto;
+    min-height: 0;
+}
+.tray-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--fs-xs);
+}
+.tray__note {
+    font-size: var(--fs-2xs);
+    margin-top: 2px;
+}
+.tray-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.task-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: 4px 2px;
+    border-radius: var(--radius-sm);
+}
+.task-row:hover {
+    background: var(--surface-1);
+}
+.task-row .dot {
+    flex: none;
+}
+.task-row__main {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    text-align: left;
+}
+.task-row__main:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+.task-row__cmd {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    max-width: 100%;
+}
+.task-row__meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.task-row__stop {
+    flex: none;
+}
+.tray-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 8;
+    background: var(--overlay);
+    border: 0;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-out);
+}
+@media (max-width: 599px) {
+    .tray-backdrop.is-open {
+        display: block;
+        opacity: 1;
+        pointer-events: auto;
+    }
+    /* <600: bottom sheet + backdrop, composer keeps absorbing the safe area. */
+    .session-tray {
+        position: fixed;
+        z-index: 30;
+        top: auto;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        max-height: 72dvh;
+        padding-bottom: env(safe-area-inset-bottom);
+        border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+        border-left: 0;
+        border-right: 0;
+        border-bottom: 0;
+        transform: translateY(102%);
+    }
+    .session-tray.is-open {
+        transform: none;
+    }
+    .tray-head {
+        padding: 12px 12px 8px;
+    }
+    .tray-tabs .tray-tab {
+        min-height: 40px;
+    }
+    .tray-body {
+        padding: 10px 12px calc(14px + env(safe-area-inset-bottom));
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .head-chip,
+    .sub-back,
+    .session-tray,
+    .tray-backdrop {
+        transition: none;
+    }
+}

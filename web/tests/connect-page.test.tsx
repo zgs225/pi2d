@@ -70,6 +70,14 @@ function pairCalls(fetchMock: ReturnType<typeof mockApi>): PairCall[] {
         });
 }
 
+/** Expand the collapsed manual form (both states use the same toggle labels). */
+function expandManual() {
+    const toggle = document.querySelector<HTMLButtonElement>('.cn-toggle[aria-expanded="false"]');
+    if (!toggle) throw new Error("manual toggle not found");
+    fireEvent.click(toggle);
+    return toggle;
+}
+
 function fillManualForm(values: { host?: string; port?: string; code?: string; device?: string }) {
     if (values.host !== undefined) fireEvent.change(screen.getByTestId("connect-host"), { target: { value: values.host } });
     if (values.port !== undefined) fireEvent.change(screen.getByTestId("connect-port"), { target: { value: values.port } });
@@ -81,6 +89,11 @@ function fillManualForm(values: { host?: string; port?: string; code?: string; d
     }
 }
 
+/** Every `.btn--primary` currently rendered — the page keeps exactly one. */
+function primaries(): Element[] {
+    return [...document.querySelectorAll(".btn--primary")];
+}
+
 beforeEach(async () => {
     await setLanguage("en");
 });
@@ -90,9 +103,78 @@ afterEach(() => {
 });
 
 describe("ConnectPage", () => {
+    it("renders the brand story beside the pairing card in a two-column shell", async () => {
+        mockApi([pairRoute()]);
+        await renderPage(routes(), "/connect", { paired: false });
+
+        expect(document.querySelector(".cn > .cn-shell")).not.toBeNull();
+        expect(document.querySelector(".cn-shell > .cn-hero")).not.toBeNull();
+        expect(document.querySelector(".cn-shell > .cn-col")).not.toBeNull();
+        expect(screen.getByRole("heading", { level: 1, name: "Connect your pi2" })).toBeInTheDocument();
+        expect(screen.getByText("Workspaces and sessions in real time")).toBeInTheDocument();
+        expect(screen.getByText("Token stays on this device")).toBeInTheDocument();
+        // The card is the quiet variant (1px --border-subtle, 18/20px padding).
+        expect(document.querySelector(".cn-col .cn-card.card--quiet")).not.toBeNull();
+    });
+
+    it("keeps a single primary (scan) and the manual form collapsed by default", async () => {
+        mockApi([pairRoute()]);
+        await renderPage(routes(), "/connect", { paired: false });
+
+        const scan = screen.getByTestId("connect-scan");
+        expect(scan).toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+
+        const panel = screen.getByTestId("connect-manual-panel");
+        expect(panel).toHaveAttribute("hidden");
+
+        // Expanding moves the primary onto the form submit and focuses the host field.
+        expandManual();
+        expect(panel).not.toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
+        expect(screen.getByTestId("connect-scan")).not.toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+        expect(screen.getByTestId("connect-host")).toHaveFocus();
+
+        // Collapsing hands the primary back to the scan button.
+        const toggle = document.querySelector<HTMLButtonElement>('.cn-toggle[aria-expanded="true"]');
+        fireEvent.click(toggle as HTMLButtonElement);
+        expect(panel).toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-scan")).toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+    });
+
+    it("defaults the port to the port this console was served from, never a literal", async () => {
+        mockApi([pairRoute()]);
+        await renderPage(routes(), "/connect", { paired: false });
+        expandManual();
+
+        const port = screen.getByTestId("connect-port");
+        const servedPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+        expect(port).toHaveValue(servedPort);
+        expect(port).not.toHaveValue("4321");
+    });
+
+    it("prefers the loaded daemon port for the manual form", async () => {
+        mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: { ...infoBody, port: 7676 } }) },
+            pairRoute(),
+        ]);
+        await renderPage(routes(), "/connect", {
+            paired: true,
+            storage: { "pi2-device": "Test browser", "pi2-endpoint": "http://192.168.2.10:4321" },
+        });
+
+        await waitFor(() => expect(screen.getByTestId("connect-repair")).toBeInTheDocument());
+        fireEvent.click(screen.getByTestId("connect-repair"));
+        expandManual();
+        await waitFor(() => expect(screen.getByTestId("connect-port")).toHaveValue("7676"));
+    });
+
     it("validates host, port and the 8-character pairing code inline without calling the daemon", async () => {
         const fetchMock = mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
+        expandManual();
 
         const submit = screen.getByTestId("connect-submit");
         fireEvent.click(submit);
@@ -116,6 +198,7 @@ describe("ConnectPage", () => {
     it("labels the third field as a pairing code and uppercases input", async () => {
         mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
+        expandManual();
 
         expect(screen.getByLabelText("Pairing code")).toBe(screen.getByTestId("connect-pair-code"));
         fillManualForm({ code: "ab-cd12 34" });
@@ -125,6 +208,7 @@ describe("ConnectPage", () => {
     it("redeems a manual pairing against /api/v1/pair, stores token + scopes and redirects", async () => {
         const fetchMock = mockApi([pairRoute()]);
         const { router } = await renderPage(routes(), "/connect", { paired: false });
+        expandManual();
 
         fillManualForm({ host: "192.168.2.10", port: "4321", code: "abcd1234", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
@@ -143,13 +227,60 @@ describe("ConnectPage", () => {
         expect(await screen.findByText("Workspaces destination")).toBeInTheDocument();
     });
 
+    it("pairs automatically from a scanned /pair/<CODE> link, with no input", async () => {
+        const fetchMock = mockApi([pairRoute()]);
+        const origin = window.location.origin;
+        const { router } = await renderPage(routes(), "/connect?code=ABCD1234&auto=1", { paired: false });
+
+        // The form never appears: the link already carries host, port and code.
+        expect(screen.queryByTestId("connect-host")).toBeNull();
+        expect(screen.getByTestId("connect-auto")).toBeInTheDocument();
+
+        await waitFor(() => expect(localStorage.getItem("pi2-connection")).toBe("paired"));
+        expect(localStorage.getItem("pi2-device-token")).toBe("Bearer pkt_test");
+        expect(localStorage.getItem("pi2-endpoint")).toBe(origin);
+        expect(JSON.parse(localStorage.getItem("pi2-device-scopes") ?? "[]")).toEqual(["read", "steer"]);
+
+        const calls = pairCalls(fetchMock);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.origin).toBe(origin);
+        expect(calls[0]?.body).toEqual({ code: "ABCD1234", kind: "laptop", deviceName: "Web console" });
+
+        await waitFor(() => expect(router.state.location.pathname).toBe("/workspaces"));
+        expect(await screen.findByText("Workspaces destination")).toBeInTheDocument();
+    });
+
+    it("falls back to the prefilled form when the automatic pairing is rejected", async () => {
+        mockApi([
+            pairRoute({
+                status: 401,
+                body: { code: "E_UNAUTHORIZED", message: "invalid or already used pairing code" },
+            }),
+        ]);
+        const origin = new URL(window.location.origin);
+        const { router } = await renderPage(routes(), "/connect?code=ZZZZ9999&auto=1", { paired: false });
+
+        expect(await screen.findByTestId("connect-auto-error")).toHaveTextContent(
+            "Pairing code is wrong or expired",
+        );
+        // Everything the link carried is prefilled — only a fresh code is needed.
+        expect(screen.getByTestId("connect-manual-panel")).not.toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-pair-code")).toHaveValue("ZZZZ9999");
+        expect(screen.getByTestId("connect-host")).toHaveValue(origin.hostname);
+        expect(screen.getByTestId("connect-port")).toHaveValue(origin.port);
+        expect(localStorage.getItem("pi2-connection")).toBeNull();
+        expect(localStorage.getItem("pi2-device-token")).toBeNull();
+        expect(router.state.location.pathname).toBe("/connect");
+    });
+
     it("returns to an allow-listed deep link after pairing", async () => {
         const fetchMock = mockApi([pairRoute()]);
         const { router } = await renderPage(routes(), "/connect?next=%2Fchat%2F01a15368%3Fworkspace%3Dws-1", {
             paired: false,
         });
+        expandManual();
 
-        fillManualForm({ host: "192.168.2.10", code: "ABCD1234", device: "My browser" });
+        fillManualForm({ host: "192.168.2.10", port: "4321", code: "ABCD1234", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
 
         await waitFor(() => expect(router.state.location.pathname).toBe("/chat/01a15368"));
@@ -165,8 +296,9 @@ describe("ConnectPage", () => {
             }),
         ]);
         const { router } = await renderPage(routes(), "/connect", { paired: false });
+        expandManual();
 
-        fillManualForm({ host: "192.168.2.10", code: "ZZZZ9999", device: "My browser" });
+        fillManualForm({ host: "192.168.2.10", port: "4321", code: "ZZZZ9999", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
 
         expect(
@@ -217,7 +349,7 @@ describe("ConnectPage", () => {
         expect(router.state.location.pathname).toBe("/connect");
     });
 
-    it("shows the paired summary with server identity, uptime and device scopes", async () => {
+    it("shows the connected summary with server identity, device scopes and one primary", async () => {
         mockApi([{ path: "/api/v1/info", handler: () => ({ body: infoBody }) }]);
         await renderPage(routes(), "/connect", {
             paired: true,
@@ -228,29 +360,60 @@ describe("ConnectPage", () => {
             },
         });
 
-        expect(await screen.findByText("Current connection")).toBeInTheDocument();
-        expect(screen.getByText("Test browser")).toBeInTheDocument();
+        const state = document.querySelector(".cn-state.card--quiet");
+        expect(state).not.toBeNull();
         expect(await screen.findByText("thinkpad-x1")).toBeInTheDocument();
-        expect(screen.getByText("linux")).toBeInTheDocument();
+        expect(screen.getByText("http://192.168.2.10:4321")).toBeInTheDocument();
         expect(screen.getByText("0.4.2")).toBeInTheDocument();
-        expect(screen.getByText("3h 0m")).toBeInTheDocument();
+        expect(screen.getByText("Test browser")).toBeInTheDocument();
         expect(screen.getByText("Read")).toBeInTheDocument();
         expect(screen.getByText("Steer")).toBeInTheDocument();
         expect(screen.queryByText("Apply")).not.toBeInTheDocument();
+
+        // Back to workspaces is the single primary while the re-pair panel is closed.
+        expect(screen.getByTestId("connect-back")).toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+        // The token lives in the collapsed connection details, masked.
+        expect(screen.getByText("Connection details")).toBeInTheDocument();
+        expect(document.querySelector(".cn-details__body")?.textContent).toContain("…");
     });
 
-    it("shows the paired summary and clears storage on confirmed disconnect", async () => {
+    it("re-pairs in place and hands the single primary to the scan button, then to the form", async () => {
         mockApi([{ path: "/api/v1/info", handler: () => ({ body: infoBody }) }]);
         await renderPage(routes(), "/connect", {
             paired: true,
-            storage: {
-                "pi2-device": "Test browser",
-                "pi2-endpoint": "http://192.168.2.10:4321",
-            },
+            storage: { "pi2-device": "Test browser", "pi2-endpoint": "http://192.168.2.10:4321" },
         });
 
-        expect(await screen.findByText("Current connection")).toBeInTheDocument();
-        expect(screen.getByText("Test browser")).toBeInTheDocument();
+        const repair = await screen.findByTestId("connect-repair");
+        fireEvent.click(repair);
+        const panel = screen.getByTestId("connect-repair-panel");
+        expect(panel).not.toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-repair-scan")).toHaveClass("btn--primary");
+        expect(screen.getByTestId("connect-back")).not.toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+
+        expandManual();
+        expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
+        expect(screen.getByTestId("connect-repair-scan")).not.toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+
+        // Collapsing the panel also collapses the form and returns to one primary.
+        fireEvent.click(repair);
+        expect(panel).toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-manual-panel")).toHaveAttribute("hidden");
+        expect(screen.getByTestId("connect-back")).toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
+    });
+
+    it("clears storage on confirmed disconnect and returns to the unconnected state", async () => {
+        mockApi([{ path: "/api/v1/info", handler: () => ({ body: infoBody }) }]);
+        await renderPage(routes(), "/connect", {
+            paired: true,
+            storage: { "pi2-device": "Test browser", "pi2-endpoint": "http://192.168.2.10:4321" },
+        });
+
+        expect(await screen.findByText("Test browser")).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
         const dialog = await screen.findByRole("dialog");
@@ -260,6 +423,8 @@ describe("ConnectPage", () => {
         expect(localStorage.getItem("pi2-connection")).toBe("unpaired");
         expect(await screen.findByRole("button", { name: "Scan to pair" })).toBeInTheDocument();
         expect(screen.queryByText("Current connection")).not.toBeInTheDocument();
+        expect(screen.getByTestId("connect-scan")).toHaveClass("btn--primary");
+        expect(primaries()).toHaveLength(1);
     });
 });
 

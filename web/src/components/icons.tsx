@@ -34,6 +34,7 @@ import {
     Send,
     Server,
     Settings,
+    SlidersHorizontal,
     Smartphone,
     Square,
     Sun,
@@ -83,6 +84,7 @@ export type IconName =
     | "trash"
     | "more"
     | "settings"
+    | "sliders"
     | "sun"
     | "moon"
     | "monitor"
@@ -132,6 +134,7 @@ const ICONS: Record<IconName, IconComponent> = {
     trash: Trash2,
     more: MoreHorizontal,
     settings: Settings,
+    sliders: SlidersHorizontal,
     sun: Sun,
     moon: Moon,
     monitor: Monitor,

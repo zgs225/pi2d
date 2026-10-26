@@ -1,4 +1,4 @@
-import type { Batch, Block, Entry, TodoItem } from "@protocol/types";
+import type { Batch, Entry, TodoItem } from "@protocol/types";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -6,32 +6,60 @@ import { Icon } from "@/components/icons";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { fileDiff } from "./diff";
-import { DiffView } from "./diff-view";
-import {
-    formatClock,
-    formatDuration,
-    toolArgsText,
-    toolDiffSource,
-    toolOutputText,
-    toolSummary,
-} from "./format";
+import "@/styles/pages/chat-msg.css";
+import { formatClock } from "./format";
+import { fromPi2Block, ToolRow } from "./tools";
+import type { ToolCtx } from "./tools";
+
+/**
+ * `notice` entries report on a subagent; the projection may carry its name so the
+ * meta row can link into the subagent view (prototype `.who--agent.sub-report__link`).
+ */
+type NoticeEntry = Entry & { subagentName?: string; subagent?: string | { name?: string } };
+
+function noticeSubagentName(entry: Entry): string | undefined {
+    const notice = entry as NoticeEntry;
+    if (notice.subagentName) return notice.subagentName;
+    const subagent = notice.subagent;
+    if (typeof subagent === "string") return subagent || undefined;
+    if (subagent && typeof subagent === "object") return subagent.name || undefined;
+    return undefined;
+}
 
 export interface EntryBlockProps {
     entry: Entry;
     turnStart?: boolean;
+    /** `false` on same-turn follow-ups: only the turn's first message repeats the meta row. */
+    showMeta?: boolean;
+    /** Opens the subagent view from a `notice` (sub-report) meta link. */
+    onOpenSubagent?: (name: string) => void;
 }
 
-function MessageMeta({ entry }: { entry: Entry }) {
+function MessageMeta({ entry, onOpenSubagent }: { entry: Entry; onOpenSubagent?: (name: string) => void }) {
     const { t } = useTranslation();
     const user = entry.role === "user";
+    const notice = entry.role === "notice";
+    const subagent = notice ? noticeSubagentName(entry) : undefined;
+    const label = user ? t("chat.you") : notice ? t("chat.subReport") : "pi2";
     return (
         <div className="msg__meta">
-            <span className={cn("who", user ? "who--user" : "who--agent")}>
-                {user ? t("chat.you") : entry.role === "notice" ? t("chat.subReport") : "pi2"}
-            </span>
+            {subagent && onOpenSubagent ? (
+                <button
+                    type="button"
+                    className="who who--agent sub-report__link"
+                    title={t("chat.viewSubagent", { name: subagent })}
+                    onClick={() => onOpenSubagent(subagent)}
+                >
+                    <Icon name="branch" />
+                    {label}
+                </button>
+            ) : (
+                <span className={cn("who", user ? "who--user" : "who--agent")}>
+                    {notice ? <Icon name="branch" /> : null}
+                    {label}
+                </span>
+            )}
             {user ? (
                 <RelativeTime ts={entry.ts} className="muted msg__time" />
             ) : (
@@ -57,69 +85,6 @@ function ThinkingBlock({ text }: { text: string }) {
             </span>
             <span className="thinking__text">{text}</span>
         </button>
-    );
-}
-
-function ToolBody({ block }: { block: Extract<Block, { type: "tool" }> }) {
-    const { t } = useTranslation();
-    const args = toolArgsText(block);
-    const output = toolOutputText(block);
-    const source = toolDiffSource(block);
-    const diff = source ? [fileDiff(source.path, source.before, source.after)] : [];
-    return (
-        <div className="tool__body">
-            {args ? (
-                <div className="tool__section">
-                    <div className="tool__label muted">{t("chat.details")}</div>
-                    <pre className="mono tool__pre">{args}</pre>
-                </div>
-            ) : null}
-            {output ? (
-                <div className="tool__section">
-                    <div className="tool__label muted">{t("chat.output")}</div>
-                    <pre className="mono tool__pre">{output}</pre>
-                </div>
-            ) : null}
-            {!args && !output ? <pre className="mono tool__pre muted">{t("chat.noOutput")}</pre> : null}
-            {diff.length ? <DiffView files={diff} /> : null}
-        </div>
-    );
-}
-
-export function ToolBlock({ block }: { block: Extract<Block, { type: "tool" }> }) {
-    const [open, setOpen] = useState(false);
-    const running = block.state === "pending" || block.state === "running";
-    const done = block.state === "done";
-    const error = block.state === "error";
-    return (
-        <div
-            className={cn(
-                "tool card",
-                done && "tool--done",
-                error && "tool--error",
-                open && "open",
-            )}
-        >
-            <button
-                type="button"
-                className="tool__head"
-                aria-expanded={open}
-                onClick={() => setOpen((value) => !value)}
-            >
-                <span className={cn("tool__ico", running && "tool__ico--running")}>
-                    {running ? <Spinner /> : <Icon name={error ? "alert" : done ? "check" : "dot"} />}
-                </span>
-                <span className="tool__name mono">{block.name}</span>
-                <span className="tool__sum muted truncate">{toolSummary(block)}</span>
-                {block.durationMs != null ? (
-                    <span className="tool__dur muted">· {formatDuration(block.durationMs)}</span>
-                ) : null}
-                <span className="tool__caret">
-                    <Icon name="chevron-down" />
-                </span>
-            </button>
-            {open ? <ToolBody block={block} /> : null}
-        </div>
     );
 }
 
@@ -290,18 +255,24 @@ function ErrorBlock({ text }: { text: string }) {
     );
 }
 
-export function EntryBlock({ entry, turnStart }: EntryBlockProps) {
+export function EntryBlock({ entry, turnStart, showMeta, onOpenSubagent }: EntryBlockProps) {
     const lastTextIndex = entry.blocks.reduce(
         (last, block, index) => (block.type === "text" ? index : last),
         -1,
     );
+    // `user` / `notice` are standalone messages and always carry meta; `system` is a
+    // fallback row (text only, no invented rail); only `assistant` collapses its meta
+    // when it merely continues the current turn (`renderMessage(m, turnStart, showMeta)`).
+    const withMeta =
+        entry.role === "system" ? false : entry.role === "assistant" ? (showMeta ?? turnStart ?? true) : true;
+    const toolCtx: ToolCtx = onOpenSubagent ? { onOpenSubagent } : {};
     return (
         <article
             className={cn("msg", `msg--${entry.role}`, turnStart && "turn-start")}
             data-entry-id={entry.id}
             data-role={entry.role}
         >
-            <MessageMeta entry={entry} />
+            {withMeta ? <MessageMeta entry={entry} onOpenSubagent={onOpenSubagent} /> : null}
             {entry.blocks.map((block, index) => {
                 if (block.type === "text") {
                     return (
@@ -317,7 +288,14 @@ export function EntryBlock({ entry, turnStart }: EntryBlockProps) {
                     return <ThinkingBlock key={`${entry.id}-k-${index}`} text={block.text} />;
                 }
                 if (block.type === "tool") {
-                    return <ToolBlock key={`${entry.id}-x-${index}`} block={block} />;
+                    // One tool call = one family row (tools/index.ts exit contract).
+                    return (
+                        <ToolRow
+                            key={`${entry.id}-x-${index}`}
+                            tool={fromPi2Block(block, entry.id, { ts: entry.ts })}
+                            ctx={toolCtx}
+                        />
+                    );
                 }
                 return <ErrorBlock key={`${entry.id}-e-${index}`} text={block.text} />;
             })}

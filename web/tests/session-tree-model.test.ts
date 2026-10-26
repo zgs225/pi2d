@@ -1,5 +1,13 @@
+import type { SessionState } from "@protocol/types";
 import type { TreeNode } from "@/features/chat/session-tree-model";
-import { buildSessionTree, treeNodeId } from "@/features/chat/session-tree-model";
+import {
+    buildSessionTree,
+    buildSessionTreeView,
+    isSessionActive,
+    isSubagentActive,
+    subagentPathIds,
+    treeNodeId,
+} from "@/features/chat/session-tree-model";
 import { sessionFixture, subagentFixture } from "./chat-fixtures";
 
 function ids(nodes: TreeNode[]): string[] {
@@ -178,5 +186,132 @@ describe("buildSessionTree", () => {
 
         expect(tree).toHaveLength(1);
         expect(tree[0]?.session.name).toBe("Alpha");
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* IA lens (`activeOnly`) vs plugin policy (`showHidden`)              */
+/* ------------------------------------------------------------------ */
+
+describe("active-row predicates", () => {
+    it("treats finished/exited sessions as inactive", () => {
+        expect(isSessionActive({ status: "busy" })).toBe(true);
+        expect(isSessionActive({ status: "idle" })).toBe(true);
+        expect(isSessionActive({ status: "exited" })).toBe(false);
+        // The plugin can report the terminal words the wire enum does not carry;
+        // the predicate is a superset on purpose.
+        const status = (value: string) => ({ status: value }) as unknown as Pick<SessionState, "status">;
+        expect(isSessionActive(status("done"))).toBe(false);
+        expect(isSessionActive(status("dormant"))).toBe(false);
+    });
+
+    it("keeps failed/interrupted subagents reachable", () => {
+        expect(isSubagentActive({ status: "active" })).toBe(true);
+        expect(isSubagentActive({ status: "interrupted" })).toBe(true);
+        expect(isSubagentActive({ status: "failed" })).toBe(true);
+        expect(isSubagentActive({ status: "completed" })).toBe(false);
+        expect(isSubagentActive({ status: "dormant" })).toBe(false);
+    });
+
+    it("resolves the manifest path of the subagent in the child view", () => {
+        const nested = subagentFixture({ id: "sa1", children: [subagentFixture({ id: "sa2" })] });
+        expect(subagentPathIds([nested], "sa2")).toEqual(["sa1", "sa2"]);
+        expect(subagentPathIds([nested], "nope")).toEqual([]);
+        expect(subagentPathIds([nested], null)).toEqual([]);
+    });
+});
+
+describe("buildSessionTreeView (IA lens)", () => {
+    const lensSessions = () => [
+        sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [] }),
+        sessionFixture({ sessionId: "s2", name: "Beta", status: "exited", subagents: [] }),
+        childOf({ visible: false }),
+    ];
+
+    it("drops finished root sessions and reports how many", () => {
+        const view = buildSessionTreeView(lensSessions(), { activeOnly: true });
+
+        expect(ids(view.roots)).toEqual(["s1"]);
+        expect(view.hiddenSessions).toBe(1);
+    });
+
+    it("always keeps the routed session, even when its process is gone", () => {
+        const view = buildSessionTreeView(lensSessions(), { activeOnly: true, selectedId: "s2" });
+
+        expect(ids(view.roots)).toEqual(["s1", "s2"]);
+        expect(view.hiddenSessions).toBe(0);
+    });
+
+    it("drops finished subagents and counts them per parent (+N)", () => {
+        const view = buildSessionTreeView(
+            [
+                sessionFixture({
+                    sessionId: "s1",
+                    name: "Alpha",
+                    subagents: [
+                        subagentFixture({ id: "sa1", status: "active" }),
+                        subagentFixture({ id: "sa2", status: "completed" }),
+                    ],
+                }),
+            ],
+            { activeOnly: true },
+        );
+
+        expect(ids(view.roots[0]?.children ?? [])).toEqual(["sa1"]);
+        expect(view.roots[0]?.hiddenCount).toBe(1);
+    });
+
+    it("keeps the whole path to the subagent in the child view", () => {
+        const nested = subagentFixture({
+            id: "sa1",
+            status: "active",
+            children: [subagentFixture({ id: "sa2", status: "completed" })],
+        });
+        const view = buildSessionTreeView(
+            [sessionFixture({ sessionId: "s1", name: "Alpha", subagents: [nested] })],
+            // The child view keeps the owning session selected (`?session=`), so the
+            // manifest path is resolved from that session.
+            { activeOnly: true, selectedId: "s1", viewingSubagentId: "sa2" },
+        );
+
+        expect(view.viewingPath).toEqual(["sa1", "sa2"]);
+        expect(ids(view.roots[0]?.children ?? [])).toEqual(["sa1"]);
+        expect(ids(view.roots[0]?.children[0]?.children ?? [])).toEqual(["sa2"]);
+        // Folded parents must still reveal the child view's row.
+        expect(view.roots[0]?.forcedOpen).toBe(true);
+    });
+
+    it("counts the rows the visibility policy hides", () => {
+        expect(buildSessionTreeView(lensSessions(), {}).hiddenByPolicy).toBe(1);
+        expect(buildSessionTreeView(lensSessions(), { showHidden: true }).hiddenByPolicy).toBe(0);
+    });
+
+    it("keeps activeOnly and showHidden independent in every combination", () => {
+        // lens on, policy hiding          → finished root gone, policy row gone
+        const both = buildSessionTreeView(lensSessions(), { activeOnly: true, showHidden: false });
+        expect(ids(both.roots)).toEqual(["s1"]);
+        expect(both.hiddenSessions).toBe(1);
+        expect(both.hiddenByPolicy).toBe(1);
+        expect(both.roots[0]?.children).toEqual([]);
+
+        // lens off, policy hiding         → finished root back, policy row still gone
+        const policyOnly = buildSessionTreeView(lensSessions(), { activeOnly: false, showHidden: false });
+        expect(ids(policyOnly.roots)).toEqual(["s1", "s2"]);
+        expect(policyOnly.hiddenSessions).toBe(0);
+        expect(policyOnly.hiddenByPolicy).toBe(1);
+
+        // lens off, policy shown          → everything renders
+        const shown = buildSessionTreeView(lensSessions(), { activeOnly: false, showHidden: true });
+        expect(ids(shown.roots)).toEqual(["s1", "s2"]);
+        expect(ids(shown.roots[0]?.children ?? [])).toEqual(["c1"]);
+        expect(shown.hiddenByPolicy).toBe(0);
+
+        // lens on, policy shown           → the IA filter still wins on finished rows
+        const lensShown = buildSessionTreeView(lensSessions(), { activeOnly: true, showHidden: true });
+        expect(ids(lensShown.roots)).toEqual(["s1"]);
+        expect(ids(lensShown.roots[0]?.children ?? [])).toEqual(["c1"]);
+        expect(lensShown.roots[0]?.children[0]?.hidden).toBe(true);
+        expect(lensShown.hiddenSessions).toBe(1);
+        expect(lensShown.hiddenByPolicy).toBe(0);
     });
 });

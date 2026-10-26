@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mockApi } from "./helpers/api-mock";
@@ -71,6 +71,17 @@ function serve(items: WorkspaceInfo[]) {
     ]);
 }
 
+/** Names are also repeated in the activity column; assert on the grid only. */
+async function waitForCards(count: number) {
+    await waitFor(() => expect(screen.getAllByTestId("workspace-row")).toHaveLength(count));
+}
+
+function grid(): HTMLElement {
+    const node = document.querySelector<HTMLElement>(".ws-grid");
+    if (!node) throw new Error("no workspace grid rendered");
+    return node;
+}
+
 beforeEach(async () => {
     await setLanguage("en");
 });
@@ -128,33 +139,42 @@ describe("WorkspacesPage secondary rows", () => {
         serve([primary, ghost, hidden]);
         const { container } = await renderPage(routes(), "/workspaces");
 
-        await screen.findByText("Alpha");
+        await waitForCards(1);
+        expect(within(grid()).getByText("Alpha")).toBeInTheDocument();
         expect(screen.queryByText("Ghost")).not.toBeInTheDocument();
         expect(screen.queryByText("Hidden")).not.toBeInTheDocument();
 
         const toggle = await screen.findByTestId("workspaces-show-all");
         expect(toggle).toHaveTextContent("Show 2 hidden");
         expect(toggle).toHaveAttribute("aria-pressed", "false");
+        // The toggle lives in the collapsed strip under the grid, outside the head,
+        // and is never a second primary (H1).
+        expect(toggle.closest(".ws-hidden-bar")).not.toBeNull();
+        expect(toggle).not.toHaveClass("btn--primary");
         expect(container.querySelectorAll('[data-testid="workspace-row"]')).toHaveLength(1);
+        expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
         expect(readShowAll()).toBe(false);
     });
 
     it("reveals dimmed secondary rows with a reason badge on toggle", async () => {
         serve([primary, ghost, hidden]);
         await renderPage(routes(), "/workspaces");
-        await screen.findByText("Alpha");
+        await waitForCards(1);
 
         fireEvent.click(screen.getByTestId("workspaces-show-all"));
 
-        expect(await screen.findByText("Ghost")).toBeInTheDocument();
-        expect(screen.getByText("Hidden")).toBeInTheDocument();
+        expect(await within(grid()).findByText("Ghost")).toBeInTheDocument();
+        expect(within(grid()).getByText("Hidden")).toBeInTheDocument();
 
         const rows = screen.getAllByTestId("workspace-row");
         expect(rows.map((row) => row.getAttribute("data-visibility"))).toEqual(["default", "secondary", "secondary"]);
         const ghostRow = rows.find((row) => row.getAttribute("data-workspace-id") === "ws-g");
         expect(ghostRow).toHaveAttribute("data-visibility-reason", "ghost");
-        expect(ghostRow).toHaveStyle({ opacity: "0.55" });
+        // Dimming is a class (no inline styles on the page).
+        expect(ghostRow).toHaveClass("ws-card--secondary");
         expect(ghostRow?.querySelector('[data-testid="workspace-reason"]')).toHaveTextContent("missing");
+        // The card stays a link to the chat UI even when it is secondary.
+        expect(ghostRow?.getAttribute("href")).toBe("/chat?workspace=ws-g");
 
         const toggle = screen.getByTestId("workspaces-show-all");
         expect(toggle).toHaveTextContent("Hide 2 hidden");
@@ -170,9 +190,10 @@ describe("WorkspacesPage secondary rows", () => {
         serve([primary, ghost, hidden]);
         await renderPage(routes(), "/workspaces", { storage: { [SHOW_ALL_STORAGE_KEY]: "1" } });
 
-        expect(await screen.findByText("Alpha")).toBeInTheDocument();
-        expect(await screen.findByText("Ghost")).toBeInTheDocument();
-        expect(screen.getByText("Hidden")).toBeInTheDocument();
+        await waitForCards(3);
+        expect(within(grid()).getByText("Alpha")).toBeInTheDocument();
+        expect(within(grid()).getByText("Ghost")).toBeInTheDocument();
+        expect(within(grid()).getByText("Hidden")).toBeInTheDocument();
     });
 
     it("offers the toggle from the empty state when every row is secondary", async () => {
@@ -181,6 +202,7 @@ describe("WorkspacesPage secondary rows", () => {
 
         expect(await screen.findByText("All workspaces are hidden")).toBeInTheDocument();
         fireEvent.click(screen.getByTestId("workspaces-show-all"));
-        expect(await screen.findByText("Ghost")).toBeInTheDocument();
+        await waitForCards(2);
+        expect(within(grid()).getByText("Ghost")).toBeInTheDocument();
     });
 });

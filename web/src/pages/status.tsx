@@ -5,6 +5,8 @@ import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { PageHeader } from "@/components/shared/page-header";
+import { formatRelative } from "@/components/shared/relative-time";
+import { StatusDot, serverDotClass, type DotStatus } from "@/components/ui/status-dot";
 import { toast } from "@/components/ui/toast";
 import {
     clearPairMeta,
@@ -14,6 +16,7 @@ import {
 import { ConnectionCard } from "@/features/status/connection-card";
 import { deviceKey, DevicesCard } from "@/features/status/devices-card";
 import { HealthCard } from "@/features/status/health-card";
+import { MetricsBlock } from "@/features/status/metrics-block";
 import { ModelsCard } from "@/features/status/models-card";
 import { mergeTasks,
     sessionTasks,
@@ -29,7 +32,6 @@ import { mergeTasks,
     type DevicesResponse,
     type StatusTask,
 } from "@/features/status/queries";
-import { ResourcesCard } from "@/features/status/resources-card";
 import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
 import { ServerInfoCard } from "@/features/status/server-info-card";
 import { TasksCard } from "@/features/status/tasks-card";
@@ -119,6 +121,10 @@ export function StatusPage() {
     const tasksFailed = sessionQueries.find((query) => query.isError);
     const tasksError = tasksFailed ? translatedError(tasksFailed.error, "status.tasksError", t) : null;
 
+    const instanceCount = resources.data?.instances.length ?? 0;
+    const liveSessionCount =
+        resources.data?.instances.reduce((total, instance) => total + (instance.sessions || 0), 0) ?? 0;
+
     function retryTasks() {
         for (const query of sessionQueries) void query.refetch();
     }
@@ -146,88 +152,107 @@ export function StatusPage() {
         navigate({ href: "/connect" });
     }
 
-    const statusLabel = t(`state.${server.status}`);
-    const subtitle = `${server.name} · ${server.hostname} · ${statusLabel}`;
+    const statusLabel = t(`state.${server.status}`, { defaultValue: server.status });
+    const headDot = serverDotClass(server.status) as DotStatus;
+    // "updated <relative>" — the prototype's quiet freshness hint in the head.
+    const updatedAt = info.dataUpdatedAt || null;
+    const updatedLabel = t("status.updated", {
+        time: updatedAt ? formatRelative(updatedAt, t) : "—",
+        defaultValue: "updated {time}",
+    });
 
     return (
         <div className="status-page">
             <PageHeader
+                className="status-head"
                 title={t("status.title")}
-                subtitle={subtitle}
                 docTitle={t("nav.status")}
-                size="lg"
+                subtitle={
+                    <>
+                        <StatusDot status={headDot} className="dot--lg" />
+                        <span className="status-sub__text">{`${server.name} · ${server.hostname} · ${statusLabel}`}</span>
+                    </>
+                }
                 actions={
-                    <a className="btn btn--sm" href="/connect?next=%2Fstatus">
-                        <Icon name="refresh" />
-                        {t("connect.reconnect")}
-                    </a>
+                    <>
+                        <span className="status-updated">{updatedLabel}</span>
+                        <a className="btn btn--ghost btn--sm" href="/connect?next=%2Fstatus">
+                            <Icon name="refresh" />
+                            {t("connect.reconnect")}
+                        </a>
+                    </>
                 }
             />
 
-            <div className="status-grid">
-                <ServerInfoCard
-                    server={server}
-                    resources={resources.data}
-                    loading={info.isPending}
-                    error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
-                    onRetry={() => void info.refetch()}
-                />
+            <MetricsBlock
+                server={server}
+                resources={resources.data}
+                workspaceCount={workspaceCount}
+                sessionCount={sessionCount}
+                instanceCount={instanceCount}
+                liveSessionCount={liveSessionCount}
+                error={resources.isError ? translatedError(resources.error, "status.resourcesError", t) : null}
+                onRetry={() => void resources.refetch()}
+            />
 
-                <HealthCard
-                    health={health.data}
-                    checkedAt={health.data?.checkedAt ?? (health.dataUpdatedAt || null)}
-                    loading={health.isPending}
-                    error={health.isError ? translatedError(health.error, "status.healthError", t) : null}
-                    onRetry={() => void health.refetch()}
-                />
+            <div className="status-cols">
+                <div className="status-col">
+                    <ServerInfoCard
+                        server={server}
+                        resources={resources.data}
+                        loading={info.isPending}
+                        error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
+                        onRetry={() => void info.refetch()}
+                    />
 
-                <ResourcesCard
-                    resources={resources.data}
-                    server={server}
-                    loading={resources.isPending}
-                    error={resources.isError ? translatedError(resources.error, "status.resourcesError", t) : null}
-                    onRetry={() => void resources.refetch()}
-                    workspaceCount={workspaceCount}
-                    sessionCount={sessionCount}
-                />
+                    <HealthCard
+                        health={health.data}
+                        checkedAt={health.data?.checkedAt ?? (health.dataUpdatedAt || null)}
+                        loading={health.isPending}
+                        error={health.isError ? translatedError(health.error, "status.healthError", t) : null}
+                        onRetry={() => void health.refetch()}
+                    />
+                </div>
 
-                <ModelsCard
-                    providers={models.data?.providers ?? []}
-                    loading={Boolean(modelsWorkspaceId) && models.isPending}
-                    error={models.isError ? translatedError(models.error, "status.modelsError", t) : null}
-                    onRetry={() => void models.refetch()}
-                />
+                <div className="status-col">
+                    <ModelsCard
+                        providers={models.data?.providers ?? []}
+                        loading={Boolean(modelsWorkspaceId) && models.isPending}
+                        error={models.isError ? translatedError(models.error, "status.modelsError", t) : null}
+                        onRetry={() => void models.refetch()}
+                    />
 
-                <TasksCard
-                    tasks={tasks}
-                    loading={tasksLoading}
-                    error={tasks.length === 0 ? tasksError : null}
-                    onRetry={retryTasks}
-                />
-
-                <DevicesCard
-                    devices={devices.data?.devices ?? []}
-                    loading={devices.isPending}
-                    error={devices.isError ? translatedError(devices.error, "status.devicesError", t) : null}
-                    onRetry={() => void devices.refetch()}
-                    onRevoke={revokeDevice}
-                />
-
-                <ConnectionCard
-                    server={server}
-                    deviceName={storedDeviceName || meta?.deviceName || ""}
-                    scopes={scopes}
-                    connectedAt={connectedAt || meta?.pairedAt || null}
-                    loading={info.isPending}
-                    error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
-                    onRetry={() => void info.refetch()}
-                    onDisconnect={handleDisconnect}
-                    pairCode={pairCode.data}
-                    pairLoading={pairCode.isPending}
-                    pairError={pairCode.isError ? translatedError(pairCode.error, "connect.pairFailed", t) : null}
-                    onRetryPair={() => void pairCode.refetch()}
-                />
+                    <TasksCard
+                        tasks={tasks}
+                        loading={tasksLoading}
+                        error={tasks.length === 0 ? tasksError : null}
+                        onRetry={retryTasks}
+                    />
+                </div>
             </div>
+
+            <DevicesCard
+                devices={devices.data?.devices ?? []}
+                loading={devices.isPending}
+                error={devices.isError ? translatedError(devices.error, "status.devicesError", t) : null}
+                onRetry={() => void devices.refetch()}
+                onRevoke={revokeDevice}
+            />
+
+            <ConnectionCard
+                server={server}
+                deviceName={storedDeviceName || meta?.deviceName || ""}
+                scopes={scopes}
+                connectedAt={connectedAt || meta?.pairedAt || null}
+                loading={info.isPending}
+                error={info.isError ? translatedError(info.error, "status.infoError", t) : null}
+                onRetry={() => void info.refetch()}
+                onDisconnect={handleDisconnect}
+                pairCode={pairCode.data}
+                pairLoading={pairCode.isPending}
+                pairError={pairCode.isError ? translatedError(pairCode.error, "connect.pairFailed", t) : null}
+                onRetryPair={() => void pairCode.refetch()}
+            />
         </div>
     );
 }

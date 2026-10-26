@@ -7,6 +7,14 @@ import type { SessionState, Subagent } from "@protocol/types";
  * own (the child session row always wins).
  *
  * Pure and React-free, so the shape is unit-testable without a DOM.
+ *
+ * Two independent filters feed the tree (v0.1.1 Chat IA v3):
+ *
+ * - `activeOnly` — the IA lens ("only live rows", persisted as `pi2-active-only`).
+ * - `showHidden` — the plugin's `:PiSessions` visibility policy (`visible:false`).
+ *
+ * They are NOT the same boolean: one is a user preference, the other is data the
+ * daemon already filtered for us.
  */
 
 export interface SessionTreeNode {
@@ -14,12 +22,14 @@ export interface SessionTreeNode {
     session: SessionState;
     depth: number;
     children: TreeNode[];
-    /** Number of children actually rendered, so a `(N)` badge matches the UI. */
+    /** Number of children actually rendered. */
     childCount: number;
     /** True when the row is hidden by the plugin's visibility policy. */
     hidden: boolean;
     /** Keep this row open even when the user folded it (selected/filtered descendant). */
     forcedOpen: boolean;
+    /** Direct children dropped by `activeOnly` (rendered as `+N`). */
+    hiddenCount: number;
 }
 
 export interface SubagentTreeNode {
@@ -29,23 +39,43 @@ export interface SubagentTreeNode {
     subagent: Subagent;
     depth: number;
     children: TreeNode[];
-    /** Number of children actually rendered, so a `(N)` badge matches the UI. */
+    /** Number of children actually rendered. */
     childCount: number;
     /** True when the row is hidden by the plugin's visibility policy. */
     hidden: boolean;
     /** Keep this row open even when the user folded it (search match below). */
     forcedOpen: boolean;
+    /** Direct children dropped by `activeOnly` (rendered as `+N`). */
+    hiddenCount: number;
 }
 
 export type TreeNode = SessionTreeNode | SubagentTreeNode;
 
 export interface SessionTreeOptions {
-    /** Case-insensitive name needle; empty (or absent) means "no filter". */
+    /** Case-insensitive needle over session name / model id; empty means "no filter". */
     filter?: string;
     /** Render rows the plugin marked `visible: false`. */
     showHidden?: boolean;
     /** The routed session; always rendered, even when it is hidden/filtered out. */
     selectedId?: string | null;
+    /**
+     * IA lens: drop rows whose process is gone (see `isSessionActive` /
+     * `isSubagentActive`). Defaults to `false` so the model stays usable for
+     * callers that do their own filtering.
+     */
+    activeOnly?: boolean;
+    /** Subagent shown in the child view: it and its ancestors stay visible. */
+    viewingSubagentId?: string | null;
+}
+
+export interface SessionTreeView {
+    roots: TreeNode[];
+    /** Root sessions dropped by `activeOnly` — the `.tree-hidden` "N hidden" count. */
+    hiddenSessions: number;
+    /** Rows (any depth) dropped by the plugin's `visible:false` policy. */
+    hiddenByPolicy: number;
+    /** Manifest path (root → viewing subagent) of the child view, empty when none. */
+    viewingPath: string[];
 }
 
 /** Stable key for a node (manifest ids are not unique across sessions). */
@@ -57,6 +87,57 @@ export function treeNodeKey(node: TreeNode): string {
 export function treeNodeId(node: TreeNode): string {
     return node.kind === "session" ? node.session.sessionId : node.subagent.id;
 }
+
+/* ------------------------------------------------------------------ */
+/* Active-row predicates (pure, unit-tested)                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A session is "active" while its process is alive. The design excludes the
+ * three terminal states; `done`/`exited`/`dormant` rows only reappear through
+ * "show all sessions".
+ */
+export function isSessionActive(session: Pick<SessionState, "status">): boolean {
+    return !["done", "exited", "dormant"].includes(session.status);
+}
+
+/**
+ * A subagent is "active" when the user may still act on it — a failed or
+ * interrupted subagent stays reachable, a completed/dormant one does not.
+ */
+export function isSubagentActive(subagent: Pick<Subagent, "status">): boolean {
+    return ["active", "interrupted", "failed"].includes(subagent.status);
+}
+
+/**
+ * Is `id` on the path to the subagent being viewed (itself or an ancestor)?
+ *
+ * The child view must keep its own row reachable no matter how aggressive the
+ * `activeOnly` lens is — a completed subagent you are reading stays in the tree.
+ */
+export function isOnCurrentSubPath(id: string, path: readonly string[]): boolean {
+    return path.includes(id);
+}
+
+/** Manifest path (root → `id`) to a nested subagent; `[]` when it is not there. */
+export function subagentPath(list: Subagent[] | undefined, id: string | null): Subagent[] {
+    if (!id) return [];
+    for (const subagent of list ?? []) {
+        if (subagent.id === id) return [subagent];
+        const nested = subagentPath(subagent.children, id);
+        if (nested.length) return [subagent, ...nested];
+    }
+    return [];
+}
+
+/** Ids of the viewing subagent and its ancestors, for `isOnCurrentSubPath`. */
+export function subagentPathIds(list: Subagent[] | undefined, id: string | null): string[] {
+    return subagentPath(list, id).map((subagent) => subagent.id);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tree building                                                       */
+/* ------------------------------------------------------------------ */
 
 /** Does this subtree contain `id` (used to expand the path to the routed row)? */
 function containsNode(node: TreeNode, id: string): boolean {
@@ -70,6 +151,12 @@ function sessionLabel(session: SessionState): string {
 
 function subagentLabel(subagent: Subagent): string {
     return subagent.name?.trim() || subagent.id;
+}
+
+/** Search matches the session/subagent name or its model id (prototype behaviour). */
+function matches(label: string, model: string | undefined, needle: string): boolean {
+    if (needle === "") return true;
+    return label.toLowerCase().includes(needle) || (model ?? "").toLowerCase().includes(needle);
 }
 
 /**
@@ -101,8 +188,12 @@ function effectiveParent(session: SessionState, index: Map<string, SessionState>
  * order the list delivered; a session's synthetic subagent rows follow its real
  * child sessions, in manifest order.
  */
-export function buildSessionTree(sessions: SessionState[], options: SessionTreeOptions = {}): TreeNode[] {
+export function buildSessionTreeView(
+    sessions: SessionState[],
+    options: SessionTreeOptions = {},
+): SessionTreeView {
     const showHidden = options.showHidden === true;
+    const activeOnly = options.activeOnly === true;
     const selectedId = options.selectedId ?? null;
     const needle = (options.filter ?? "").trim().toLowerCase();
 
@@ -111,6 +202,8 @@ export function buildSessionTree(sessions: SessionState[], options: SessionTreeO
         // Duplicate ids (a list/payload race) must not render twice or key twice.
         if (!index.has(session.sessionId)) index.set(session.sessionId, session);
     }
+
+    let hiddenByPolicy = 0;
 
     // Children grouped by their effective parent, in list order.
     const childSessions = new Map<string | null, SessionState[]>();
@@ -122,51 +215,59 @@ export function buildSessionTree(sessions: SessionState[], options: SessionTreeO
         else childSessions.set(parentId, [session]);
     }
 
+    /** Viewing subagent + ancestors: always kept when `activeOnly` hides them. */
+    const viewingPath = activeOnly
+        ? subagentPathIds(selectedId ? index.get(selectedId)?.subagents : undefined, options.viewingSubagentId ?? null)
+        : [];
+
     /**
-     * Selection, search and ancestry; visibility is only one of the inputs.
-     *
-     * Selection overrides the visibility policy (a deep-linked hidden row always
-     * renders) but NOT an explicit search: the filter is the user's intent and a
-     * non-matching row stays out.
+     * Session keep decision. Precedence: search (explicit intent) > routed row >
+     * active lens > plugin policy > "an kept descendant needs the ancestor".
      */
-    function keepRow(id: string, label: string, selfVisible: boolean, children: TreeNode[]): boolean {
-        if (needle !== "") {
-            // Search is an explicit intent: a matching hidden row IS shown.
-            if (label.toLowerCase().includes(needle)) return true;
-            return children.length > 0;
-        }
-        if (selectedId !== null && id === selectedId) return true;
-        if (showHidden || selfVisible) return true;
-        // Hidden, but kept because a rendered descendant needs its ancestor.
-        return children.length > 0;
+    function keepSession(session: SessionState, childCount: number): boolean {
+        if (needle !== "") return matches(sessionLabel(session), session.model?.id, needle) || childCount > 0;
+        if (selectedId !== null && session.sessionId === selectedId) return true;
+        if (activeOnly && !isSessionActive(session)) return childCount > 0;
+        if (session.visible === false) return showHidden || childCount > 0;
+        return true;
     }
 
     function buildSessionNode(session: SessionState, depth: number, path: Set<string>): SessionTreeNode | null {
         if (path.has(session.sessionId)) return null;
         const nextPath = new Set(path).add(session.sessionId);
         const children: TreeNode[] = [];
+        let hiddenCount = 0;
         for (const child of childSessions.get(session.sessionId) ?? []) {
             const node = buildSessionNode(child, depth + 1, nextPath);
             if (node) children.push(node);
+            else if (activeOnly && needle === "" && child.visible !== false) hiddenCount += 1;
         }
         for (const subagent of session.subagents ?? []) {
             const node = buildSubagentNode(session, subagent, depth + 1, nextPath);
             if (node) children.push(node);
+            else if (activeOnly && needle === "" && !isSubagentActive(subagent) && subagent.visible !== false) {
+                hiddenCount += 1;
+            }
         }
-        const selfVisible = session.visible !== false;
-        if (!keepRow(session.sessionId, sessionLabel(session), selfVisible, children)) return null;
+        if (!keepSession(session, children.length)) {
+            if (needle === "" && session.visible === false) hiddenByPolicy += 1;
+            return null;
+        }
         return {
             kind: "session",
             session,
             depth,
             children,
             childCount: children.length,
-            hidden: !selfVisible,
+            hidden: session.visible === false,
             // A folded parent must still reveal the routed row or a search hit
             // inside it; otherwise the selection would silently disappear.
             forcedOpen:
                 children.length > 0 &&
-                (needle !== "" || (selectedId !== null && children.some((child) => containsNode(child, selectedId)))),
+                (needle !== "" ||
+                    (selectedId !== null && children.some((child) => containsNode(child, selectedId))) ||
+                    children.some((child) => viewingPath.includes(treeNodeId(child)))),
+            hiddenCount,
         };
     }
 
@@ -178,14 +279,33 @@ export function buildSessionTree(sessions: SessionState[], options: SessionTreeO
     ): SubagentTreeNode | null {
         // Dedupe: a manifest entry with a session row of its own is that row.
         if (index.has(subagent.id) || path.has(subagent.id)) return null;
+        // The active lens never hides a row on the path to the child view.
+        if (activeOnly && !isSubagentActive(subagent) && !isOnCurrentSubPath(subagent.id, viewingPath)) return null;
         const nextPath = new Set(path).add(subagent.id);
         const children: TreeNode[] = [];
+        let hiddenCount = 0;
         for (const child of subagent.children ?? []) {
             const node = buildSubagentNode(session, child, depth + 1, nextPath);
             if (node) children.push(node);
+            else if (activeOnly && needle === "" && !isSubagentActive(child) && child.visible !== false) {
+                hiddenCount += 1;
+            }
         }
-        const selfVisible = subagent.visible !== false;
-        if (!keepRow(subagent.id, subagentLabel(subagent), selfVisible, children)) return null;
+        if (subagent.visible === false) {
+            // Policy-hidden row: kept by the show-hidden toggle, a search hit, the
+            // routed row or a rendered descendant — never silently by default.
+            const keep =
+                showHidden ||
+                selectedId === subagent.id ||
+                children.length > 0 ||
+                (needle !== "" && matches(subagentLabel(subagent), subagent.model, needle));
+            if (!keep) {
+                if (needle === "") hiddenByPolicy += 1;
+                return null;
+            }
+        }
+        // Search keeps only matching sessions; inside a kept session the
+        // manifest rows are not filtered by the needle (prototype behaviour).
         return {
             kind: "subagent",
             session,
@@ -193,16 +313,24 @@ export function buildSessionTree(sessions: SessionState[], options: SessionTreeO
             depth,
             children,
             childCount: children.length,
-            hidden: !selfVisible,
+            hidden: subagent.visible === false,
             forcedOpen: children.length > 0 && needle !== "",
+            hiddenCount,
         };
     }
 
     const roots: TreeNode[] = [];
+    let hiddenSessions = 0;
     const emptyPath = new Set<string>();
     for (const session of childSessions.get(null) ?? []) {
         const node = buildSessionNode(session, 0, emptyPath);
         if (node) roots.push(node);
+        else if (activeOnly && needle === "" && session.visible !== false) hiddenSessions += 1;
     }
-    return roots;
+    return { roots, hiddenSessions, hiddenByPolicy, viewingPath };
+}
+
+/** Convenience wrapper for callers that only need the rows. */
+export function buildSessionTree(sessions: SessionState[], options: SessionTreeOptions = {}): TreeNode[] {
+    return buildSessionTreeView(sessions, options).roots;
 }

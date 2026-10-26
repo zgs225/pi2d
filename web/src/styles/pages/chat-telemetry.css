@@ -1,0 +1,279 @@
+/* ============================================================
+   Chat telemetry line + subagent child view (v0.1.1 §3 / §4)
+   Companion to styles/pages/chat.css (base stream / composer) and
+   styles/pages/chat-tray.css (child-view header shell).
+
+   Owned by the telemetry / child-view workstream. Token-only colours;
+   the only structural colour blocks in chat stay the 2px user / error rails.
+   ============================================================ */
+
+/* ---------- composer status line ---------- */
+.telemetry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  width: 100%;
+  /* Same column as `.composer__inner` (min(100%, --reading-max)), so the line
+     stays flush with the composer box on every breakpoint. */
+  max-width: calc(var(--reading-max) + 2 * var(--space-4));
+  margin: 6px auto 0;
+  padding: 0 var(--space-4) var(--space-2);
+  min-height: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.telemetry::-webkit-scrollbar {
+  display: none;
+}
+.telemetry .tsep {
+  flex: none;
+  color: var(--faint);
+}
+.telemetry b {
+  font-weight: var(--fw-medium);
+  color: var(--muted-foreground);
+}
+.telemetry__fact {
+  flex: none;
+}
+
+/* context-usage ring: 16px box around the 14px inline SVG (§3.2) */
+.telemetry__ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+.telemetry .ctx-ring {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.ctx-ring__track {
+  stroke: var(--border);
+}
+.ctx-ring__fill {
+  stroke: var(--muted-foreground);
+  transition: stroke-dasharray var(--dur) var(--ease-out);
+}
+.ctx-ring.is-warn .ctx-ring__fill {
+  stroke: var(--warn);
+}
+.ctx-ring.is-err .ctx-ring__fill {
+  stroke: var(--err);
+}
+.telemetry__ctx-label {
+  color: var(--faint);
+}
+
+/* ---------- child-view status line (§3.1) ---------- */
+.telemetry--sub {
+  gap: 6px;
+}
+.telemetry__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+.telemetry--sub .sub-fact {
+  flex: none;
+}
+.telemetry--sub .sub-fact--model {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+}
+.telemetry--sub .sub-fact--think {
+  color: var(--faint);
+  text-transform: none;
+}
+.telemetry--sub .sub-fact--elapsed {
+  color: var(--muted-foreground);
+}
+.telemetry--sub .sub-state {
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.sub-state {
+  flex: none;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.sub-state.is-live {
+  color: var(--warn);
+}
+.sub-state.is-ok {
+  color: var(--muted-foreground);
+}
+.sub-state.is-err {
+  color: var(--err);
+}
+.sub-state.is-warn {
+  color: var(--warn);
+}
+.sub-state.is-idle {
+  color: var(--faint);
+}
+
+/* ---------- subagent child view (§4.2) ---------- */
+/* The placeholder shell in chat-tray.css scrolled the whole block; the real
+   view is a flex column whose timeline owns the scroller. */
+.subagent-view--child {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.subagent-view--child > .stream-head--sub {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.stream-body--sub {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.stream-scroll--sub {
+  padding: var(--space-4) var(--space-4) 0;
+}
+.sub-empty {
+  margin: auto;
+}
+
+/* TODO / Tasks are session scope in pi2d: state it, never fake a filter. */
+.sub-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin: 0;
+  padding: 6px var(--space-4) 0;
+  font-size: var(--fs-2xs);
+  color: var(--faint);
+}
+.sub-scope svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+/* `…` menu: body-level stacking inside the header, Esc / outside click close. */
+.sub-menu {
+  position: relative;
+  flex: none;
+}
+.sub-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 12rem;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--popover);
+  box-shadow: var(--elevation-2);
+}
+.sub-pop__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  text-align: start;
+}
+.sub-pop__item:hover {
+  background: var(--surface-1);
+}
+.sub-pop__item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.sub-pop__item svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted-foreground);
+}
+.sub-pop__item--back svg {
+  /* only `chevron-right` exists in the icon set — flip it for “back”. */
+  transform: rotate(180deg);
+}
+
+/* ---------- steer composer (§4.5) ---------- */
+.sub-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px var(--space-4) 0;
+  font-size: var(--fs-2xs);
+  color: var(--faint);
+}
+.sub-note svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+/* `is-sub`: attachments, model/thinking, queue and the session abort/steer
+   buttons do not apply — the send button steers this subagent only. */
+.composer.is-sub {
+  border-top: 0;
+  padding-top: var(--space-2);
+}
+.composer.is-sub .composer__queue,
+.composer.is-sub .composer__bar > .btn:first-child,
+.composer.is-sub .composer__bar .composer__sel,
+.composer.is-sub [data-testid="composer-steer"],
+.composer.is-sub [data-testid="composer-abort"] {
+  display: none;
+}
+.composer.is-sub .composer__ta:disabled {
+  color: var(--muted-foreground);
+  -webkit-text-fill-color: var(--muted-foreground);
+  cursor: not-allowed;
+}
+.composer.is-sub .composer__send:disabled {
+  background: var(--surface-2);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+@media (max-width: 599px) {
+  .telemetry {
+    gap: 6px;
+    padding-bottom: var(--space-2);
+  }
+  .sub-pop__item {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .telemetry,
+  .ctx-ring__fill,
+  .sub-pop,
+  .sub-note,
+  .composer.is-sub {
+    transition: none;
+    animation: none;
+  }
+}

@@ -95,10 +95,14 @@ export function NewWorkspaceDialog({ open, onOpenChange, onCreate }: NewWorkspac
                         id="new-workspace-name"
                         autoComplete="off"
                         placeholder={t("workspaces.defaultNamePlaceholder")}
+                        aria-label={t("workspaces.displayName")}
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                     />
                 </Field>
+                <div className="ws-modal-example mono" aria-hidden="true">
+                    ~/Workspace/Misc/my-project
+                </div>
                 {formError ? (
                     <div className="ws-form__error" role="alert">
                         <Icon name="alert" />

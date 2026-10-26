@@ -564,7 +564,24 @@ class Ctx {
 /* DOM helpers                                                         */
 /* ------------------------------------------------------------------ */
 
-const navItems = (page) => page.locator(".sidebar .nav-item, .rail .nav-item, .tabbar .nav-item");
+/**
+ * Nav rows (v0.1.1): the sidebar (≥840) and the rail (600–839) render the same
+ * icon-only rows, so the label lives in `aria-label`/`data-tip`, never in the
+ * text. Below 600 there is no persistent strip at all — the topbar `.page-pill`
+ * owns navigation and the mobile strip is gone for good.
+ */
+const NAV_ITEM = ".sidebar .nav-item, .rail .nav-item";
+const navItems = (page) => page.locator(NAV_ITEM);
+
+/** Labels of the nav rows that CSS actually shows (0 items below 600px). */
+async function navItemLabels(page) {
+    return page.locator(NAV_ITEM).evaluateAll((nodes) =>
+        nodes
+            .filter((node) => node.getClientRects().length > 0)
+            .map((node) => (node.getAttribute("aria-label") ?? node.textContent ?? "").trim()),
+    );
+}
+
 const pageName = (page) => page.evaluate(() => document.body.dataset.page ?? "");
 const streamText = (page) => page.locator('[role="log"][aria-label="Message stream"]');
 
@@ -720,6 +737,43 @@ async function openChat(page, sessionId, workspaceId) {
     await page.goto(chatUrl(sessionId, workspaceId), { waitUntil: "domcontentloaded" });
     await streamText(page).waitFor({ state: "visible", timeout: 30000 });
     return waitEnabled(page, COMPOSER_INPUT, 30000);
+}
+
+/**
+ * The session row `…` popover (v0.1.1): a `[role="menu"]` portalled to `body`,
+ * every entry carries a locale-independent `data-menu-action`
+ * (`active-only|show-all|dispatch|rename|close`).
+ */
+async function openSessionRowMenu(page, sessionId) {
+    await page.locator(`.tree-pane .tree-row[data-session-id="${sessionId}"] .t-more`).click();
+    const menu = page.locator('[data-testid="session-row-menu"]');
+    await menu.waitFor({ state: "visible", timeout: 10000 });
+    return menu;
+}
+
+/** Session tree row name (the per-row `aria-label` moved onto `.t-name`). */
+async function treeRowNames(page) {
+    return page
+        .locator(".tree-pane .tree-row[data-session-id] .t-name")
+        .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
+}
+
+/** The session tray: the anchored `role="dialog"` that replaced the right panel. */
+const sessionTray = (page) => page.locator('[data-testid="session-tray"]');
+
+/**
+ * Open the tray from its stream-head chip (`head-chip-plan` → todo,
+ * `head-chip-tasks` → tasks). The chip is a *toggle*, so only click when the
+ * matching tab is not already open.
+ */
+async function openTray(page, tab = "todo") {
+    const chip = page.locator(`[data-testid="head-chip-${tab === "todo" ? "plan" : "tasks"}"]`);
+    await chip.waitFor({ state: "visible", timeout: 20000 });
+    const tray = sessionTray(page);
+    const already = (await chip.getAttribute("aria-expanded")) === "true" && (await tray.getAttribute("data-tab")) === tab;
+    if (!already) await chip.click();
+    await tray.waitFor({ state: "visible", timeout: 10000 });
+    return tray;
 }
 
 function entryIdsFromFrames(frames, sessionId) {
@@ -1002,9 +1056,9 @@ scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair
 
     // A paired browser shows the summary instead of the form.
     await page.goto(`${BASE}/connect`, { waitUntil: "domcontentloaded" });
-    const summary = await waitFor(async () => ((await page.locator(".cn-summary").count()) > 0 ? true : null), 15000);
+    const summary = await waitFor(async () => ((await page.locator("section.cn-state").count()) > 0 ? true : null), 15000);
     ctx.softCheck("paired /connect shows the summary instead of the manual form", Boolean(summary), {
-        expected: ".cn-summary visible",
+        expected: "section.cn-state visible",
         observed: { summary: Boolean(summary), forms: await page.locator("form.cn-form").count(), url: page.url() },
     });
     await ctx.shot(page, "b2-paired-summary");
@@ -1182,8 +1236,9 @@ scenario("B4", "Workspaces: seeded rows/order/counts, path validation, UI add + 
         observed: rowIds,
     });
 
+    // v0.1.1: the whole card is the link (no separate enter button).
     const enterHrefs = await page
-        .locator('[data-testid="workspace-enter"]')
+        .locator('[data-testid="workspace-row"]')
         .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
     ctx.check(
         "each row links to /chat?workspace=<id>",
@@ -1195,20 +1250,46 @@ scenario("B4", "Workspaces: seeded rows/order/counts, path validation, UI add + 
     });
 
     const expectedWorkspaceCount = `${apiList.length} workspaces`;
-    const expectedSessionCount = `${
-        apiList.reduce((total, item) => total + Math.max(item.liveCount || 0, item.sessionCount || 0), 0)
-    } sessions`;
-    const contextBar = page.locator('section.ws-context[aria-label="Current server"]');
-    ctx.check("context bar is present", (await contextBar.count()) === 1, { observed: await contextBar.count() });
-    const barText = (await contextBar.innerText()).replace(/\s+/g, " ");
-    ctx.check("context bar workspace count", barText.includes(expectedWorkspaceCount), {
+    // The status line summarises *every* served workspace; the session/running
+    // counters are not filtered by the visibility policy.
+    const servedWorkspaces = await listWorkspaces();
+    const expectedSessionCount = `${servedWorkspaces.reduce(
+        (total, item) => total + Math.max(item.liveCount || 0, item.sessionCount || 0),
+        0,
+    )} sessions`;
+    const statusLine = page.locator('[data-testid="workspaces-status-line"]');
+    ctx.check("status line is present", (await statusLine.count()) === 1, { observed: await statusLine.count() });
+    const barText = (await statusLine.innerText()).replace(/\s+/g, " ");
+    ctx.check("status line workspace count", barText.includes(expectedWorkspaceCount), {
         expected: expectedWorkspaceCount,
         observed: barText,
     });
-    ctx.check("context bar session count", barText.includes(expectedSessionCount), {
+    ctx.check("status line session count", barText.includes(expectedSessionCount), {
         expected: expectedSessionCount,
         observed: barText,
     });
+    ctx.check("status line links to /status", (await statusLine.locator('a[href="/status"]').count()) === 1, {
+        observed: await statusLine.locator("a").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href"))),
+    });
+
+    // --- recent-activity column (new in v0.1.1) ---------------------------
+    const activity = page.locator('[data-testid="workspaces-activity"]');
+    ctx.check("recent-activity column is present", (await activity.count()) === 1, { observed: await activity.count() });
+    const activityRows = activity.locator('[data-testid="workspace-activity-row"]');
+    const activityIds = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    const activityHrefs = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
+    const expectedActivity = rowIds
+        .map((id) => apiList.find((item) => item.workspaceId === id))
+        .filter((item) => item && typeof item.lastActiveAt === "number" && Number.isFinite(item.lastActiveAt))
+        .sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))
+        .slice(0, 5)
+        .map((item) => item.workspaceId);
+    ctx.checkValue("recent activity lists the newest 5 workspaces", activityIds, expectedActivity);
+    ctx.check(
+        "activity rows link into /chat?workspace=<id>",
+        activityHrefs.every((href, index) => href === `/chat?workspace=${activityIds[index]}`),
+        { observed: activityHrefs },
+    );
 
     // --- empty path validation (no POST must happen) ----------------------
     const requestsBefore = ctx.cmdRequests.length;
@@ -1293,22 +1374,34 @@ scenario("B4", "Workspaces: seeded rows/order/counts, path validation, UI add + 
 /* B5 — chat session tree                                              */
 /* ------------------------------------------------------------------ */
 
-scenario("B5", "Chat tree: workspace selector, New session → /chat/<sid>, rename persists, close confirms, switch workspaces", async (ctx) => {
+scenario("B5", "Chat tree: workspace picker, New session → /chat/<sid>, rename via the row menu, close confirms, switch workspaces", async (ctx) => {
     const { page } = await ctx.openPage("paired");
     await page.goto(`${BASE}/chat?workspace=${encodeURIComponent(state.ws1)}`, { waitUntil: "domcontentloaded" });
     await page.locator(".tree-pane .pane-head").waitFor({ state: "visible", timeout: 20000 });
 
-    const workspaceSelect = page.locator('select[aria-label="Workspace"]');
-    ctx.check("workspace selector is present", (await workspaceSelect.count()) === 1, { observed: await workspaceSelect.count() });
-    ctx.checkValue("workspace selector value is W1", await workspaceSelect.inputValue(), state.ws1);
-    const options = await workspaceSelect.locator("option").evaluateAll((nodes) => nodes.map((node) => node.value));
-    ctx.check("workspace selector lists every workspace", options.length >= 2 && options.includes(state.ws2), {
+    // v0.1.1: the workspace picker is a button + `menuitemradio` menu (no <select>).
+    const wsSwitch = page.locator('[data-testid="ws-switch"]');
+    const wsMenu = page.locator('[data-testid="ws-menu"]');
+    ctx.check("workspace switch is present", (await wsSwitch.count()) === 1, { observed: await wsSwitch.count() });
+    await wsSwitch.click();
+    await wsMenu.waitFor({ state: "visible", timeout: 10000 });
+    const options = await wsMenu
+        .locator("[data-workspace-id]")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    const checkedWorkspaces = await wsMenu
+        .locator('[data-workspace-id][aria-checked="true"]')
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    ctx.checkValue("the workspace menu marks W1 as current", checkedWorkspaces, [state.ws1]);
+    ctx.check("workspace menu lists every workspace", options.length >= 2 && options.includes(state.ws2), {
         expected: [state.ws1, state.ws2],
         observed: options,
     });
+    await wsSwitch.click();
+    const menuClosed = await waitFor(async () => ((await wsMenu.isVisible()) ? null : true), 6000);
+    ctx.check("the workspace menu closes on a second click", Boolean(menuClosed), { observed: await wsMenu.isVisible() });
 
     const before = await listSessions(state.ws1);
-    const newSessionButton = page.locator(".tree-pane .pane-head button", { hasText: "New session" }).first();
+    const newSessionButton = page.locator('.tree-pane [data-testid="tree-new-session"]').first();
     await newSessionButton.click();
     // The URL may briefly carry the `tmp-N` placeholder; the web replaces it with
     // the real id once the plugin announces the migration.
@@ -1328,24 +1421,27 @@ scenario("B5", "Chat tree: workspace selector, New session → /chat/<sid>, rena
     });
     ctx.log(`sessions in W1: ${before.length} → ${after.length}`);
 
-    const selectedRow = page.locator('.tree-pane .tree-row[aria-current="true"]');
+    const selectedRow = page.locator(".tree-pane .tree-row[data-session-id].selected");
     const rowFound = await waitFor(async () => {
         const ids = await treeSessionIds(page);
         return ids.includes(sessionId) ? true : null;
     }, 20000);
     ctx.check("the new session row is in the tree and selected", Boolean(rowFound) && (await selectedRow.count()) === 1, {
-        expected: `.tree-row[data-session-id="${sessionId}"][aria-current="true"]`,
+        expected: `.tree-row[data-session-id="${sessionId}"].selected`,
         observed: await treeSessionIds(page),
     });
     const streamedName = await streamName(page);
-    const selectedLabel = (await selectedRow.first().getAttribute("aria-label")) ?? "";
-    ctx.check("tree row label matches the stream title", selectedLabel === streamedName && streamedName.length > 0, {
+    const selectedLabel = ((await selectedRow.first().locator(".t-name").innerText()) ?? "").trim();
+    ctx.check("tree row name matches the stream title", selectedLabel === streamedName && streamedName.length > 0, {
         expected: streamedName,
         observed: selectedLabel,
     });
 
     // --- rename (must persist through the plugin + a reload) -------------
-    await selectedRow.first().locator('button[aria-label="Rename session"]').click();
+    // v0.1.1: row actions live in the `…` popover (`data-menu-action`), not in
+    // per-row buttons.
+    const rowMenu = await openSessionRowMenu(page, sessionId);
+    await rowMenu.locator('[data-menu-action="rename"]').click();
     const renameDialog = await dialogFor(page, "Rename session", 8000);
     ctx.check("rename dialog opens from the tree row", Boolean(renameDialog), { observed: page.url() });
     await page.locator("#rename-input").fill("e2e-renamed");
@@ -1354,19 +1450,21 @@ scenario("B5", "Chat tree: workspace selector, New session → /chat/<sid>, rena
     ctx.check("rename surfaces a toast", Boolean(renameToast), { expected: "Renamed: e2e-renamed", observed: (await toastTexts(page)).join(" | ") });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator(".tree-pane .pane-head").waitFor({ state: "visible", timeout: 20000 });
-    const labels = () => page.locator(".tree-pane .tree-row").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+    const labels = () => treeRowNames(page);
     const persisted = await waitFor(async () => {
         const current = await labels();
         return current.includes("e2e-renamed") ? current : null;
     }, 25000);
     ctx.check("renamed session persists across a reload", Boolean(persisted), {
-        expected: "tree row aria-label=e2e-renamed",
+        expected: "tree row name=e2e-renamed",
         observed: persisted ?? (await labels()),
     });
 
     // --- close asks for confirmation and removes the row -----------------
-    const targetRow = page.locator('.tree-pane .tree-row[aria-label="e2e-renamed"]');
-    await targetRow.first().locator('button[aria-label="Close process"]').click();
+    const targetRow = page.locator(".tree-pane .tree-row[data-session-id]").filter({ hasText: "e2e-renamed" });
+    ctx.check("the renamed row is reachable in the tree", (await targetRow.count()) >= 1, { observed: await labels() });
+    const closeMenu = await openSessionRowMenu(page, sessionId);
+    await closeMenu.locator('[data-menu-action="close"]').click();
     const closeDialog = await dialogFor(page, "Close process", 8000);
     ctx.check("close asks for confirmation", Boolean(closeDialog), { observed: page.url() });
     const closeText = (await closeDialog.innerText()).replace(/\s+/g, " ");
@@ -1393,7 +1491,9 @@ scenario("B5", "Chat tree: workspace selector, New session → /chat/<sid>, rena
     }
 
     // --- workspace switch does not leak rows -----------------------------
-    await workspaceSelect.selectOption(state.ws2);
+    await wsSwitch.click();
+    await wsMenu.waitFor({ state: "visible", timeout: 10000 });
+    await wsMenu.locator(`[data-workspace-id="${state.ws2}"]`).click();
     const switched = await waitFor(async () => (new URL(page.url()).searchParams.get("workspace") === state.ws2 ? true : null), 20000);
     ctx.check("switching the workspace updates ?workspace", Boolean(switched), { expected: state.ws2, observed: page.url() });
     const ws2Rows = await waitFor(async () => {
@@ -1418,6 +1518,25 @@ scenario("B6", "Prompt + streaming: PONG turn, one user entry, no .streaming aft
     ctx.check("chat page becomes usable (WS open + composer enabled)", await openChat(page, sessionId, state.ws1), {
         expected: "textarea[aria-label='Message input'] enabled",
         observed: { composer: await composerState(page) },
+    });
+
+    // --- composer queue bar (v0.1.1) --------------------------------------
+    // The queued prompts are rendered in the stream (`[data-testid=stream-queued]`,
+    // `.msg--queued`); the composer only carries a `role=status` bar with a clear
+    // action that stays disabled while nothing is pending.
+    const queueBar = page.locator('[data-testid="composer-queue"]');
+    const queueClear = page.locator('[data-testid="composer-queue-clear"]');
+    ctx.check(
+        "the composer queue bar is a status line",
+        (await queueBar.count()) === 1 && (await queueBar.getAttribute("role")) === "status",
+        {
+            expected: '[data-testid="composer-queue"][role=status]',
+            observed: { count: await queueBar.count(), role: await queueBar.getAttribute("role") },
+        },
+    );
+    ctx.check("the queue clear action is disabled with nothing pending", await queueClear.isDisabled(), {
+        expected: "disabled",
+        observed: { disabled: await queueClear.isDisabled(), text: (await queueClear.innerText()).trim() },
     });
 
     // --- Shift+Enter inserts a newline, it must not send -----------------
@@ -1711,10 +1830,12 @@ scenario("B8", "Model/thinking selects: commands sent, no error toast, values su
         observed: { toasts: await toastTexts(page), lastCmdResponse: modelResponse ?? null },
     });
     const modelId = target.slice(target.indexOf("/") + 1);
-    const treeSub = page.locator(`.tree-pane .tree-row[data-session-id="${sessionId}"] .t-sub`).first();
-    if ((await treeSub.count()) > 0) {
-        const subText = (await treeSub.innerText()).trim();
-        ctx.softCheck("the tree row subtitle shows the new model", subText.includes(modelId), {
+    // v0.1.1 moved the row subtitle into the row button's title
+    // (`name · model · thinking`); there is no `.t-sub` span any more.
+    const treeRow = page.locator(`.tree-pane .tree-row[data-session-id="${sessionId}"] .tree-row__main`).first();
+    if ((await treeRow.count()) > 0) {
+        const subText = ((await treeRow.getAttribute("title")) ?? "").trim();
+        ctx.softCheck("the tree row title shows the new model", subText.includes(modelId), {
             expected: modelId,
             observed: subText,
         });
@@ -1747,80 +1868,92 @@ scenario("B8", "Model/thinking selects: commands sent, no error toast, values su
 });
 
 /* ------------------------------------------------------------------ */
-/* B9 — panels (Subagents / Todo / Tasks)                              */
+/* B9 — session tray (todo / tasks) + subagent child view             */
 /* ------------------------------------------------------------------ */
 
 const MOCK_COPY = [/prototype demo only/i, /Demo only: local mock/i, /nothing is uploaded/i, /mock/i, /demo/i];
 
-scenario("B9", "Panels: tab switching, empty/real states, real subagent dispatch + preview, no mock copy", async (ctx) => {
+scenario("B9", "Session tray: two tabs, empty/real states, dispatch from the row menu, subagent child view, no mock copy", async (ctx) => {
     const { page } = await ctx.openPage("paired");
     const sessionId = await createSession(state.ws1);
-    state.panelSession = { sessionId, workspaceId: state.ws1 };
+    state.traySession = { sessionId, workspaceId: state.ws1 };
     ctx.check("chat page becomes usable", await openChat(page, sessionId, state.ws1), { expected: "composer enabled" });
 
-    const tablist = page.locator('[role="tablist"][aria-label="Panel"]');
-    await tablist.waitFor({ state: "visible", timeout: 20000 });
+    // v0.1.1 removed the right panel: `/chat` is two columns and the Todo/Tasks
+    // surfaces are the anchored session tray.
+    await page.locator('[data-testid="head-chips"]').waitFor({ state: "visible", timeout: 20000 });
+    ctx.checkValue("no right panel column on /chat", await page.locator(".panel-pane").count(), 0);
+
+    // --- open the tray from the Plan chip ---------------------------------
+    const tray = await openTray(page, "todo");
+    ctx.checkValue("the Plan chip opens the tray on the todo tab", await tray.getAttribute("data-tab"), "todo");
+    ctx.check("the tray is a non-modal dialog", (await tray.getAttribute("role")) === "dialog" && (await tray.getAttribute("aria-modal")) === "false", {
+        expected: 'role=dialog aria-modal=false',
+        observed: { role: await tray.getAttribute("role"), modal: await tray.getAttribute("aria-modal") },
+    });
+
+    const tablist = tray.locator('[role="tablist"]');
     const tabNames = (await tablist.locator('[role="tab"]').allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
-    ctx.check("three panel tabs exist", tabNames.length === 3, { expected: 3, observed: tabNames });
+    ctx.check("the tray has exactly two tabs (Todo, Tasks)", tabNames.length === 2, { expected: 2, observed: tabNames });
     const tabIds = await tablist
         .locator('[role="tab"]')
         .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid")));
-    ctx.checkValue("panel tabs carry the documented test ids", tabIds, ["panel-tab-subagents", "panel-tab-todo", "panel-tab-tasks"]);
+    ctx.checkValue("tray tabs carry the documented test ids", tabIds, ["tray-tab-todo", "tray-tab-tasks"]);
+    ctx.checkValue("subagents are not a tray tab any more", tabIds.includes("tray-tab-subagents"), false);
 
-    const tab = (id) => page.locator(`[data-testid="panel-tab-${id}"]`);
+    const tab = (id) => tray.locator(`[data-testid="tray-tab-${id}"]`);
     const selectedTab = () =>
         tablist
             .locator('[role="tab"][aria-selected="true"]')
             .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid")));
-    const panelText = async () => (await page.locator(".panel-pane .panel-scroll").innerText()).replace(/\s+/g, " ");
+    const trayText = async () => (await tray.locator(".tray-body").innerText()).replace(/\s+/g, " ");
 
-    // Todo
+    // Todo (selected on open)
     await tab("todo").click();
     await sleep(400);
-    const todoText = await panelText();
-    const todoRows = await page.locator(".panel-pane .todo__row").count();
+    const todoText = await trayText();
+    const todoRows = await tray.locator(".todo__row").count();
     ctx.check("Todo tab renders real rows or its explicit empty state", todoRows > 0 || /no todos yet/i.test(todoText), {
         expected: ".todo__row or 'No todos yet'",
         observed: short(todoText, 200),
     });
-    ctx.checkValue("clicking the Todo tab selects it", await selectedTab(), ["panel-tab-todo"]);
+    ctx.checkValue("clicking the Todo tab selects it", await selectedTab(), ["tray-tab-todo"]);
     ctx.log(`todo tab: rows=${todoRows} text=${short(todoText, 120)}`);
 
     // Tasks
     await tab("tasks").click();
     await sleep(400);
-    const tasksText = await panelText();
-    const taskRows = await page.locator(".panel-pane .task-item[data-task-id]").count();
+    const tasksText = await trayText();
+    const taskRows = await tray.locator(".task-row[data-task-id]").count();
     ctx.check("Tasks tab renders real rows or its explicit empty state", taskRows > 0 || /no background tasks/i.test(tasksText), {
-        expected: ".task-item[data-task-id] or 'No background tasks'",
+        expected: ".task-row[data-task-id] or 'No background tasks'",
         observed: short(tasksText, 200),
     });
-    ctx.checkValue("clicking the Tasks tab selects it", await selectedTab(), ["panel-tab-tasks"]);
+    ctx.checkValue("clicking the Tasks tab selects it", await selectedTab(), ["tray-tab-tasks"]);
     ctx.check("Tasks tab shows no fake pid", !/\bpid\b\s*[:=]?\s*\d+/i.test(tasksText), {
         expected: "no fabricated pid",
         observed: short(tasksText, 200),
     });
 
-    // Subagents
-    await tab("subagents").click();
-    await sleep(300);
-    const subagentsText = await panelText();
-    ctx.check("Subagents tab renders its empty state before any dispatch", /no subagents yet/i.test(subagentsText), {
-        expected: "No subagents yet",
-        observed: short(subagentsText, 200),
-    });
-    ctx.checkValue("clicking the Subagents tab selects it", await selectedTab(), ["panel-tab-subagents"]);
-    const allPanelCopy = `${todoText} ${tasksText} ${subagentsText}`;
-    const mockHits = MOCK_COPY.filter((re) => re.test(allPanelCopy)).map(String);
-    ctx.check("no mock/prototype copy in the panel", mockHits.length === 0, {
+    const allTrayCopy = `${todoText} ${tasksText}`;
+    const mockHits = MOCK_COPY.filter((re) => re.test(allTrayCopy)).map(String);
+    ctx.check("no mock/prototype copy in the tray", mockHits.length === 0, {
         expected: "no mock copy",
         observed: mockHits,
     });
+    await ctx.shot(page, "b9-tray");
 
-    // --- dispatch a real subagent ----------------------------------------
-    await page.locator(".panel-pane button", { hasText: "Dispatch" }).first().click();
+    // Esc closes the tray (single-layer close chain).
+    await page.keyboard.press("Escape");
+    const trayClosed = await waitFor(async () => ((await sessionTray(page).isVisible()) ? null : true), 6000);
+    ctx.check("Escape closes the tray", Boolean(trayClosed), { observed: await sessionTray(page).isVisible() });
+
+    // --- dispatch a real subagent from the session row `…` menu ----------
+    const rowMenu = await openSessionRowMenu(page, sessionId);
+    ctx.checkValue("the row menu offers `Dispatch subagent`", await rowMenu.locator('[data-menu-action="dispatch"]').count(), 1);
+    await rowMenu.locator('[data-menu-action="dispatch"]').click();
     const dialog = await dialogFor(page, "Dispatch subagent", 8000);
-    ctx.check("dispatch modal opens", Boolean(dialog), { observed: page.url() });
+    ctx.check("dispatch modal opens from the row menu", Boolean(dialog), { observed: page.url() });
     await page.locator("#dispatch-task").fill("Reply with exactly SUB and nothing else.");
     await page.locator("#dispatch-name").fill("e2e-ui-sub");
     await dialog.getByRole("button", { name: /^Dispatch$/ }).click();
@@ -1829,9 +1962,9 @@ scenario("B9", "Panels: tab switching, empty/real states, real subagent dispatch
     ctx.check("dispatch posts subagent.dispatch", Boolean(dispatchCmd), { observed: ctx.cmdRequests.map((r) => r.method) });
     ctx.log(`subagent.dispatch body params: ${short(dispatchCmd?.params, 300)}`);
 
+    const subagentRows = page.locator(".tree-pane .tree-row[data-subagent-id]");
     const rowOrFailure = await waitFor(async () => {
-        const rows = page.locator(".panel-pane .sub-item");
-        if ((await rows.count()) > 0) return { kind: "row" };
+        if ((await subagentRows.count()) > 0) return { kind: "row" };
         const errors = await toastTexts(page);
         const failed = errors.find((text) => /failed/i.test(text));
         if (failed) return { kind: "error", text: failed };
@@ -1839,54 +1972,70 @@ scenario("B9", "Panels: tab switching, empty/real states, real subagent dispatch
     }, 120000, 250);
     if (rowOrFailure?.kind === "error") {
         const response = ctx.cmdResponses.filter((item) => item.url.includes("/api/v1/cmd")).pop();
-        ctx.softCheck("dispatch creates a real subagent row", false, {
-            expected: ".sub-item row (or a batch) after ≤120 s",
+        ctx.softCheck("dispatch creates a real subagent tree row", false, {
+            expected: ".tree-row[data-subagent-id] (or a batch) after ≤120 s",
             observed: { toast: rowOrFailure.text, lastCmdResponse: response ?? null },
         });
     } else {
-        ctx.softCheck("dispatch creates a real subagent row", rowOrFailure?.kind === "row", {
-            expected: ".panel-pane .sub-item",
+        ctx.softCheck("dispatch creates a real subagent tree row", rowOrFailure?.kind === "row", {
+            expected: ".tree-pane .tree-row[data-subagent-id]",
             observed: rowOrFailure ?? "no row after 120 s",
         });
     }
 
     if (rowOrFailure?.kind === "row") {
-        const subRow = page.locator(".panel-pane .sub-item").filter({ hasText: "e2e-ui-sub" }).first();
+        const subRow = subagentRows.filter({ hasText: "e2e-ui-sub" }).first();
         const rowVisible = await waitFor(async () => ((await subRow.count()) > 0 ? true : null), 10000);
         ctx.softCheck("the dispatched subagent is named e2e-ui-sub", Boolean(rowVisible), {
-            expected: "sub-item with e2e-ui-sub",
-            observed: await page.locator(".panel-pane .sub-item").allInnerTexts(),
+            expected: "subagent row named e2e-ui-sub",
+            observed: await subagentRows.allInnerTexts(),
         });
         if (rowVisible) {
-            await subRow.click();
-            const preview = await dialogFor(page, "Subagent", 10000);
-            ctx.softCheck("subagent preview modal opens", Boolean(preview), { observed: page.url() });
-            if (preview) {
-                const feed = preview.locator('[aria-label="Read-only preview"]');
-                const feedCount = await feed.count();
-                const previewText = (await preview.innerText()).replace(/\s+/g, " ");
-                ctx.softCheck("preview shows a real tail or an explicit empty state", feedCount > 0 || /no output|empty|running/i.test(previewText), {
-                    expected: 'feed [aria-label="Read-only preview"]',
-                    observed: short(previewText, 300),
+            // Subagents open in-place (`?sub=<id>`), not in a modal.
+            await subRow.locator("button.tree-row__main").click();
+            const child = page.locator('[data-testid="subagent-view"]');
+            const childOpen = await waitFor(async () => ((await child.count()) > 0 ? true : null), 15000);
+            ctx.softCheck("the subagent child view replaces the stream", Boolean(childOpen), {
+                expected: '[data-testid="subagent-view"]',
+                observed: page.url(),
+            });
+            if (childOpen) {
+                ctx.check("the child view is a `?sub=` deep link", Boolean(new URL(page.url()).searchParams.get("sub")), {
+                    observed: page.url(),
                 });
-                const previewMock = MOCK_COPY.filter((re) => re.test(previewText)).map(String);
-                ctx.softCheck("preview has no mock copy", previewMock.length === 0, { observed: previewMock });
-                await ctx.shot(page, "b9-subagent-preview");
-                const back = preview.getByRole("button", { name: /back to parent/i });
-                if ((await back.count()) > 0) {
-                    await back.click();
-                    const closed = await waitFor(async () => ((await page.getByRole("dialog").count()) === 0 ? true : null), 8000);
-                    ctx.softCheck("'Back to parent' closes the preview", Boolean(closed), {
-                        observed: await page.getByRole("dialog").count(),
-                    });
-                } else {
-                    ctx.softCheck("'Back to parent' button exists", false, { observed: short(previewText, 200) });
-                }
+                const timeline = child.locator('[data-testid="sub-timeline"]');
+                const timelineCount = await timeline.count();
+                const entries = timelineCount ? await timeline.locator("[data-entry-id]").count() : 0;
+                const emptyState = await child.locator(".sub-empty").count();
+                const childText = (await child.innerText()).replace(/\s+/g, " ");
+                ctx.softCheck(
+                    "the child view shows a real timeline or an explicit empty state",
+                    timelineCount === 1 && (entries > 0 || emptyState > 0),
+                    {
+                        expected: '[data-testid="sub-timeline"] with entries or .sub-empty',
+                        observed: { timeline: timelineCount, entries, emptyState },
+                    },
+                );
+                const childMock = MOCK_COPY.filter((re) => re.test(childText)).map(String);
+                ctx.softCheck("the child view has no mock copy", childMock.length === 0, { observed: childMock });
+                await ctx.shot(page, "b9-subagent-child-view");
+
+                const back = child.locator(".sub-back");
+                ctx.checkValue("the child view has a `Parent` back button", await back.count(), 1);
+                await back.click();
+                const leftChild = await waitFor(
+                    async () => ((await page.locator('[data-testid="subagent-view"]').count()) === 0 ? true : null),
+                    10000,
+                );
+                ctx.softCheck("`Parent` returns to the session stream", Boolean(leftChild), {
+                    expected: "no [data-testid=subagent-view]",
+                    observed: page.url(),
+                });
             }
         }
     }
     await dismissDialogs(page);
-    await ctx.shot(page, "b9-panel");
+    await ctx.shot(page, "b9-child-view");
 });
 
 /* ------------------------------------------------------------------ */
@@ -1985,6 +2134,39 @@ scenario("B10", "Attention: the e2e_request tool surfaces the blocking dialog; A
         observed: written ?? "file missing",
     });
 
+    // --- v0.1.1 tool rows ------------------------------------------------
+    // One tool call = one row: `.tool[data-kind] > .tool__row > .tool__head`
+    // (`__verb` + `__target`); expanding mounts the lazy `.tool__body`.
+    const toolRow = page.locator('.stream-body .tool[data-kind]').first();
+    const toolVisible = await waitFor(async () => ((await toolRow.count()) > 0 ? true : null), 20000);
+    ctx.softCheck("the tool call renders as a v0.1.1 tool row", Boolean(toolVisible), {
+        expected: ".tool[data-kind] inside the message stream",
+        observed: await page.locator(".stream-body .tool").count(),
+    });
+    if (toolVisible) {
+        const anatomy = await toolRow.evaluate((node) => ({
+            kind: node.getAttribute("data-kind"),
+            state: node.getAttribute("data-state"),
+            head: Boolean(node.querySelector(".tool__head")),
+            verb: (node.querySelector(".tool__verb")?.textContent ?? "").trim(),
+            target: (node.querySelector(".tool__target")?.textContent ?? "").trim(),
+            body: Boolean(node.querySelector(".tool__body")),
+        }));
+        ctx.log(`tool row anatomy: ${short(anatomy, 200)}`);
+        ctx.softCheck("the tool row is head + verb + target", anatomy.head && anatomy.verb.length > 0 && Boolean(anatomy.kind), {
+            expected: ".tool__head + .tool__verb (+ .tool__target)",
+            observed: anatomy,
+        });
+        if (!anatomy.body) {
+            await toolRow.locator(".tool__head").first().click();
+            const opened = await waitFor(async () => ((await toolRow.locator(".tool__body").count()) > 0 ? true : null), 8000);
+            ctx.softCheck("expanding the tool row mounts .tool__body", Boolean(opened), {
+                expected: ".tool__body after clicking .tool__head",
+                observed: { open: Boolean(opened), anatomy },
+            });
+        }
+    }
+
     if (requestId) {
         const second = await cmd("attention.respond", { requestId, response: { value: "Accepted" } }, { sessionId });
         ctx.softCheck("a second client cannot answer the resolved request", second.status >= 400, {
@@ -2000,12 +2182,14 @@ scenario("B10", "Attention: the e2e_request tool surfaces the blocking dialog; A
 /* B11 — status page                                                   */
 /* ------------------------------------------------------------------ */
 
-const STATUS_CARDS = ["Server info", "Health checks", "Resources", "Models & providers", "Background tasks", "Paired devices", "Connection"];
+// v0.1.1: the "Resources" card became the `MetricsBlock` strip (`.section-label`
+// + `[data-res]` tiles), so the page carries six `.card__title` cards.
+const STATUS_CARDS = ["Server info", "Health checks", "Models & providers", "Background tasks", "Paired devices", "Connection"];
 
-scenario("B11", "Status: seven API-backed cards, devices list/revoke, disconnect clears the connection", async (ctx) => {
+scenario("B11", "Status: six API-backed cards + metrics strip, devices list/revoke, disconnect clears the connection", async (ctx) => {
     const { page } = await ctx.openPage("paired");
     await page.goto(`${BASE}/status`, { waitUntil: "domcontentloaded" });
-    const titlesReady = await waitFor(async () => ((await page.locator(".card__title").count()) >= 7 ? true : null), 30000);
+    const titlesReady = await waitFor(async () => ((await page.locator(".card__title").count()) >= STATUS_CARDS.length ? true : null), 30000);
     ctx.check("status cards render", Boolean(titlesReady), { observed: await page.locator(".card__title").count() });
     const titles = (await page.locator(".card__title").allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
     for (const expected of STATUS_CARDS) {
@@ -2046,10 +2230,12 @@ scenario("B11", "Status: seven API-backed cards, devices list/revoke, disconnect
         expected: "8-character pairing code",
         observed: { pairingCode, cardText: short((await connectionCard.innerText()).replace(/\s+/g, " "), 200) },
     });
-    const pairingUrl = (await page.locator('[data-testid="pairing-url"]').innerText().catch(() => "")).trim();
-    ctx.softCheck("the connection card shows the pairing URL", pairingUrl.includes("/pair/"), {
-        expected: "<endpoint>/pair/<code> or /#pair=<code>",
-        observed: pairingUrl,
+    // v0.1.1 renders the pairing URL as a QR code (the `<canvas>` is seeded with
+    // `url || code`) instead of a copyable text line.
+    const pairingQr = await page.locator(".qr-wrap canvas").count();
+    ctx.softCheck("the connection card renders the pairing QR", pairingQr >= 1, {
+        expected: ".qr-wrap canvas",
+        observed: { canvases: pairingQr, cardText: short((await connectionCard.innerText()).replace(/\s+/g, " "), 200) },
     });
 
     // Devices card: lists exactly the API devices the UI does not consider revoked.
@@ -2144,8 +2330,15 @@ scenario("B12", "Reconnect: offline → online restores the composer + connectio
     await context.setOffline(true);
     await sleep(1500);
     const offlineState = await page.evaluate(() => document.querySelector(".shell")?.getAttribute("data-ws-state") ?? null);
-    const offline = await waitFor(async () => (/offline/i.test(await page.locator(".chat-conn").innerText()) ? true : null), 6000);
-    ctx.log(`offline indicator shown: ${Boolean(offline)} (observed "${await page.locator(".chat-conn").innerText()}", shell data-ws-state=${offlineState})`);
+    // v0.1.1 removed the `.chat-conn` stream-head indicator: the offline state is
+    // carried by the composer hint (`[role=status]`, woken by `!connected`) plus
+    // the shell reconnect banner.
+    const hintText = async () => (await page.locator(".composer__hint").innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    const offline = await waitFor(async () => (/reconnect|lost|offline/i.test(await hintText()) ? true : null), 15000);
+    ctx.log(
+        `offline hint shown: ${Boolean(offline)} (observed "${await hintText()}", shell data-ws-state=${offlineState}, ` +
+            `reconnect banner=${await page.locator('[data-testid="reconnect-banner"]').count()})`,
+    );
     await context.setOffline(false);
     ctx.offlineWindow = false;
 
@@ -2165,10 +2358,10 @@ scenario("B12", "Reconnect: offline → online restores the composer + connectio
         expected: "textarea enabled",
         observed: { composer: await composerState(page) },
     });
-    const online = await waitFor(async () => (/online/i.test(await page.locator(".chat-conn").innerText()) ? true : null), 30000);
-    ctx.check("the connection indicator returns to open/Online", Boolean(online), {
-        expected: "Online",
-        observed: await page.locator(".chat-conn").innerText(),
+    const online = await waitFor(async () => ((await page.locator(".composer__hint").count()) === 0 ? true : null), 30000);
+    ctx.check("the offline hint disappears once the socket is back", Boolean(online), {
+        expected: "no .composer__hint",
+        observed: await hintText(),
     });
 
     const { snapshots, appended } = entryIdsFromFrames(ctx.wsFrames, pong.sessionId);
@@ -2347,43 +2540,48 @@ scenario("B14", "i18n + theme: language menu switches html[lang]/copy, theme seg
     ctx.checkValue("English heading", (await h1.innerText()).trim(), "Workspaces");
     ctx.checkValue("html lang starts as en-US", await page.evaluate(() => document.documentElement.lang), "en-US");
 
-    const langButton = page.locator('button[aria-label^="Language"]');
-    await langButton.click();
-    await page.getByRole("menuitemradio", { name: /chinese/i }).click();
+    // v0.1.1: the topbar preference menu (appearance + language) replaces the
+    // old standalone language/theme triggers. Locate it by class/data hooks so
+    // the check never depends on a copy string.
+    const prefTrigger = page.locator(".pref-trigger");
+    ctx.check("one preference trigger in the topbar", (await prefTrigger.count()) === 1, { observed: await prefTrigger.count() });
+    await prefTrigger.click();
+    await page.locator('[data-lang-seg] [data-lang="zh"]').click();
     const zhApplied = await waitFor(async () => ((await page.evaluate(() => document.documentElement.lang)) === "zh-CN" ? true : null), 10000);
     ctx.check("switching to zh updates html[lang]", Boolean(zhApplied), {
         expected: "zh-CN",
         observed: await page.evaluate(() => document.documentElement.lang),
     });
     ctx.checkValue("visible copy switches to Chinese", (await h1.innerText()).trim(), "工作空间");
-    const zhNav = (await page.locator(".sidebar .nav-item").allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
+    const zhNav = await navItemLabels(page);
     ctx.checkValue("visible nav labels switch to Chinese", zhNav, ["工作空间", "对话", "状态"]);
-    const zhNavLabel = (await page.locator(".sidebar .nav-label").innerText()).trim();
-    ctx.checkValue("the nav container label switches to Chinese", zhNavLabel, "控制台");
+    const zhNavLabel = (await page.locator(".sidebar").getAttribute("aria-label")) ?? "";
+    ctx.checkValue("the nav container label switches to Chinese", zhNavLabel.trim(), "控制台");
     const zhBody = await bodyText(page);
     ctx.check("no raw i18n keys leak after the switch", !/\b(chat|nav|status|workspaces|connect)\.[a-zA-Z][a-zA-Z0-9]*/.test(zhBody), {
         observed: short(zhBody.replace(/\s+/g, " "), 200),
     });
     ctx.checkValue("language is persisted to pi2-lang", await page.evaluate(() => localStorage.getItem("pi2-lang")), "zh");
 
-    await page.locator('button[aria-label^="语言"]').click();
-    await page.getByRole("menuitemradio", { name: /英文|english/i }).click();
+    await prefTrigger.click();
+    await page.locator('[data-lang-seg] [data-lang="en"]').click();
     const enApplied = await waitFor(async () => ((await page.evaluate(() => document.documentElement.lang)) === "en-US" ? true : null), 10000);
     ctx.check("switching back restores English", Boolean(enApplied), {
         expected: "en-US",
         observed: await page.evaluate(() => document.documentElement.lang),
     });
     ctx.checkValue("English copy is restored", (await h1.innerText()).trim(), "Workspaces");
-    const enNav = (await page.locator(".sidebar .nav-item").allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
+    const enNav = await navItemLabels(page);
     ctx.checkValue("nav labels are restored to English", enNav, ["Workspaces", "Chat", "Status"]);
 
     // --- theme ------------------------------------------------------------
-    const themeGroup = page.locator('[role="group"][aria-label="Theme"]');
+    await prefTrigger.click();
+    const themeGroup = page.locator("[data-theme-seg]");
     ctx.check("theme segment exists", (await themeGroup.count()) === 1, { observed: await themeGroup.count() });
     const themeAttr = () => page.evaluate(() => document.documentElement.getAttribute("data-theme"));
     const storedTheme = () => page.evaluate(() => localStorage.getItem("pi2-theme"));
 
-    await themeGroup.getByRole("button", { name: /^dark$/i }).click();
+    await themeGroup.locator('[data-v="dark"]').click();
     ctx.check("dark theme sets html[data-theme=dark]", (await waitFor(async () => ((await themeAttr()) === "dark" ? true : null), 5000)) ?? false, {
         expected: "dark",
         observed: await themeAttr(),
@@ -2393,12 +2591,13 @@ scenario("B14", "i18n + theme: language menu switches html[lang]/copy, theme seg
     await h1.waitFor({ state: "visible", timeout: 20000 });
     ctx.checkValue("dark theme survives a reload", await themeAttr(), "dark");
 
-    await themeGroup.getByRole("button", { name: /^light$/i }).click();
+    await prefTrigger.click();
+    await page.locator('[data-theme-seg] [data-v="light"]').click();
     ctx.check("light theme sets html[data-theme=light]", (await waitFor(async () => ((await themeAttr()) === "light" ? true : null), 5000)) ?? false, {
         expected: "light",
         observed: await themeAttr(),
     });
-    await themeGroup.getByRole("button", { name: /^auto$|^system$/i }).click();
+    await page.locator('[data-theme-seg] [data-v="system"]').click();
     const systemStored = await waitFor(async () => ((await storedTheme()) === "system" ? true : null), 5000);
     ctx.check("system theme is persisted as 'system'", Boolean(systemStored), { expected: "system", observed: await storedTheme() });
     ctx.check("system theme resolves to light|dark", ["light", "dark"].includes(await themeAttr()), { observed: await themeAttr() });
@@ -2450,7 +2649,7 @@ scenario("C1", "Responsive: 1440×900 / 768×1024 / 380×780 on all four pages h
             kind: "paired",
             anchor: ".stream-head, .stream-body",
         },
-        { name: "status", path: "/status", kind: "paired", anchor: ".status-grid" },
+        { name: "status", path: "/status", kind: "paired", anchor: ".status-page" },
         { name: "connect", path: "/connect", kind: "unpaired", anchor: ".cn" },
     ];
 
@@ -2487,40 +2686,75 @@ async function navState(page) {
             return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
         };
         const result = {};
-        for (const [key, selector] of [["sidebar", ".sidebar"], ["rail", ".rail"], ["tabbar", ".tabbar"]]) {
+        // v0.1.1: only the icon strip (sidebar ≥840 / rail 600–839) exists;
+        // below 600 the topbar `.page-pill` owns navigation; no mobile strip.
+        for (const [key, selector] of [["sidebar", ".sidebar"], ["rail", ".rail"]]) {
             const element = document.querySelector(selector);
             result[key] = element && visible(element) ? element.querySelectorAll(".nav-item").length : null;
         }
-        result.totalNavItems = document.querySelectorAll(".sidebar .nav-item, .rail .nav-item, .tabbar .nav-item").length;
+        result.tabbar = document.querySelectorAll(".tabbar").length;
+        result.totalNavItems = document.querySelectorAll(".sidebar .nav-item, .rail .nav-item").length;
+        const pill = document.querySelector(".page-pill");
+        result.pagePill = pill && visible(pill) ? (pill.getAttribute("aria-expanded") === "true" ? "open" : "closed") : null;
+        result.pageSheets = document.querySelectorAll('[role="dialog"] .sheet-row').length;
         return result;
     });
 }
 
-scenario("C2", "Nav: 3 items in the visible container at each breakpoint on nav pages, 0 on /connect", async (ctx) => {
+scenario("C2", "Nav: 3 icon rows in the one visible container (sidebar/rail), <600 page pill + sheet, 0 on /connect", async (ctx) => {
     for (const viewport of VIEWPORTS) {
         const { page } = await ctx.openPage("paired", { viewport: { width: viewport.width, height: viewport.height } });
         await page.goto(`${BASE}/workspaces`, { waitUntil: "domcontentloaded" });
         await page.locator("[data-workspace-id], .empty").first().waitFor({ state: "visible", timeout: 30000 }).catch(() => undefined);
         const state_ = await navState(page);
-        const active = ["sidebar", "rail", "tabbar"].filter((key) => state_[key] !== null);
-        const expectedContainer = viewport.width >= 840 ? "sidebar" : viewport.width >= 600 ? "rail" : "tabbar";
-        ctx.check(`${viewport.name}: exactly one nav container is visible`, active.length === 1, { observed: state_ });
-        ctx.check(`${viewport.name}: the expected container (${expectedContainer}) is the visible one`, active[0] === expectedContainer, {
-            expected: expectedContainer,
-            observed: active,
-        });
-        ctx.check(`${viewport.name}: 3 nav items`, state_[expectedContainer] === 3, {
-            expected: 3,
-            observed: state_[expectedContainer],
-        });
+        const expectedContainer = viewport.width >= 840 ? "sidebar" : viewport.width >= 600 ? "rail" : null;
+        ctx.checkValue(`${viewport.name}: no mobile tabbar is rendered`, state_.tabbar, 0);
+        if (expectedContainer) {
+            const active = ["sidebar", "rail"].filter((key) => state_[key] !== null);
+            ctx.check(`${viewport.name}: exactly one nav container is visible`, active.length === 1, { observed: state_ });
+            ctx.check(`${viewport.name}: the expected container (${expectedContainer}) is the visible one`, active[0] === expectedContainer, {
+                expected: expectedContainer,
+                observed: active,
+            });
+            ctx.check(`${viewport.name}: 3 nav items`, state_[expectedContainer] === 3, {
+                expected: 3,
+                observed: state_[expectedContainer],
+            });
+            ctx.checkValue(`${viewport.name}: the page pill is hidden above 600`, state_.pagePill, null);
+            const labels = await navItemLabels(page);
+            ctx.checkValue(`${viewport.name}: nav rows are labelled by aria-label`, labels, ["Workspaces", "Chat", "Status"]);
+        } else {
+            const active = ["sidebar", "rail"].filter((key) => state_[key] !== null);
+            ctx.check(`${viewport.name}: no persistent nav strip below 600`, active.length === 0, { observed: state_ });
+            ctx.checkValue(`${viewport.name}: the page pill carries navigation`, state_.pagePill, "closed");
+            await page.locator(".page-pill").click();
+            const sheetOpen = await waitFor(async () => ((await navState(page)).pageSheets > 0 ? true : null), 8000);
+            ctx.check(`${viewport.name}: the page pill opens a sheet`, Boolean(sheetOpen), {
+                expected: 'a [role="dialog"] with .sheet-row entries',
+                observed: (await navState(page)).pageSheets,
+            });
+            const sheet = page.getByRole("dialog").first();
+            const current = await page.locator('[role="dialog"] .sheet-row[aria-current="page"]').allInnerTexts();
+            ctx.check(`${viewport.name}: the sheet marks the current page`, current.length === 1, {
+                expected: "1 row with aria-current=page",
+                observed: current.map((text) => text.replace(/\s+/g, " ").trim()),
+            });
+            // The page rows are plain router links, so the target is locale-free.
+            await sheet.locator('a.sheet-row[href="/chat"]').first().click();
+            const navigated = await waitFor(async () => (new URL(page.url()).pathname.startsWith("/chat") ? true : null), 15000);
+            ctx.check(`${viewport.name}: the sheet navigates to the picked page`, Boolean(navigated), {
+                expected: "/chat",
+                observed: page.url(),
+            });
+        }
         await page.context().close();
 
         const { page: connectPage } = await ctx.openPage("unpaired", { viewport: { width: viewport.width, height: viewport.height } });
         await connectPage.goto(`${BASE}/connect`, { waitUntil: "domcontentloaded" });
         await connectPage.locator(".cn h1").waitFor({ state: "visible", timeout: 20000 }).catch(() => undefined);
         const connectState = await navState(connectPage);
-        ctx.check(`${viewport.name}: /connect has no nav rail/tabbar`, connectState.totalNavItems === 0, {
-            expected: 0,
+        ctx.check(`${viewport.name}: /connect has no nav strip, tabbar or page pill`, connectState.totalNavItems === 0 && connectState.tabbar === 0 && connectState.pagePill === null, {
+            expected: { totalNavItems: 0, tabbar: 0, pagePill: null },
             observed: connectState,
         });
         await connectPage.context().close();

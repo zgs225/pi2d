@@ -1,3 +1,11 @@
+/**
+ * @deprecated v0.1.1 Chat IA v3 — the right panel is gone. Subagents live in the
+ * session tree / child view, and Todo + Tasks moved to the anchored session tray
+ * (`./session-tray.tsx`, triggered by the stream-head chips). This file is kept
+ * only because it still typechecks against the store and other pages may import
+ * it; nothing in the Chat page renders it any more. Delete once no importer
+ * remains.
+ */
 import type { SessionState, Subagent, TaskItem } from "@protocol/types";
 import { useTranslation } from "react-i18next";
 
@@ -34,8 +42,9 @@ function taskDot(status: TaskItem["status"]): "busy" | "ok" | "err" | "idle" {
 
 export interface SidePanelProps {
     session: SessionState;
-    tab: PanelTab;
-    onTab: (tab: PanelTab) => void;
+    /** Legacy three-tab vocabulary; the deprecated `subagents` tab is still accepted. */
+    tab: PanelTab | "subagents";
+    onTab: (tab: PanelTab | "subagents") => void;
     onDispatch: () => void;
     onOpenSubagent: (subagent: Subagent) => void;
     onOpenTask: (task: TaskItem) => void;
@@ -59,7 +68,7 @@ export function SidePanel({
     const { t } = useTranslation();
     const subagents = flattenSubagents(session.subagents);
     const tasks = session.tasks;
-    const tabs: { id: PanelTab; label: string; count: number }[] = [
+    const tabs: { id: PanelTab | "subagents"; label: string; count: number }[] = [
         { id: "subagents", label: t("chat.tabSubagents"), count: subagents.length },
         { id: "todo", label: t("chat.tabTodo"), count: session.todos.length },
         { id: "tasks", label: t("chat.tabTasks"), count: tasks.length },

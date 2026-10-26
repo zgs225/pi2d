@@ -1,20 +1,47 @@
 /* ============================================================
    pi2 console — chat page
-   Ported from web/styles/chat.css.
-   ≥840: tree 300px | stream | panel 340px (resizable)
-   600–839: tree | stream (panel = right drawer)
-   <600: single column (tree drawer + bottom sheet panel)
+   v0.1.1 Chat IA v3 (CHG-2026-10-23-02 / -10 / -11 / -12 / -13 / -17)
+
+   ≥1100      tree 280px | stream          — two columns, no right panel
+   1000–1099  tree 240px | stream, --stream-pad: 18px
+   <1000      single column + tree drawer (`.tree-open`)
+   <600       tree drawer = 44px touch rows + safe-area padding
+
+   The tree is fixed on desktop: no rail, no drag handle, no panel and no
+   collapse-all at pane level — collapsing is per node. Session row actions
+   live in a body-level popover (`.tree-pop`). The shell grid is mirrored by
+   `.chat-page--v3` in chat-tray.css (tray workflow) — keep the two in sync.
    ============================================================ */
 
 .chat-page {
+    --tree-w: 280px;
+    --stream-pad: 20px;
     position: relative;
     display: grid;
-    grid-template-columns: var(--tree-w, 300px) 4px minmax(0, 1fr) 4px var(--panel-w, 340px);
+    grid-template-columns: var(--tree-w) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
     height: calc(100dvh - var(--topbar-h));
     margin: calc(-1 * var(--space-6));
     overflow: hidden;
     background: var(--background);
+}
+@media (min-width: 1000px) and (max-width: 1099px) {
+    .chat-page {
+        --tree-w: 240px;
+        --stream-pad: 18px;
+    }
+}
+/* <1000: the tree leaves the grid and becomes a drawer. */
+@media (max-width: 999px) {
+    .chat-page {
+        --stream-pad: 14px;
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+@media (max-width: 599px) {
+    .chat-page {
+        --stream-pad: 12px;
+    }
 }
 
 .chat-page .badge {
@@ -23,165 +50,426 @@
 }
 .chat-page .chip {
     white-space: nowrap;
+    flex: none;
 }
 
 .icon-btn--danger:hover {
     color: var(--err);
 }
 
-/* ---------- resizable dividers ---------- */
-.resize-handle {
-    position: relative;
-    z-index: 6;
-    width: 4px;
-    cursor: col-resize;
-    touch-action: none;
-    background: transparent;
-    transition: background 0.15s ease;
-}
-.resize-handle:hover,
-.resize-handle:focus-visible {
-    background: color-mix(in oklch, var(--primary) 45%, transparent);
-    outline: none;
-}
-
-/* ---------- left: session tree ---------- */
+/* ---------- left: session tree（单 workspace + 仅缩进的嵌套） ---------- */
 .tree-pane {
     display: flex;
-    flex-direction: column;
     min-width: 0;
     min-height: 0;
     background: var(--sidebar);
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--border-subtle);
     overflow: hidden;
 }
-.tree-pane__inner {
+.tree-inner {
     display: flex;
     flex-direction: column;
+    flex: 1;
+    min-width: 0;
     min-height: 0;
-    height: 100%;
 }
 .pane-head {
-    padding: var(--space-3);
-    border-bottom: 1px solid var(--border);
+    position: relative;
     flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border-subtle);
 }
-.pane-head .row {
-    gap: var(--space-2);
+.tree-head-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
 }
-.pane-head .row + .row {
-    margin-top: var(--space-2);
+.tree-head__switch {
+    flex: 1;
+    min-width: 0;
+}
+
+/* workspace 下拉：左栏只承载一个 workspace */
+.ws-switch-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+.ws-switch {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    color: var(--secondary-foreground);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    text-align: left;
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        border-color var(--dur-fast) var(--ease-out);
+}
+.ws-switch:hover {
+    background: var(--surface-1);
+    border-color: var(--border);
+}
+.ws-switch:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.ws-switch svg {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    color: var(--faint);
+}
+.ws-switch__name {
+    flex: 1;
+    min-width: 0;
+}
+.ws-switch__count {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.ws-switch__caret {
+    display: inline-flex;
+    flex: none;
+    color: var(--faint);
+    transition: transform var(--dur-fast) var(--ease-out);
+}
+.ws-switch__caret svg {
+    width: 13px;
+    height: 13px;
+}
+.ws-switch[aria-expanded="true"] .ws-switch__caret {
+    transform: rotate(180deg);
+}
+.ws-menu {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    top: 42px;
+    z-index: 12;
+    padding: 4px;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    max-height: min(50vh, 22rem);
+    overflow-y: auto;
+}
+.ws-menu[hidden] {
+    display: none;
+}
+.ws-menu__label {
+    padding: 6px 8px 4px;
+    font-size: var(--fs-2xs);
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+}
+.ws-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
+    text-align: left;
+    color: var(--secondary-foreground);
+}
+.ws-menu__item:hover,
+.ws-menu__item:focus-visible {
+    background: var(--surface-2);
+    color: var(--foreground);
+    outline: none;
+}
+.ws-menu__item.is-active {
+    color: var(--foreground);
+    font-weight: 600;
+}
+.ws-menu__item svg {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    color: var(--faint);
+}
+.ws-menu__item.is-active svg {
+    color: var(--primary);
+}
+.ws-menu__name {
+    flex: 1;
+    min-width: 0;
+}
+.ws-menu__count {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+
+/* tree toolbar：搜索 + ＋新建 + 折叠全部（无派发、无连接点） */
+.tree-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 .tree-search {
     flex: 1;
     min-width: 0;
+    height: 28px;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+    color: var(--foreground);
+    font-size: var(--fs-xs);
+    appearance: none;
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        border-color var(--dur-fast) var(--ease-out);
 }
-.tree-workspace {
-    flex: 1;
-    min-width: 0;
-    padding: 2px var(--space-2);
-    font-size: 0.8125rem;
+.tree-search::-webkit-search-cancel-button {
+    appearance: none;
 }
+.tree-search::placeholder {
+    color: var(--faint);
+}
+.tree-search:hover {
+    border-color: var(--border-subtle);
+}
+.tree-search:focus {
+    background: var(--card);
+    border-color: var(--ring);
+    outline: none;
+}
+.tree-toolbar .icon-btn {
+    flex: none;
+    width: 28px;
+    height: 28px;
+}
+.tree-close {
+    display: none;
+}
+
 .pane-scroll {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--space-2);
+    padding: 6px 6px 18px;
 }
 
 .tree {
+    list-style: none;
     margin: 0;
+    padding: 0;
 }
+.tree--sessions > li + li {
+    margin-top: 2px;
+}
+/* 层级只由缩进表达：设计禁止竖引导线。 */
 .tree ul {
-    /* Indentation only; the design forbids vertical guide lines. */
-    padding-left: var(--space-4);
-    margin-left: 0.35rem;
+    list-style: none;
+    margin: 0;
+    padding-left: 12px;
 }
-.tree-row {
-    align-items: center;
-    gap: var(--space-2);
-}
-.tree-row .t-main {
-    flex: 1;
-    min-width: 0;
+
+/* 被过滤器/活跃镜头挡住的会话数（点击切到「全部」） */
+.tree-hidden {
     display: flex;
-    flex-direction: column;
-    line-height: 1.25;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    min-height: 26px;
+    margin-top: 4px;
+    padding: 0 6px;
+    border-radius: var(--radius-sm);
+    color: var(--faint);
+    font-size: var(--fs-2xs);
+    text-align: left;
 }
-.tree-row .t-name {
-    font-size: 0.875rem;
-    font-weight: 550;
+.tree-hidden:hover {
+    background: var(--surface-1);
+    color: var(--muted-foreground);
 }
-.tree-row .t-sub {
-    margin-left: 0;
-    font-size: 0.6875rem;
+.tree-hidden svg {
+    flex: none;
+    width: 11px;
+    height: 11px;
 }
-.tree-row .t-meta {
-    font-size: 0.6875rem;
-}
-.tree-row .t-actions {
+
+/* 行：单行 = 折叠箭头 + 主按钮（点 + 名称 + !N）+ 行操作「…」 */
+.tree-row {
     display: flex;
     align-items: center;
     gap: 2px;
-    opacity: 0;
-    transition: opacity 0.15s ease;
+    min-height: 32px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    transition: background var(--dur-fast) var(--ease-out);
 }
-.tree-row:hover .t-actions,
-.tree-row:focus-within .t-actions {
-    opacity: 1;
+.tree-row:hover {
+    background: var(--surface-1);
 }
-@media (max-width: 599px) {
-    .tree-row .t-actions {
-        opacity: 1;
-    }
+.tree-row.selected,
+.tree-row.is-menu {
+    background: var(--surface-2);
 }
-.tree-row .badge {
-    margin-left: var(--space-1);
+.tree-row__main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--secondary-foreground);
+    font-size: var(--fs-sm);
+    text-align: left;
 }
-/* Child sessions: indentation only, no vertical guides — muted and smaller. */
-.tree-row--sub .t-name {
-    font-size: 0.8125rem;
-    font-weight: 500;
+.tree-row__main:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
 }
-.tree-row--sub:not(.selected) .t-name {
-    color: var(--muted-foreground);
+.tree-row.selected .tree-row__main {
+    color: var(--foreground);
+    font-weight: 600;
+}
+.tree-row .t-name {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.tree-row .t-attn {
+    flex: none;
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    color: var(--warn);
 }
 .tree-row[data-hidden="true"] .t-name {
-    /* Muted, not illegible: keep body text above the WCAG AA contrast floor. */
+    /* 插件策略隐藏：变淡但不低于正文对比度下限。 */
     opacity: 0.85;
 }
-.icon-btn.is-on {
-    background: var(--accent);
-    color: var(--foreground);
-}
+
 .tree-toggle {
+    flex: none;
+    display: inline-flex;
     align-items: center;
-    width: 1.1rem;
+    justify-content: center;
+    width: 18px;
+    height: 26px;
     padding: 0;
     border: 0;
-    background: none;
-    color: var(--muted-foreground);
-    display: inline-flex;
-    justify-content: center;
-    transition: transform 0.15s ease;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--faint);
 }
-.tree-toggle.open {
+.tree-toggle svg {
+    width: 13px;
+    height: 13px;
+}
+.tree-toggle:hover {
+    color: var(--foreground);
+    background: var(--accent);
+}
+.tree-toggle.open svg {
     transform: rotate(90deg);
+    transition: transform var(--dur-fast) var(--ease-out);
 }
 .tree-toggle.leaf {
     visibility: hidden;
 }
-.tree-conn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.6875rem;
-    white-space: nowrap;
+
+/* 「…」只在 hover / 键盘焦点 / 菜单打开时出现（<1000 常显 .75）。 */
+.tree-row .t-more {
+    width: 22px;
+    height: 22px;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out);
 }
-@media (max-width: 599px) {
-    .tree-conn span:last-child {
-        display: none;
-    }
+.tree-row:hover .t-more,
+.tree-row:focus-within .t-more,
+.tree-row.is-menu .t-more {
+    opacity: 1;
+}
+
+/* 行操作 popover：挂在 body 上，避免被 .pane-scroll 裁切。
+   `.menu` (app.css) 已经给了 popover 外观；这里只覆盖定位（fixed + 内联坐标）。 */
+.menu.tree-pop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: auto;
+    z-index: 80;
+    min-width: 11.5rem;
+    padding: 4px;
+}
+.tree-pop .menu__item {
+    min-height: 34px;
+}
+.tree-pop .menu__item.is-danger {
+    color: var(--destructive);
+}
+.tree-pop .menu__item.is-danger svg {
+    color: var(--destructive);
+}
+.tree-pop .menu__item.is-danger:hover {
+    background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+/* 子会话 / 子代理行：更矮、更小、灰一档；状态只由圆点表达。 */
+.tree-row--sub .tree-row__main {
+    height: 30px;
+}
+.tree-row--sub .tree-toggle {
+    height: 24px;
+}
+.tree-row--sub .t-name {
+    font-size: var(--fs-xs);
+    color: var(--muted-foreground);
+}
+.tree-row--sub .t-hidden {
+    flex: none;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--faint);
+}
+.tree-row--sub.sub-d2 .tree-row__main {
+    padding-left: 16px;
+}
+.tree-row--sub.sub-d3 .tree-row__main {
+    padding-left: 28px;
+}
+/* 正在查看的子代理：文字回到 foreground + 字重；父会话行仍是 selected。 */
+.tree-row--sub.is-viewing {
+    background: var(--surface-1);
+}
+.tree-row--sub .tree-row__main.is-viewing {
+    color: var(--foreground);
+    font-weight: 600;
+}
+.tree-row--sub .tree-row__main.is-viewing .t-name {
+    color: var(--foreground);
 }
 
 /* ---------- center: stream ---------- */
@@ -912,45 +1200,7 @@
     font-size: 0.6875rem;
 }
 
-/* ---------- right panel ---------- */
-.panel-pane {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
-    background: var(--card);
-    border-left: 1px solid var(--border);
-    overflow: hidden;
-}
-.panel-pane__inner {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    height: 100%;
-}
-.panel-tabs {
-    align-items: center;
-    padding: 0 var(--space-2);
-    flex: none;
-}
-.panel-tabs .tab {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: 0.8125rem;
-}
-.panel-tabs .tab .badge {
-    font-size: 0.625rem;
-}
-.panel-close {
-    display: none;
-    margin-left: var(--space-2);
-}
-.panel-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-}
+/* ---------- right panel: removed in v0.1.1（tray 取代；仅保留子代理条目样式） ---------- */
 .sub-item {
     display: flex;
     align-items: center;
@@ -976,158 +1226,98 @@
 .sub-item__meta {
     font-size: 0.6875rem;
 }
-.task-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2);
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: background 0.15s ease;
-}
-.task-item:hover {
-    background: var(--accent);
-}
-.task-item .grow {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-.task-item__cmd {
-    display: block;
-    font-size: 0.8125rem;
-}
-.task-item__meta {
-    font-size: 0.6875rem;
-    gap: var(--space-2);
-    display: flex;
-    align-items: center;
-}
-.task-item__meta .spinner {
-    width: 0.75rem;
-    height: 0.75rem;
-}
-.panel__note {
-    font-size: 0.6875rem;
-}
 
-/* ---------- drawers / sheets ---------- */
+/* ---------- drawers（仅 <1000：会话树是抽屉） ---------- */
 .drawer-backdrop {
     position: fixed;
     inset: 0;
     z-index: 54;
-    background: color-mix(in oklch, var(--foreground) 28%, transparent);
+    background: var(--overlay);
     border: 0;
     padding: 0;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.18s ease;
+    transition: opacity var(--dur-fast) var(--ease-out);
 }
-.chat-page.tree-open .drawer-backdrop,
-.chat-page.panel-open .drawer-backdrop {
+.chat-page.tree-open .drawer-backdrop {
     opacity: 1;
     pointer-events: auto;
 }
-@media (min-width: 840px) {
+/* ≥1000：树是常驻栅格列，没有抽屉、没有遮罩、没有面板 */
+@media (min-width: 1000px) {
     .drawer-backdrop {
         display: none;
     }
 }
 
-/* 600–839: two columns, tree can collapse, panel is a right drawer */
-@media (min-width: 600px) and (max-width: 839px) {
-    .chat-page {
-        grid-template-columns: var(--tree-w, 300px) 4px minmax(0, 1fr) 0 0;
-    }
-    .chat-page.tree-collapsed {
-        grid-template-columns: 0 0 minmax(0, 1fr) 0 0;
-    }
-    .chat-page.tree-collapsed .tree-pane {
-        visibility: hidden;
-        border-right: 0;
-    }
-    .resize-handle--panel {
-        display: none;
-    }
-    .panel-pane {
-        position: fixed;
-        top: var(--topbar-h);
-        right: 0;
-        bottom: 0;
-        width: min(88vw, 22rem);
-        z-index: 55;
-        transform: translateX(102%);
-        visibility: hidden;
-        transition: transform 0.2s ease, visibility 0s linear 0.2s;
-        border-left: 1px solid var(--border);
-    }
-    .chat-page.panel-open .panel-pane {
-        transform: none;
-        visibility: visible;
-        box-shadow: var(--shadow-lg);
-        transition: transform 0.2s ease;
-    }
-    .panel-close {
-        display: inline-flex;
-    }
-}
-
-/* <600: single column, tree drawer + bottom sheet panel */
-@media (max-width: 599px) {
-    .chat-page {
-        grid-template-columns: minmax(0, 1fr);
-        height: calc(100dvh - var(--topbar-h) - var(--tabbar-h) - env(safe-area-inset-bottom));
-        margin: calc(-1 * var(--space-6)) calc(-1 * var(--space-6))
-            calc(-1 * (var(--tabbar-h) + env(safe-area-inset-bottom) + var(--space-6)));
-    }
-    .resize-handle {
-        display: none;
-    }
+/* <1000：树 = 左抽屉（固定宽 + 遮罩 + 关闭按钮） */
+@media (max-width: 999px) {
     .tree-pane {
         position: fixed;
         top: var(--topbar-h);
         left: 0;
-        bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+        bottom: 0;
         width: min(88vw, 20rem);
         z-index: 55;
         transform: translateX(-102%);
         visibility: hidden;
-        transition: transform 0.2s ease, visibility 0s linear 0.2s;
+        transition:
+            transform var(--dur) var(--ease-out),
+            visibility 0s linear var(--dur);
     }
     .chat-page.tree-open .tree-pane {
         transform: none;
         visibility: visible;
         box-shadow: var(--shadow-lg);
-        transition: transform 0.2s ease;
+        transition: transform var(--dur) var(--ease-out);
     }
     .tree-close {
         display: inline-flex;
     }
-    .panel-pane {
-        position: fixed;
-        top: auto;
-        left: 0;
-        right: 0;
-        bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
-        width: auto;
-        min-height: 45dvh;
-        max-height: 65dvh;
-        z-index: 55;
-        border-left: 0;
-        border-top: 1px solid var(--border);
-        border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-        transform: translateY(102%);
-        visibility: hidden;
-        transition: transform 0.2s ease, visibility 0s linear 0.2s;
+    /* 触摸环境下「…」常显，避免必须 hover 才能发现行操作。 */
+    .tree-row .t-more {
+        opacity: 0.75;
     }
-    .chat-page.panel-open .panel-pane {
-        transform: none;
-        visibility: visible;
-        box-shadow: var(--shadow-lg);
-        transition: transform 0.2s ease;
+    .tree-row:hover .t-more,
+    .tree-row:focus-within .t-more,
+    .tree-row.is-menu .t-more {
+        opacity: 1;
     }
-    .panel-close {
-        display: inline-flex;
+}
+
+/* <600：树行 44px 命中区；抽屉贴住视口底并吸收安全区（底部导航条已删除）。 */
+@media (max-width: 599px) {
+    .tree-pane {
+        bottom: 0;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+    .ws-switch {
+        height: 40px;
+    }
+    .tree-toolbar .icon-btn,
+    .tree-toggle,
+    .tree-row .tree-toggle {
+        width: 44px;
+        height: 44px;
+    }
+    .tree-row,
+    .tree-row--sub .tree-row__main {
+        min-height: 44px;
+    }
+    .tree-row__main,
+    .tree-row--sub .tree-row__main {
+        height: 44px;
+    }
+    .tree-row .t-more {
+        width: 44px;
+        height: 44px;
+        opacity: 0.75;
+    }
+    .tree-pop .menu__item {
+        min-height: 44px;
+    }
+    .pane-scroll {
+        padding: 6px 4px calc(14px + env(safe-area-inset-bottom));
     }
     .stream-head {
         padding: var(--space-2) var(--space-3);
@@ -1149,23 +1339,8 @@
     }
 }
 
-/* 600–839 composer also needs to wrap (narrow center column) */
-@media (min-width: 600px) and (max-width: 839px) {
-    .composer__bar {
-        flex-wrap: wrap;
-    }
-    .composer__sel {
-        max-width: 8rem;
-        min-width: 4.5rem;
-    }
-    .composer__send {
-        margin-left: auto;
-    }
-}
-
 /* touch targets */
 @media (max-width: 839px) {
-    .tree-toggle,
     .icon-btn {
         min-width: 2.5rem;
         min-height: 2.5rem;

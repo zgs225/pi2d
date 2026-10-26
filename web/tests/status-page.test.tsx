@@ -164,6 +164,11 @@ function card(title: string): HTMLElement {
     return root;
 }
 
+/** Every primary button on the page — the status page must render none. */
+function primaries(): Element[] {
+    return [...document.querySelectorAll(".btn--primary")];
+}
+
 beforeEach(async () => {
     await setLanguage("en");
 });
@@ -173,37 +178,74 @@ afterEach(() => {
 });
 
 describe("StatusPage", () => {
-    it("renders server, health, resources, models, tasks and devices", async () => {
+    it("renders the four metric tiles, one count line and no primary button", async () => {
         mockApi(apiRoutes());
         await renderPage(routes(), "/status", { paired: true });
 
-        expect(await screen.findByText("Server info")).toBeInTheDocument();
-        expect(await screen.findByText("plugin")).toBeInTheDocument();
-        expect(screen.getByText("linsor")).toBeInTheDocument();
-        expect(screen.getByText("25%")).toBeInTheDocument();
-        expect(
-            screen.getByText("Memory is close to the soft limit; new instances may start slowly."),
-        ).toBeInTheDocument();
-        expect(await screen.findByText("claude-sonnet-4")).toBeInTheDocument();
-        expect(screen.getByText("200k")).toBeInTheDocument();
-        expect(screen.getByText("reasoning")).toBeInTheDocument();
-        // Devices come from a bare array, tasks from every workspace's sessions.
-        expect(await screen.findByText("Pixel")).toBeInTheDocument();
-        expect(await screen.findByText("pnpm build")).toBeInTheDocument();
-        expect(screen.getByText("Paired devices")).toBeInTheDocument();
+        await screen.findByText("Server info");
+
+        const tiles = [...document.querySelectorAll<HTMLElement>(".tile")];
+        expect(tiles).toHaveLength(4);
+        expect(tiles.map((tile) => tile.dataset.res)).toEqual(["cpu", "mem", "disk", "uptime"]);
+        for (const tile of tiles) {
+            expect(tile.querySelector(".tile__label")).not.toBeNull();
+            expect(tile.querySelector(".tile__value")).not.toBeNull();
+        }
+        // cpu / mem / disk carry the 3px meter, uptime does not.
+        expect(document.querySelectorAll(".meter")).toHaveLength(3);
+        // 512 MiB of 2 GiB RSS → the memory ratio the daemon does not send directly.
+        await waitFor(() =>
+            expect(document.querySelector('.status-tile[data-res="mem"] .tile__value')).toHaveTextContent("25%"),
+        );
+        expect(document.querySelector('.status-tile[data-res="uptime"] .tile__value')).toHaveTextContent("2h 5m");
+
+        const counts = document.querySelector(".status-counts");
+        expect(counts).not.toBeNull();
+        expect(counts).toHaveTextContent("Workspaces");
+        expect(counts).toHaveTextContent("Live sessions");
+
+        // The design's "status page = 0 primary" rule.
+        expect(primaries()).toHaveLength(0);
     });
 
-    it("renders the daemon identity fields from /info and the /resources counts", async () => {
+    it("puts info + health and models + tasks into two columns, with devices and connection full width", async () => {
         mockApi(apiRoutes());
         await renderPage(routes(), "/status", { paired: true });
         await screen.findByText("Server info");
+
+        const cols = document.querySelectorAll(".status-page > .status-cols > .status-col");
+        expect(cols).toHaveLength(2);
+        expect(within(cols[0] as HTMLElement).getByText("Server info")).toBeInTheDocument();
+        expect(within(cols[0] as HTMLElement).getByText("Health checks")).toBeInTheDocument();
+        expect(within(cols[1] as HTMLElement).getByText("Models & providers")).toBeInTheDocument();
+        expect(within(cols[1] as HTMLElement).getByText("Background tasks")).toBeInTheDocument();
+
+        // Devices and connection sit outside the two-column grid (full width).
+        for (const title of ["Paired devices", "Connection"]) {
+            const root = card(title);
+            expect(root.parentElement?.className).toContain("status-page");
+            expect(root.className).toContain("card--quiet");
+        }
+    });
+
+    it("renders the head identity, the update hint and the daemon identity rows", async () => {
+        mockApi(apiRoutes());
+        await renderPage(routes(), "/status", { paired: true });
+        await screen.findByText("Server info");
+
+        const head = document.querySelector(".page-head.status-head");
+        expect(head).not.toBeNull();
+        expect(head?.querySelector(".dot--lg")).not.toBeNull();
+        await waitFor(() =>
+            expect(within(head as HTMLElement).getByText(/pi2-box · pi2-box ·/)).toBeInTheDocument(),
+        );
+        expect(within(head as HTMLElement).getByText(/updated /)).toBeInTheDocument();
 
         await waitFor(() => expect(screen.getByText("daemon-1")).toBeInTheDocument());
         const info = card("Server info");
         // hostname and bind address both resolve to the daemon's hostname.
         expect(within(info).getAllByText("pi2-box").length).toBeGreaterThan(0);
         expect(within(info).getByText("Linux 6.1.0")).toBeInTheDocument();
-        expect(within(info).getByText("linux")).toBeInTheDocument();
         expect(within(info).getByText("0.2.0")).toBeInTheDocument();
         expect(within(info).getByText("machine-1")).toBeInTheDocument();
         expect(within(info).getByText("2h 5m")).toBeInTheDocument();
@@ -211,8 +253,17 @@ describe("StatusPage", () => {
         // /resources: one instance, 512 MiB total RSS.
         expect(within(info).getByText("512 MiB")).toBeInTheDocument();
         expect(within(info).getByText("Instances")).toBeInTheDocument();
-        // No placeholder for fields the daemon really sends.
         expect(within(info).queryByText("—")).not.toBeInTheDocument();
+    });
+
+    it("counts failed health checks and keeps the per-check list", async () => {
+        mockApi(apiRoutes());
+        await renderPage(routes(), "/status", { paired: true });
+
+        const health = card("Health checks");
+        expect(await within(health).findByText("1 check failed")).toBeInTheDocument();
+        expect(within(health).getByText("plugin")).toBeInTheDocument();
+        expect(within(health).getByText("linsor")).toBeInTheDocument();
     });
 
     it("reports the WebSocket state from the shared connection store", async () => {
@@ -224,13 +275,18 @@ describe("StatusPage", () => {
         await waitFor(() => expect(screen.getByTestId("ws-status")).toHaveTextContent("Connected"));
     });
 
-    it("mints a pairing code for the connection card", async () => {
+    it("mints a pairing code and shows it with a square QR and the expiry hint", async () => {
         const fetchMock = mockApi(apiRoutes());
         await renderPage(routes(), "/status", { paired: true });
 
         expect(await screen.findByTestId("pairing-code")).toHaveTextContent("ABCD1234");
-        expect(screen.getByTestId("pairing-url")).toHaveTextContent(pairBody.url);
+        expect(screen.getByRole("img", { name: "Pairing QR code" })).toHaveClass("qr-canvas");
+        expect(screen.getByText("Expires in 9 min")).toBeInTheDocument();
         expect(screen.getByText(/Pairing code expires in \d+ minutes/)).toBeInTheDocument();
+
+        // Addresses wrap instead of truncating: Local / Network rows use .addr__value.
+        const addresses = [...document.querySelectorAll(".addr__value")];
+        expect(addresses.length).toBeGreaterThanOrEqual(2);
 
         const calls = requests(fetchMock, "POST", "/api/v1/pair");
         expect(calls).toHaveLength(1);
@@ -281,6 +337,8 @@ describe("StatusPage", () => {
 
         expect(requests(fetchMock, "DELETE", "/api/v1/devices/dev-1")).toHaveLength(1);
         expect(commandCalls(fetchMock)).toHaveLength(0);
+        // A destructive action never introduces a primary button.
+        expect(primaries()).toHaveLength(0);
     });
 
     it("still lists devices when the daemon answers the legacy {devices} envelope", async () => {
@@ -328,6 +386,16 @@ describe("StatusPage", () => {
         expect(await within(tasks).findByText("No background tasks")).toBeInTheDocument();
     });
 
+    it("renders a running task as a quiet dot row with its state", async () => {
+        mockApi(apiRoutes());
+        await renderPage(routes(), "/status", { paired: true });
+
+        const tasks = card("Background tasks");
+        expect(await within(tasks).findByText("pnpm build")).toBeInTheDocument();
+        expect(tasks.querySelector(".task-row .task-state.is-run")).toHaveTextContent("Running");
+        expect(tasks.querySelector(".task-row .dot")).not.toBeNull();
+    });
+
     it("does not ask for sessions of workspaces without a live instance", async () => {
         // `/sessions` relays through instances.ensure(), which would spawn a Neovim
         // for every idle workspace — the status page must never trigger that.
@@ -344,5 +412,15 @@ describe("StatusPage", () => {
         const tasks = card("Background tasks");
         expect(await within(tasks).findByText("No background tasks")).toBeInTheDocument();
         expect(requests(fetchMock, "GET", "/api/v1/workspaces/ws-1/sessions")).toHaveLength(0);
+    });
+
+    it("warns when /resources reports the soft limit and still shows the tiles", async () => {
+        mockApi(apiRoutes());
+        await renderPage(routes(), "/status", { paired: true });
+
+        expect(
+            await screen.findByText("Memory is close to the soft limit; new instances may start slowly."),
+        ).toBeInTheDocument();
+        expect(document.querySelectorAll(".tile")).toHaveLength(4);
     });
 });

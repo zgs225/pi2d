@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
@@ -21,6 +21,20 @@ export interface ManualConnectFormProps {
     defaultDeviceName: string;
     /** Prefill from `/connect?code=…` or the `/pair/$code` redirect. */
     initialCode?: string;
+    /** Host/port prefill, e.g. the origin a pairing link was opened from. */
+    initialHost?: string;
+    initialPort?: string;
+    /**
+     * Port default derived from the loaded daemon info (the port this console
+     * was served from), never a hard-coded literal.
+     */
+    defaultPort?: string;
+    /** Stable id of the collapsible container (the toggle's `aria-controls`). */
+    id?: string;
+    /** Collapsed by default; the parent owns the state so it can arbitrate the primary. */
+    expanded?: boolean;
+    /** True when the submit button is the page's single primary action. */
+    primary?: boolean;
 }
 
 /** Wrong/expired codes come back as 401 `E_UNAUTHORIZED`; the code rail is the useful message. */
@@ -33,11 +47,22 @@ export function pairErrorMessage(error: unknown): string {
 }
 
 /** Inline manual pairing form: host/port, 8-character pairing code, optional device name. */
-export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, initialCode }: ManualConnectFormProps) {
+export function ManualConnectForm({
+    onConnect,
+    hostInputRef,
+    defaultDeviceName,
+    initialCode,
+    initialHost,
+    initialPort,
+    defaultPort = "",
+    id: formId,
+    expanded = true,
+    primary = false,
+}: ManualConnectFormProps) {
     const { t } = useTranslation();
     const id = useId();
-    const [host, setHost] = useState("");
-    const [port, setPort] = useState("4321");
+    const [host, setHost] = useState(() => initialHost ?? "");
+    const [port, setPort] = useState(() => initialPort ?? defaultPort);
     const [code, setCode] = useState(() => normalizePairCode(initialCode ?? ""));
     const [deviceName, setDeviceName] = useState("");
     const [hostError, setHostError] = useState<string | null>(null);
@@ -46,6 +71,19 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, 
     const [formError, setFormError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const submitting = useRef(false);
+    const portEdited = useRef(false);
+
+    // Expanding the manual form moves focus to the host field (prototype focusHost).
+    useEffect(() => {
+        if (expanded) hostInputRef.current?.focus();
+    }, [expanded, hostInputRef]);
+
+    // The daemon port arrives with `/info`: an untouched field adopts it instead of
+    // keeping the endpoint-derived value the form mounted with.
+    useEffect(() => {
+        if (portEdited.current || initialPort) return;
+        setPort(defaultPort);
+    }, [defaultPort, initialPort]);
 
     async function submit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -101,13 +139,7 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, 
     }
 
     return (
-        <section className="card cn-card">
-            <h2 className="cn-card__title">
-                <span className="cn-ico">
-                    <Icon name="server" />
-                </span>
-                {t("connect.addTitle")}
-            </h2>
+        <div className="cn-manual" id={formId} hidden={!expanded} data-testid="connect-manual-panel">
             <form className="cn-form" noValidate onSubmit={(event) => void submit(event)}>
                 <div className="cn-row">
                     <Field label={t("connect.host")} htmlFor={`${id}-host`} error={hostError}>
@@ -135,10 +167,11 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, 
                             type="text"
                             inputMode="numeric"
                             autoComplete="off"
-                            placeholder="4321"
+                            placeholder={defaultPort || undefined}
                             value={port}
                             onChange={(event) => {
                                 setPort(event.target.value);
+                                portEdited.current = true;
                                 setPortError(null);
                             }}
                         />
@@ -194,7 +227,7 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, 
 
                 <div className="cn-form__foot">
                     <Button
-                        variant="primary"
+                        variant={primary ? "primary" : "default"}
                         type="submit"
                         className="cn-submit"
                         disabled={busy}
@@ -205,6 +238,6 @@ export function ManualConnectForm({ onConnect, hostInputRef, defaultDeviceName, 
                     </Button>
                 </div>
             </form>
-        </section>
+        </div>
     );
 }
