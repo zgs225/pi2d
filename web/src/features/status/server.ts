@@ -10,6 +10,8 @@ export interface ServerStatusInput {
     info?: InfoResponse | null;
     /** The /info query failed (network error or non-2xx). */
     infoError?: boolean;
+    /** The /health query failed (network error or non-2xx) while the daemon responds. */
+    healthError?: boolean;
     /** `GET /api/v1/health` → `ok`, `null`/`undefined` while unknown. */
     healthOk?: boolean | null;
 }
@@ -24,15 +26,19 @@ export function resolveServerStatus(input: ServerStatusInput): ServerStatusValue
     if (input.infoError) {
         return "offline";
     }
-    // 3. /health reported a degraded subsystem while the daemon itself responds.
+    // 3. /health probe failed (network error or 5xx) while the daemon answers.
+    if (input.healthError) {
+        return "degraded";
+    }
+    // 4. /health reported a degraded subsystem while the daemon itself responds.
     if (input.healthOk === false) {
         return "degraded";
     }
-    // 4. Cached or freshly fetched /info payload is present and healthy.
+    // 5. Cached or freshly fetched /info payload is present and healthy.
     if (input.info != null) {
         return "online";
     }
-    // 5. First probe is still in flight — do not flash offline.
+    // 6. First probe is still in flight — do not flash offline.
     return "unknown";
 }
 

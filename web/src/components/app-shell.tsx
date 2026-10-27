@@ -132,10 +132,11 @@ export function AppShell() {
                 paired,
                 info: info.data,
                 infoError: info.isError,
+                healthError: health.isError,
                 healthOk,
             }),
         );
-    }, [healthOk, info.data, info.isError, paired, setServerStatus]);
+    }, [health.isError, healthOk, info.data, info.isError, paired, setServerStatus]);
 
     useEffect(() => {
         document.body.dataset.page = page;

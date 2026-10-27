@@ -8,8 +8,8 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Empty } from "@/components/ui/empty";
 import { toast } from "@/components/ui/toast";
-import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
-import { useInfoQuery, useWorkspacesQuery } from "@/features/status/queries";
+import { deriveServerIdentity, resolveServerStatus, type InfoExtras } from "@/features/status/server";
+import { useHealthQuery, useInfoQuery, useWorkspacesQuery } from "@/features/status/queries";
 import { ActivityColumn } from "@/features/workspaces/activity-column";
 import { openWorkspace, workspaceSessionCount } from "@/features/workspaces/commands";
 import { NewWorkspaceDialog, type NewWorkspaceInput } from "@/features/workspaces/new-workspace-dialog";
@@ -47,12 +47,14 @@ export function WorkspacesPage() {
     const queryClient = useQueryClient();
     const [dialogOpen, setDialogOpen] = useState(false);
 
+    const paired = useConnectionStore((state) => state.paired);
     const endpoint = useConnectionStore((state) => state.endpoint);
     const wsState = useConnectionStore((state) => state.wsState);
     const storedServer = useConnectionStore((state) => state.server);
 
     const workspaces = useWorkspacesQuery();
     const info = useInfoQuery();
+    const health = useHealthQuery(paired);
 
     // Persisted "show N hidden" toggle (localStorage, default off): secondary
     // rows (hidden/ghost/temp/…) stay out of the list until asked for.
@@ -76,13 +78,20 @@ export function WorkspacesPage() {
     );
     const runningCount = useMemo(() => all.filter((workspace) => (workspace.liveCount || 0) > 0).length, [all]);
 
+    const healthOk = health.data?.ok ?? (health.data ? health.data.items.every((item) => item.ok) : undefined);
     const server = deriveServerIdentity({
         info: info.data as InfoExtras | undefined,
         endpoint,
         wsState,
         fetchedAt: info.dataUpdatedAt || null,
         nameFallback: storedServer?.name,
-        status: info.isError ? "offline" : undefined,
+        status: resolveServerStatus({
+            paired,
+            info: info.data,
+            infoError: info.isError,
+            healthError: health.isError,
+            healthOk,
+        }),
     });
 
     async function createWorkspace(input: NewWorkspaceInput) {

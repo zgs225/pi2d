@@ -19,7 +19,7 @@ const realisticInfo: InfoResponse = {
 };
 
 describe("resolveServerStatus", () => {
-    it("resolves unpaired client to offline", () => {
+    it("resolves unpaired client to offline even when info is present", () => {
         const input: ServerStatusInput = {
             paired: false,
             info: realisticInfo,
@@ -27,15 +27,33 @@ describe("resolveServerStatus", () => {
         };
         expect(resolveServerStatus(input)).toBe("offline");
         expect(resolveServerStatus({ paired: false })).toBe("offline");
+        expect(resolveServerStatus({ paired: false, info: realisticInfo })).toBe("offline");
     });
 
-    it("resolves infoError to offline", () => {
+    it("resolves infoError to offline, even with stale cached info", () => {
         const input: ServerStatusInput = {
             paired: true,
             infoError: true,
             healthOk: true,
         };
         expect(resolveServerStatus(input)).toBe("offline");
+        expect(
+            resolveServerStatus({
+                paired: true,
+                info: realisticInfo,
+                infoError: true,
+            }),
+        ).toBe("offline");
+    });
+
+    it("resolves healthError to degraded even when info is present", () => {
+        expect(
+            resolveServerStatus({
+                paired: true,
+                info: realisticInfo,
+                healthError: true,
+            }),
+        ).toBe("degraded");
     });
 
     it("resolves info present + healthOk === false to degraded", () => {

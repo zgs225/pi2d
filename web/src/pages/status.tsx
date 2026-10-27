@@ -91,7 +91,13 @@ export function StatusPage() {
         wsState,
         fetchedAt: info.dataUpdatedAt || null,
         nameFallback: storedServer?.name || meta?.server?.name,
-        status: resolveServerStatus({ paired, info: info.data, infoError: info.isError, healthOk }),
+        status: resolveServerStatus({
+            paired,
+            info: info.data,
+            infoError: info.isError,
+            healthError: health.isError,
+            healthOk,
+        }),
     });
 
     // Background tasks: the live store covers open sessions, the REST session
