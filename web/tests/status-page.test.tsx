@@ -284,7 +284,10 @@ describe("StatusPage", () => {
 
         const head = document.querySelector(".page-head.status-head");
         expect(head).not.toBeNull();
-        expect(head?.querySelector(".dot--lg")).not.toBeNull();
+        await waitFor(() => {
+            const dot = head?.querySelector(".dot--lg");
+            expect(dot).toHaveClass("dot--attention");
+        });
         await waitFor(() =>
             expect(within(head as HTMLElement).getByText(/pi2-box · pi2-box ·/)).toBeInTheDocument(),
         );
@@ -303,6 +306,32 @@ describe("StatusPage", () => {
         expect(within(info).getByText("512 MiB")).toBeInTheDocument();
         expect(within(info).getByText("Instances")).toBeInTheDocument();
         expect(within(info).queryByText("—")).not.toBeInTheDocument();
+    });
+
+    it("renders the page header dot with dot--ok for a healthy daemon", async () => {
+        mockApi(
+            apiRoutes([
+                {
+                    path: "/api/v1/health",
+                    handler: () => ({
+                        body: {
+                            ok: true,
+                            checkedAt: Date.now(),
+                            items: [{ name: "plugin", ok: true, detail: "connected" }],
+                        },
+                    }),
+                },
+            ]),
+        );
+        await renderPage(routes(), "/status", { paired: true });
+        await screen.findByText("Server info");
+
+        const head = document.querySelector(".page-head.status-head");
+        expect(head).not.toBeNull();
+        await waitFor(() => {
+            const dot = head?.querySelector(".dot--lg");
+            expect(dot).toHaveClass("dot--ok");
+        });
     });
 
     it("counts failed health checks and keeps the per-check list", async () => {

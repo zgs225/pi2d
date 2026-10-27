@@ -157,7 +157,7 @@ export function StatusPage() {
     }
 
     const statusLabel = t(`state.${server.status}`, { defaultValue: server.status });
-    const headDot = serverDotClass(server.status) as DotStatus;
+    const headDot = serverDotClass(server.status).replace("dot--", "") as DotStatus;
     // "updated <relative>" — the prototype's quiet freshness hint in the head.
     const updatedAt = info.dataUpdatedAt || null;
     const updatedLabel = t("status.updated", {
