@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { Empty } from "@/components/ui/empty";
-import { StatusDot, type DotStatus } from "@/components/ui/status-dot";
+import { StatusDot } from "@/components/ui/status-dot";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
@@ -12,20 +12,13 @@ import { EntryBlock } from "./blocks";
 import { Composer } from "./composer";
 import type { ModelGroup } from "./data";
 import { HeadChips } from "./head-chips";
+import { subagentDot } from "./session-state";
 import { subagentTitle } from "./session-title";
 import type { TrayTab } from "./store";
 
 import "@/styles/pages/chat-telemetry.css";
 
 type ToolBlock = Extract<Block, { type: "tool" }>;
-
-const SUB_DOT: Record<Subagent["status"], DotStatus> = {
-    active: "busy",
-    completed: "ok",
-    failed: "err",
-    interrupted: "attention",
-    dormant: "exited",
-};
 
 function str(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -250,6 +243,10 @@ export function SubagentView({
             .catch(() => undefined);
     }
 
+    // The child view is the session you are looking at, so its unread markers are
+    // already consumed (`viewed: true`) — a failed child is steady red here.
+    const dot = subagentDot(subagent, { viewed: true });
+
     return (
         <div
             className={cn("subagent-view", "subagent-view--child", className)}
@@ -282,7 +279,11 @@ export function SubagentView({
                     <span className="sub-back__label">{t("chat.subview.back")}</span>
                 </button>
                 <div className="stream-title">
-                    <StatusDot status={SUB_DOT[subagent.status]} title={t(`state.${subagent.status}`)} />
+                    <StatusDot
+                        status={dot.status}
+                        steady={dot.steady}
+                        title={t(`state.${subagent.status}`)}
+                    />
                     <h2 className="stream-name truncate" tabIndex={-1} title={task ? `${name} · ${task}` : name}>
                         {name}
                     </h2>

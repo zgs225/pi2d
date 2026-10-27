@@ -541,13 +541,15 @@ function withCurrent(view: DotView, state: SessionState, viewed: boolean): DotVi
  * attention amber (`sessionStatusKey` still labels it "interrupted").
  */
 function parentDot(state: SessionState): DotView {
-    if (state.status === "exited") return { status: "dead" };
+    // `interrupted` sits with `exited`: both mean the process is gone, and in the
+    // plugin every "not running" row is `exited` (sessions.lua:75-78), which is
+    // why a dead row outranks its own unread error/attention/done flags.
+    if (state.status === "exited" || state.status === "interrupted") return { status: "dead" };
     if (state.flags.error) return { status: "err" };
     if (attentionPending(state)) return { status: "attention" };
     if (state.flags.done) return { status: "ok" };
     if (state.status === "busy") return { status: "busy" };
     if (state.status === "compacting") return { status: "compacting" };
-    if (state.status === "interrupted") return { status: "dead" };
     return { status: "idle" };
 }
 

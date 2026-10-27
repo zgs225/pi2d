@@ -122,6 +122,16 @@ describe("sessionDot (parent rows)", () => {
             expect(sessionDot(state)).toEqual({ status: "dead" });
         });
 
+        it("interrupted is a dead process too (outranks error, attention and done)", () => {
+            // The plugin has no `interrupted`: any "not running" row is `exited`
+            // (sessions.lua:75-78), and `exited` sits at the top of dot_hl.
+            expect(sessionDot(makeSession({ status: "interrupted", flags: { error: true } })).status).toBe("dead");
+            expect(sessionDot(makeSession({ status: "interrupted", flags: { attention: true } })).status).toBe("dead");
+            expect(sessionDot(makeSession({ status: "interrupted", flags: { done: true } })).status).toBe("dead");
+            // …and it never wears the blue current marker either.
+            expect(sessionDot(makeSession({ status: "interrupted" }), { viewed: true })).toEqual({ status: "dead" });
+        });
+
         it("attention beats done (flags.attention outranks flags.done)", () => {
             const state = makeSession({
                 flags: { attention: true, done: true },

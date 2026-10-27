@@ -2,10 +2,12 @@ import type { ContextUsage, Entry, SessionState, Subagent, UsageTotals } from "@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { StatusDot } from "@/components/ui/status-dot";
 import { plural } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import { formatDuration } from "./format";
+import { subagentDot } from "./session-state";
 import { synthesizeSubagentTimeline } from "./subagent-view";
 
 import "@/styles/pages/chat-telemetry.css";
@@ -22,14 +24,6 @@ const SUB_TONE: Record<Subagent["status"], string> = {
     failed: "is-err",
     interrupted: "is-warn",
     dormant: "is-idle",
-};
-
-const SUB_DOT: Record<Subagent["status"], string> = {
-    active: "dot--busy",
-    completed: "dot--ok",
-    failed: "dot--err",
-    interrupted: "dot--attention",
-    dormant: "dot--exited",
 };
 
 export interface TelemetryCounts {
@@ -175,6 +169,9 @@ export function Telemetry({ session, subagent, entries, className }: TelemetryPr
 
     if (subagent) {
         const timeline = synthesizeSubagentTimeline(subagent, entries);
+        // The subagent view is the session you have open: its unread markers are
+        // already consumed, so a failed child is steady red here.
+        const dot = subagentDot(subagent, { viewed: true });
         const { turns, tools } = countTelemetry(timeline);
         const created = subagent.createdAt;
         const end = ticking ? now : (subagent.lastActiveAt ?? created);
@@ -191,7 +188,7 @@ export function Telemetry({ session, subagent, entries, className }: TelemetryPr
                 data-testid="telemetry"
             >
                 <span className={cn("telemetry__state", "sub-state", tone)} data-testid="telemetry-state">
-                    <span className={cn("dot", SUB_DOT[subagent.status])} aria-hidden="true" />
+                    <StatusDot status={dot.status} steady={dot.steady} />
                     {t(`state.${subagent.status}`)}
                 </span>
                 {elapsed ? (
