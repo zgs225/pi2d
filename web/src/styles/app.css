@@ -379,14 +379,21 @@ code, pre { font-family: var(--font-mono); font-size: 0.875em; }
 
 .dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--muted-foreground); flex: none; }
 .dot--lg { width: 9px; height: 9px; }
-.dot--busy  { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
-.dot--compacting { background: var(--info); animation: pulse 2s ease-in-out infinite; }
+.dot--busy  { background: var(--warn); }
+.dot--compacting { background: var(--role-thinking); }
 .dot--idle  { background: var(--faint); }
 .dot--ok    { background: var(--ok); }
-.dot--err   { background: var(--err); animation: pulse 1.4s ease-in-out infinite; }
+.dot--err   { background: var(--err); }
+.dot--dead  { background: var(--err); }
 .dot--attention { background: var(--warn); box-shadow: 0 0 0 2px color-mix(in oklch, var(--warn) 22%, transparent); }
 .dot--exited { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-foreground); }
 @keyframes pulse { 50% { opacity: .35; } }
+
+/* Shared blink phase driven by html[data-pi-blink-*] attributes (single window clock) */
+html[data-pi-blink-fast="dim"] .dot--busy:not(.dot--steady),
+html[data-pi-blink-fast="dim"] .dot--err:not(.dot--steady),
+html[data-pi-blink-fast="dim"] .tree-row .dot--ok { opacity: .35; }
+html[data-pi-blink-slow="dim"] .dot--compacting:not(.dot--steady) { opacity: .35; }
 
 .chip {
   display: inline-flex; align-items: center; gap: var(--space-2);

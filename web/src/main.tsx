@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
-import { StrictMode } from "react";
+import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 
 import "@/styles/app.css";
 import "@/lib/i18n";
 
 import { Toaster } from "@/components/ui/toast";
+import { startBlinkClock } from "@/lib/blink";
 import { consumeHandoff } from "@/lib/handoff";
 import { router } from "@/router";
 import { useConnectionStore } from "@/stores/connection";
@@ -23,6 +24,8 @@ const queryClient = new QueryClient({
 });
 
 function App() {
+    useEffect(() => startBlinkClock(), []);
+
     return (
         <StrictMode>
             <ThemeProvider

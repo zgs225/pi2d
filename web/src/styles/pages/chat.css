@@ -445,38 +445,10 @@
     background: color-mix(in oklch, var(--destructive) 12%, transparent);
 }
 
-/* 状态圆点：pi2.nvim 是离散二值闪烁（busy/error 500ms、compacting 1000ms），
-   不是 app.css 里那种平滑 ease 的 pulse；attention / idle / ok / exited 常亮。
-   只作用于会话树，其他页面的圆点保持不变。 */
-@keyframes tree-dot-blink {
-    0%,
-    49% {
-        opacity: 1;
-    }
-    50%,
-    100% {
-        opacity: 0.35;
-    }
-}
-.tree-row .dot--busy,
-.tree-row .dot--err {
-    animation: tree-dot-blink 1s steps(1, end) infinite;
-}
-.tree-row .dot--compacting {
-    animation: tree-dot-blink 2s steps(1, end) infinite;
-}
-.tree-row .dot--attention,
-.tree-row .dot--idle,
-.tree-row .dot--ok,
-.tree-row .dot--exited {
-    animation: none;
-}
-@media (prefers-reduced-motion: reduce) {
-    .tree-row .dot--busy,
-    .tree-row .dot--err,
-    .tree-row .dot--compacting {
-        animation: none;
-    }
+/* 状态圆点：由 <html> 根节点上的单一全局时钟驱动（data-pi-blink-* 属性，见 app.css 与 blink.ts），
+   不再使用每个圆点独立的 CSS animation，避免相位漂移。当前聚焦会话叠加高亮背景。 */
+.tree-row .dot--current {
+    background: var(--info);
 }
 
 /* 子会话 / 子代理行：更矮、更小、灰一档；状态只由圆点表达。 */
