@@ -32,7 +32,7 @@ describe("wireDaemon", () => {
 
         expect(server.port).toBeGreaterThan(0);
         expect(wired.config.port).toBe(server.port);
-        expect(wired.config.host).toBe("127.0.0.1");
+        expect(wired.config.host).toBe("0.0.0.0");
         expect(wired.deps.daemonId).toMatch(/^d-/);
         expect(wired.deps.instances).toBe(wired.instanceManager);
         expect(wired.deps.workspaces).toBe(wired.workspaceStore);

@@ -140,6 +140,8 @@ async function http(method, path, opts = {}) {
             method,
             headers,
             body,
+            // `redirect: "manual"` keeps 30x responses inspectable (e.g. /pair/<code>).
+            redirect: opts.redirect ?? "follow",
             signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
         });
     } catch (error) {
@@ -152,7 +154,14 @@ async function http(method, path, opts = {}) {
     } catch {
         json = undefined;
     }
-    return { status: response.status, ok: response.ok, text, json, contentType: response.headers.get("content-type") ?? "" };
+    return {
+        status: response.status,
+        ok: response.ok,
+        text,
+        json,
+        contentType: response.headers.get("content-type") ?? "",
+        location: response.headers.get("location"),
+    };
 }
 
 /** `POST /api/v1/cmd` with the CLI token by default. */
@@ -965,20 +974,89 @@ scenario("A0", "Bootstrap & auth", async (ctx) => {
         observed: health.text.slice(0, 120),
     });
 
-    // Pairing: a fresh code, treat it as single-use, then revoke the device.
-    const created = await cmd({ method: "pair.create", params: { ttlSec: 600 } });
-    ctx.eq("pair.create → 202", created.status, 202);
-    const code = created.json?.code;
-    ctx.check("pair.create returns an 8-char code", typeof code === "string" && /^[A-Z0-9]{8}$/.test(code), {
+    // Pairing (ADR 0001): `POST /api/v1/pair` only *mints* a code (authenticated,
+    // QR matrix + reachable bases included), the public
+    // `POST /api/v1/pair/redeem` exchanges it for a device token, and
+    // `GET /pair/<code>` is the scanned link that bounces into the SPA.
+    const minted = await http("POST", "/api/v1/pair", { token: CLI_TOKEN, body: { ttlSec: 600 } });
+    ctx.eq("POST /api/v1/pair (mint) → 200", minted.status, 200);
+    ctx.eq("mint reports accepted", minted.json?.accepted, true);
+    const code = minted.json?.code;
+    ctx.check("mint returns an 8-char code", typeof code === "string" && /^[A-Z0-9]{8}$/.test(code), {
         expected: "8 uppercase alphanumerics",
         observed: code,
     });
     if (typeof code !== "string") return;
 
-    const redeemed = await http("POST", "/api/v1/pair", {
+    const mintedUrl = minted.json?.url;
+    ctx.check("mint returns the /pair/<code> url", typeof mintedUrl === "string" && mintedUrl.endsWith(`/pair/${code}`), {
+        expected: `…/pair/${code}`,
+        observed: mintedUrl,
+    });
+    ctx.check(
+        "mint returns expiresAt + nonce",
+        typeof minted.json?.expiresAt === "number" &&
+            minted.json.expiresAt > Date.now() &&
+            /^[0-9a-f]{32}$/.test(String(minted.json?.nonce ?? "")),
+        {
+            expected: { expiresAt: "future epoch ms", nonce: "32 hex chars" },
+            observed: { expiresAt: minted.json?.expiresAt, nonce: minted.json?.nonce },
+        },
+    );
+
+    const qr = minted.json?.qr;
+    const qrRows = Array.isArray(qr?.rows) ? qr.rows : [];
+    ctx.check(
+        "mint carries the QR matrix (version/ecc/mask/size/rows)",
+        qr !== null &&
+            typeof qr === "object" &&
+            typeof qr.version === "number" &&
+            qr.ecc === "M" &&
+            typeof qr.mask === "number" &&
+            typeof qr.size === "number" &&
+            qrRows.length === qr.size &&
+            qrRows.every((row) => typeof row === "string" && row.length === qr.size),
+        {
+            expected: "{version, ecc:'M', mask, size, rows: size strings of size modules}",
+            observed:
+                qr === null
+                    ? null
+                    : { version: qr?.version, ecc: qr?.ecc, mask: qr?.mask, size: qr?.size, rowCount: qrRows.length },
+        },
+    );
+
+    const bases = Array.isArray(minted.json?.bases) ? minted.json.bases : [];
+    ctx.check(
+        "mint lists the reachable bases",
+        bases.length > 0 &&
+            bases.every(
+                (base) =>
+                    typeof base?.kind === "string" &&
+                    typeof base?.name === "string" &&
+                    typeof base?.address === "string" &&
+                    typeof base?.url === "string",
+            ),
+        { expected: "non-empty [{kind, name, address, url}]", observed: bases },
+    );
+    ctx.check("the minted url is built from the primary base", typeof mintedUrl === "string" && String(bases[0]?.url ?? "").replace(/\/$/, "") === mintedUrl.slice(0, mintedUrl.indexOf("/pair/")), {
+        expected: { primaryBase: bases[0]?.url, url: mintedUrl },
+        observed: { primaryBase: bases[0]?.url, url: mintedUrl },
+    });
+
+    // The scanned link: a redirect into the SPA, never an API call.
+    const scanned = await http("GET", `/pair/${code}`, { redirect: "manual" });
+    ctx.eq("GET /pair/<code> → 302", scanned.status, 302);
+    const pairLocation = scanned.location ?? "";
+    ctx.check(
+        "the scanned link redirects to /connect?code=<code>&auto=1",
+        /\/connect\?/.test(pairLocation) && pairLocation.includes(`code=${code}`) && pairLocation.includes("auto=1"),
+        { expected: "/connect?code=<code>&auto=1", observed: pairLocation },
+    );
+
+    const redeemed = await http("POST", "/api/v1/pair/redeem", {
         body: { code, kind: "laptop", deviceName: "E2E A0 device" },
     });
-    ctx.eq("POST /api/v1/pair (redeem) → 200", redeemed.status, 200);
+    ctx.eq("POST /api/v1/pair/redeem → 200", redeemed.status, 200);
     const token = redeemed.json?.token;
     ctx.check("redeem returns {token, device}", typeof token === "string" && token.length > 10 && Boolean(redeemed.json?.device?.id), {
         expected: "{token, device.id}",
@@ -995,26 +1073,24 @@ scenario("A0", "Bootstrap & auth", async (ctx) => {
         ctx.check("redeemed token authorizes the API", false, { expected: "token", observed: "<no token>" });
     }
 
-    const reuse = await http("POST", "/api/v1/pair", { body: { code, kind: "laptop", deviceName: "dup" } });
+    const reuse = await http("POST", "/api/v1/pair/redeem", { body: { code, kind: "laptop", deviceName: "dup" } });
     ctx.eq("re-using the pairing code → 401", reuse.status, 401);
     ctx.eq("re-use error code", reuse.json?.code, "E_UNAUTHORIZED");
 
     if (PAIR_CODE) {
-        const consumed = await http("POST", "/api/v1/pair", {
+        const consumed = await http("POST", "/api/v1/pair/redeem", {
             body: { code: PAIR_CODE, kind: "laptop", deviceName: "reuse of the suite code" },
         });
         ctx.eq("the suite's consumed pairing code → 401", consumed.status, 401);
     }
 
-    const existingRedeem = await http("POST", "/api/v1/pair/redeem", {
-        token: CLI_TOKEN,
+    // The public redeem endpoint exists and is the only way to exchange a code:
+    // an unknown code is rejected with 401 (never 404 — the route is live).
+    const unknownRedeem = await http("POST", "/api/v1/pair/redeem", {
         body: { code: "AAAAAAAA", kind: "laptop", deviceName: "nope" },
     });
-    ctx.check("there is no /api/v1/pair/redeem endpoint", existingRedeem.status === 404, {
-        expected: 404,
-        observed: existingRedeem.status,
-        severity: "warn",
-    });
+    ctx.eq("POST /api/v1/pair/redeem exists (unknown code → 401, not 404)", unknownRedeem.status, 401);
+    ctx.eq("unknown-code redeem error code", unknownRedeem.json?.code, "E_UNAUTHORIZED");
 
     const deviceId = redeemed.json?.device?.id;
     if (typeof deviceId === "string") {
@@ -2885,12 +2961,21 @@ scenario("A13", "Console login handoff", async (ctx) => {
 
     ctx.eq("the session names the local-browser device", first.json?.device?.name, "local browser");
     ctx.eq("the local-browser device is a laptop", first.json?.device?.kind, "laptop");
-    ctx.eq("the local-browser device holds every scope", first.json?.device?.scopes, [
-        "read",
-        "steer",
-        "control",
-        "admin",
-    ]);
+    // ADR 0001 deleted the scope model: the device payload carries identity and
+    // lifecycle timestamps only.
+    const deviceFields = Object.keys(first.json?.device ?? {}).sort();
+    ctx.check("the device payload carries no `scopes` field", !deviceFields.includes("scopes"), {
+        expected: { fields: ["createdAt", "id", "kind", "lastSeenAt", "name", "revokedAt"] },
+        observed: deviceFields,
+    });
+    ctx.check(
+        "the device payload is {id, name, kind, createdAt, lastSeenAt, revokedAt}",
+        ["id", "name", "kind"].every((key) => typeof first.json?.device?.[key] === "string") &&
+            typeof first.json?.device?.createdAt === "number" &&
+            typeof first.json?.device?.lastSeenAt === "number" &&
+            "revokedAt" in (first.json?.device ?? {}),
+        { expected: "identity + timestamps, no scopes", observed: first.json?.device },
+    );
     ctx.check("the handoff url puts the token in the fragment", /\/#t=[A-Za-z0-9_-]{20,}$/.test(url), {
         expected: "http://127.0.0.1:<port>/#t=<token>",
         observed: url.replace(/#t=.{6}.*/, "#t=<redacted>"),

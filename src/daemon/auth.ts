@@ -6,7 +6,7 @@
  *
  * A second, non-persisted credential exists for local tooling: the CLI token in
  * `<runtime>/cli.token` (written by `pi2 daemon`). It authenticates as the synthetic
- * `local-cli` device with every scope; see `docs/deployment.md` §7.
+ * `local-cli` device; see `docs/deployment.md` §7.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -16,17 +16,13 @@ import { ERROR_CODES } from "../protocol/errors.js";
 import { DaemonError } from "./errors.js";
 
 export type DeviceKind = "phone" | "laptop" | "tablet";
-export type Scope = "read" | "steer" | "control" | "admin";
 
 export const DEVICE_KINDS: readonly DeviceKind[] = ["phone", "laptop", "tablet"];
-export const SCOPES: readonly Scope[] = ["read", "steer", "control", "admin"];
-export const DEFAULT_SCOPES: readonly Scope[] = ["read", "steer", "control"];
 
 export interface DeviceRecord {
     id: string;
     name: string;
     kind: DeviceKind;
-    scopes: Scope[];
     tokenHash: string;
     createdAt: number;
     lastSeenAt: number;
@@ -38,12 +34,11 @@ export type DevicePublic = Omit<DeviceRecord, "tokenHash">;
 export interface CreateDeviceInput {
     name: string;
     kind: DeviceKind;
-    scopes?: Scope[];
 }
 
+/** Minted code; the URL is built by the HTTP layer from `core/network`. */
 export interface PairCode {
     code: string;
-    url: string;
     expiresAt: number;
     nonce: string;
 }
@@ -63,13 +58,12 @@ export interface AuthStoreOptions {
     /** Defaults to `<dataDir>/devices.json`. */
     path?: string;
     now?: () => number;
-    baseUrl?: string;
     /** `touchDevice` write throttle. */
     touchIntervalMs?: number;
     /**
      * File holding the local CLI token (`<runtime>/cli.token`, written by `pi2 daemon`).
      * A bearer token equal to its trimmed contents authenticates as the synthetic
-     * `local-cli` device with every scope. Checked after the persisted devices.
+     * `local-cli` device. Checked after the persisted devices.
      */
     localTokenPath?: string;
     /**
@@ -136,13 +130,9 @@ function isDeviceKind(value: unknown): value is DeviceKind {
     return typeof value === "string" && (DEVICE_KINDS as readonly string[]).includes(value);
 }
 
-function isScope(value: unknown): value is Scope {
-    return typeof value === "string" && (SCOPES as readonly string[]).includes(value);
-}
-
 function publicDevice(record: DeviceRecord): DevicePublic {
     const { tokenHash: _tokenHash, ...rest } = record;
-    return { ...rest, scopes: [...rest.scopes] };
+    return { ...rest };
 }
 
 function pairCode(): string {
@@ -158,7 +148,6 @@ export class AuthStore {
     readonly localTokenPath: string | undefined;
     readonly localBrowserTokenPath: string;
     private readonly now: () => number;
-    private readonly baseUrl: string;
     private readonly touchIntervalMs: number;
     private readonly devices: DeviceRecord[] = [];
     private readonly pairs = new Map<string, PairEntry>();
@@ -166,7 +155,6 @@ export class AuthStore {
     constructor(options: AuthStoreOptions = {}) {
         this.path = options.path ?? `${dataDir()}/devices.json`;
         this.now = options.now ?? Date.now;
-        this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:7676").replace(/\/+$/, "");
         this.touchIntervalMs = options.touchIntervalMs ?? 60_000;
         this.localTokenPath =
             options.localTokenPath === undefined || options.localTokenPath === "" ? undefined : options.localTokenPath;
@@ -180,16 +168,12 @@ export class AuthStore {
         }
         if (!isDeviceKind(input.kind)) throw DaemonError.badRequest(`unknown device kind "${String(input.kind)}"`);
 
-        const scopes = input.scopes === undefined ? [...DEFAULT_SCOPES] : input.scopes.filter(isScope);
-        if (scopes.length === 0) scopes.push("read");
-
         const token = randomBytes(32).toString("base64url");
         const timestamp = this.now();
         const record: DeviceRecord = {
             id: `dev-${randomBytes(6).toString("hex")}`,
             name: input.name.trim(),
             kind: input.kind,
-            scopes,
             tokenHash: hashToken(token),
             createdAt: timestamp,
             lastSeenAt: timestamp,
@@ -245,12 +229,7 @@ export class AuthStore {
         const code = pairCode();
         const nonce = randomBytes(16).toString("hex");
         this.pairs.set(code, { code, nonce, expiresAt: timestamp + ttlSec * 1000, used: false });
-        return {
-            code,
-            url: `${this.baseUrl}/pair/${code}`,
-            expiresAt: timestamp + ttlSec * 1000,
-            nonce,
-        };
+        return { code, expiresAt: timestamp + ttlSec * 1000, nonce };
     }
 
     pairRedeem(input: RedeemPairInput): RedeemPairResult {
@@ -316,19 +295,16 @@ export class AuthStore {
             const created = this.createDevice({
                 name: LOCAL_BROWSER_NAME,
                 kind: LOCAL_BROWSER_KIND,
-                scopes: [...SCOPES],
             });
             const record = this.devices.find((device) => device.id === created.device.id);
             if (record === undefined) return created;
             record.tokenHash = hash;
-            record.scopes = [...SCOPES];
             this.persist();
             this.writeLocalBrowserToken(token);
             return { token, device: publicDevice(record) };
         }
 
         existing.tokenHash = hash;
-        existing.scopes = [...SCOPES];
         existing.revokedAt = null;
         this.persist();
         this.writeLocalBrowserToken(token);
@@ -364,14 +340,13 @@ export class AuthStore {
         }
     }
 
-    /** The local CLI token grants every scope; it is not persisted or revocable. */
+    /** The local CLI token is the daemon's own admin credential; not persisted, not revocable. */
     private localCliDevice(): DevicePublic {
         const timestamp = this.now();
         return {
             id: LOCAL_CLI_DEVICE_ID,
             name: "local CLI",
             kind: "laptop",
-            scopes: [...SCOPES],
             createdAt: 0,
             lastSeenAt: timestamp,
             revokedAt: null,
@@ -428,7 +403,6 @@ export class AuthStore {
                 id: candidate.id,
                 name: candidate.name,
                 kind: candidate.kind,
-                scopes: Array.isArray(candidate.scopes) ? candidate.scopes.filter(isScope) : ["read"],
                 tokenHash: candidate.tokenHash,
                 createdAt: candidate.createdAt,
                 lastSeenAt: typeof candidate.lastSeenAt === "number" ? candidate.lastSeenAt : candidate.createdAt,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "../../src/config.js";
+import type { NetworkInterfaceInfo } from "node:os";
+import { DEFAULT_HOST, loadConfig } from "../../src/config.js";
+import { localOrigins } from "../../src/core/network.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -11,12 +13,22 @@ const LOOPBACK = (port: number): string[] => [
     `http://[::1]:${port}`,
 ];
 
+const ipv4 = (address: string, overrides: Partial<NetworkInterfaceInfo> = {}): NetworkInterfaceInfo => ({
+    address,
+    netmask: "255.255.255.0",
+    family: "IPv4",
+    mac: "00:00:00:00:00:00",
+    internal: false,
+    cidr: `${address}/24`,
+    ...overrides,
+});
+
 describe("loadConfig", () => {
-    it("uses protocol defaults (access mode local)", () => {
-        const config = loadConfig({});
-        expect(config.host).toBe("127.0.0.1");
+    it("uses protocol defaults and binds every interface", () => {
+        const config = loadConfig({}, { interfaces: {} });
+        expect(DEFAULT_HOST).toBe("0.0.0.0");
+        expect(config.host).toBe("0.0.0.0");
         expect(config.port).toBe(7676);
-        expect(config.access).toBe("local");
         expect(config.publicUrl).toBeNull();
         expect(config.staticDir).toBe(join(repoRoot, "web", "dist"));
         expect(config.corsOrigins).toEqual(LOOPBACK(7676));
@@ -28,14 +40,17 @@ describe("loadConfig", () => {
     });
 
     it("honours environment overrides; PI2_ORIGINS is additive", () => {
-        const config = loadConfig({
-            PI2_PORT: "0",
-            PI2_HOST: "0.0.0.0",
-            PI2_STATIC_DIR: "/srv/pi2/web",
-            PI2_ORIGINS: "http://a.test, http://b.test ,,",
-        });
+        const config = loadConfig(
+            {
+                PI2_PORT: "0",
+                PI2_HOST: "127.0.0.1",
+                PI2_STATIC_DIR: "/srv/pi2/web",
+                PI2_ORIGINS: "http://a.test, http://b.test ,,",
+            },
+            { interfaces: {} },
+        );
         expect(config.port).toBe(0);
-        expect(config.host).toBe("0.0.0.0");
+        expect(config.host).toBe("127.0.0.1");
         expect(config.staticDir).toBe("/srv/pi2/web");
         // Loopback origins stay in place; the extras are appended, normalized,
         // and empty entries dropped.
@@ -48,80 +63,54 @@ describe("loadConfig", () => {
         expect(() => loadConfig({ PI2_PORT: "70000" })).toThrow(/PI2_PORT/);
     });
 
-    it("derives loopback origins from the port", () => {
-        const config = loadConfig({ PI2_PORT: "8080" });
-        expect(config.corsOrigins).toEqual(LOOPBACK(8080));
-    });
-
-    it("derives local mode origins without a LAN address", () => {
+    it("allows every local IPv4 origin at the bound port", () => {
         const config = loadConfig(
-            { PI2_ACCESS_MODE: "local" },
-            { detectLanIp: () => "192.168.2.10" },
-        );
-        expect(config.access).toBe("local");
-        expect(config.host).toBe("127.0.0.1");
-        expect(config.corsOrigins).toEqual(LOOPBACK(7676));
-    });
-
-    it("lan mode binds 0.0.0.0 and adds the detected LAN origin", () => {
-        const config = loadConfig(
-            { PI2_ACCESS_MODE: "lan" },
-            { detectLanIp: () => "192.168.2.10" },
-        );
-        expect(config.access).toBe("lan");
-        expect(config.host).toBe("0.0.0.0");
-        expect(config.corsOrigins).toEqual([...LOOPBACK(7676), "http://192.168.2.10:7676"]);
-    });
-
-    it("lan mode skips the extra origin when detection fails or throws", () => {
-        expect(
-            loadConfig({ PI2_ACCESS_MODE: "lan" }, { detectLanIp: () => null }).corsOrigins,
-        ).toEqual(LOOPBACK(7676));
-        expect(
-            loadConfig(
-                { PI2_ACCESS_MODE: "lan" },
-                {
-                    detectLanIp: () => {
-                        throw new Error("no interfaces");
-                    },
+            { PI2_PORT: "8080" },
+            {
+                interfaces: {
+                    lo: [ipv4("127.0.0.1", { internal: true })],
+                    wlan0: [ipv4("192.168.11.7"), ipv4("169.254.10.1")],
+                    tailscale0: [ipv4("100.64.0.14")],
                 },
-            ).corsOrigins,
-        ).toEqual(LOOPBACK(7676));
+            },
+        );
+        // Loopback aliases plus each reachable address; link-local is skipped.
+        for (const origin of [...LOOPBACK(8080), "http://192.168.11.7:8080", "http://100.64.0.14:8080"]) {
+            expect(config.corsOrigins).toContain(origin);
+        }
+        expect(config.corsOrigins).toHaveLength(LOOPBACK(8080).length + 2);
     });
 
-    it("tailscale mode stays on loopback and adds the public URL origin", () => {
-        const config = loadConfig({
-            PI2_ACCESS_MODE: "tailscale",
-            PI2_PUBLIC_URL: "https://myhost.tail1234.ts.net/",
-        });
-        expect(config.access).toBe("tailscale");
+    it("narrows the bind on PI2_HOST", () => {
+        const config = loadConfig({ PI2_HOST: "127.0.0.1" }, { interfaces: { wlan0: [ipv4("192.168.11.7")] } });
         expect(config.host).toBe("127.0.0.1");
-        expect(config.publicUrl).toBe("https://myhost.tail1234.ts.net");
-        expect(config.corsOrigins).toEqual([...LOOPBACK(7676), "https://myhost.tail1234.ts.net"]);
-    });
-
-    it("tailscale without PI2_PUBLIC_URL keeps only loopback origins", () => {
-        const config = loadConfig({ PI2_ACCESS_MODE: "tailscale" });
-        expect(config.publicUrl).toBeNull();
+        // A loopback-only daemon is unreachable from the LAN, so the allowlist
+        // must not advertise an address nothing is listening on.
         expect(config.corsOrigins).toEqual(LOOPBACK(7676));
     });
 
-    it("lets PI2_HOST win over the mode default", () => {
-        expect(loadConfig({ PI2_ACCESS_MODE: "lan", PI2_HOST: "127.0.0.1" }).host).toBe("127.0.0.1");
-        expect(loadConfig({ PI2_ACCESS_MODE: "tailscale", PI2_HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
-        expect(loadConfig({ PI2_ACCESS_MODE: "local", PI2_HOST: "192.168.2.5" }).host).toBe("192.168.2.5");
+    it("adds the public URL origin and keeps loopback", () => {
+        const config = loadConfig({ PI2_PUBLIC_URL: "https://myhost.tail1234.ts.net/" }, { interfaces: {} });
+        expect(config.publicUrl).toBe("https://myhost.tail1234.ts.net");
+        expect(config.corsOrigins).toContain("https://myhost.tail1234.ts.net");
+        for (const origin of LOOPBACK(7676)) expect(config.corsOrigins).toContain(origin);
     });
 
     it("normalizes and de-duplicates explicit origins", () => {
-        const config = loadConfig({
-            PI2_ORIGINS: "https://a.test/, http://127.0.0.1:7676, ,http://a.test",
-        });
-        expect(config.corsOrigins).toEqual([...LOOPBACK(7676), "https://a.test", "http://a.test"]);
+        const config = loadConfig(
+            { PI2_ORIGINS: "https://a.test/, http://127.0.0.1:7676, ,http://a.test" },
+            { interfaces: {} },
+        );
+        expect(config.corsOrigins.filter((origin) => origin.endsWith("a.test"))).toEqual([
+            "https://a.test",
+            "http://a.test",
+        ]);
+        expect(config.corsOrigins.filter((origin) => origin === "http://127.0.0.1:7676")).toHaveLength(1);
     });
 
-    it("fails fast on an unknown access mode", () => {
-        expect(() => loadConfig({ PI2_ACCESS_MODE: "public" })).toThrow(
-            "PI2_ACCESS_MODE must be local, lan or tailscale",
-        );
+    it("derives only loopback origins for link-local addresses", () => {
+        expect(
+            localOrigins({ port: 7676, bindHost: "0.0.0.0", interfaces: { wlan0: [ipv4("169.254.10.1")] } }),
+        ).toEqual(LOOPBACK(7676));
     });
 });

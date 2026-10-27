@@ -111,8 +111,7 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | Variable | Default | Meaning |
 |---|---|---|
 | `PI2_PORT` | `7676` | HTTP/WS port, `0` = ephemeral |
-| `PI2_HOST` | `127.0.0.1` (`0.0.0.0` in `lan` mode) | bind address; wins over the mode default |
-| `PI2_ACCESS_MODE` | `local` | `local` / `lan` / `tailscale` (see below) |
+| `PI2_HOST` | `0.0.0.0` | bind address (all interfaces); set `127.0.0.1` for a loopback-only daemon |
 | `PI2_PUBLIC_URL` | – | external base URL, e.g. `https://myhost.tail1234.ts.net` (no trailing slash) |
 | `PI2_ORIGINS` | – | **extra** CORS/Origin allowlist entries (comma separated), added to the derived origins |
 | `PI2_STATIC_DIR` | `<repo>/web/dist` | built web UI |
@@ -158,21 +157,35 @@ page lists `default` rows only behind a persisted “Show N hidden” toggle
 secondary rows dimmed with a reason badge; any workspace picker offers
 `default` rows only, while lookups by id ignore `visibility` entirely.
 
-### Access modes
+### Binding and reachability
 
-| `PI2_ACCESS_MODE` | bind (unless `PI2_HOST`) | derived `corsOrigins` |
+The daemon listens on **all interfaces** (`0.0.0.0`) by default: the console is meant to
+be opened from a phone as well as from the desktop, and it is the **pairing code** — not
+the bind address — that grants access (each device then holds its own revocable token).
+`PI2_HOST` narrows the bind:
+
+| `PI2_HOST` | Reachable from | Use when |
 |---|---|---|
-| `local` (default) | `127.0.0.1` | `http://127.0.0.1:<port>`, `http://localhost:<port>`, `http://[::1]:<port>` |
-| `lan` | `0.0.0.0` | loopback three **plus** `http://<detected-lan-ip>:<port>` |
-| `tailscale` | `127.0.0.1` | loopback three **plus** the origin of `PI2_PUBLIC_URL` |
+| unset (default `0.0.0.0`) | this machine, the LAN, a tailnet | the normal homelab setup |
+| `127.0.0.1` | this machine only | you always put `tailscale serve` (or another proxy) in front, or you want the console strictly local |
 
-Origins are normalized (trailing `/` stripped, empties dropped) and
-`PI2_ORIGINS` is appended — never a replacement. LAN detection is best effort:
-when the address is unknown that extra origin is simply skipped. `tailscale`
-assumes `tailscale serve` terminates TLS in front of the loopback daemon; the
-daemon never does TLS itself. An unknown mode fails startup with one line:
-`pi2: PI2_ACCESS_MODE must be local, lan or tailscale`. Changing the mode
-requires restarting `pi2 daemon`.
+`corsOrigins` are *derived*, not configured: loopback plus **every IPv4 address of this
+host** at the bound port, plus the origin of `PI2_PUBLIC_URL`, plus anything in
+`PI2_ORIGINS`. A browser that loaded the console from `http://192.168.11.7:7676` sends an
+`Origin` header that is not loopback, so the allowlist has to cover the address the user
+actually typed. Origins are normalized (trailing `/` stripped, empties dropped) and
+deduped; `PI2_ORIGINS` never replaces the derived list.
+
+The daemon never terminates TLS. For a tailnet, point `PI2_PUBLIC_URL` at the
+`tailscale serve` URL (`https://host.tail1234.ts.net`): the origin is then allowed,
+`pi2 pairing` advertises that base, and `pi2 doctor` reports the bind as `ok` instead of
+warning about the missing TLS.
+
+The pairing link follows the same preference (public URL → LAN address → loopback) and
+is chosen by the **daemon**, not the client: `POST /api/v1/pair` returns the URL together
+with the QR matrix and every base a browser could use, and accepts `base` to pin a
+different entry. `:PiWebPair` renders that list as the "pick the interface" menu; the
+reasoning is in [ADR 0001](adr/0001-phone-first-pairing.md).
 
 ## 5. Runtime files
 
@@ -182,7 +195,7 @@ All of these live in `PI2_RUNTIME_DIR` (created `0700`):
 |---|---|---|
 | `d.sock` | `0600` | plugin ↔ daemon JSONL socket (nvim dials it) |
 | `d.sock.token` | `0600` | handshake token for `hello`; rotated per daemon start |
-| `daemon.lock` | `0600` | singleton lock: `{pid, bootId, port, daemonId, startedAt, protocolVersion, access?, publicUrl?}` |
+| `daemon.lock` | `0600` | singleton lock: `{pid, bootId, port, daemonId, startedAt, protocolVersion, host?, publicUrl?}` |
 | `daemon.json` | `0600` | same payload, written **after** `listen()` so tools learn the real port |
 | `cli.token` | `0600` | 32-byte hex local admin token, rotated per daemon start |
 
@@ -216,7 +229,7 @@ Two token kinds:
    `PI2_DATA_DIR/devices.json`.
 2. **Local CLI token**: `PI2_RUNTIME_DIR/cli.token`, minted by `pi2 daemon` on
    each start. Any request carrying it authenticates as the synthetic device
-   `{id:"local-cli", name:"local CLI", scopes:["read","steer","control","admin"]}`
+   `{id:"local-cli", name:"local CLI", kind:"laptop"}`
    (constant-time compare, never persisted, not revocable, not listed by
    `GET /api/v1/devices`). Rotating the file invalidates the old value
    immediately.
@@ -230,7 +243,7 @@ authenticated (auth runs before routing).
 
 `pi2 open` calls this endpoint (loopback **and** local CLI token required) to
 sign the browser in without a pairing code: it rotates the single
-`local browser` device (`kind:"laptop"`, all four scopes) and answers
+`local browser` device (`kind:"laptop"`) and answers
 `{token, device, url}` with
 `url = http://127.0.0.1:<actual bound port>/#t=<token>`. The token lives in the
 fragment, so it never reaches a request line, a `Referer` header or a proxy
@@ -303,7 +316,7 @@ object `{daemon, instances, resources, health}`.
 | `socket` | `d.sock` missing (and no daemon) | missing but daemon answers |
 | `daemon` | `/api/v1/info` unreachable | – |
 | `port` | – (reports bound/free) | – |
-| `access` | `lan`/`tailscale` with a non-loopback bind and no `PI2_PUBLIC_URL` | `lan`/`tailscale` (adds `— no TLS, prefer \`tailscale serve\`` without an `https:` public URL) |
+| `bind` | – | non-loopback bind without an `https:` `PI2_PUBLIC_URL` (`all interfaces/7676 — no TLS; pairing codes gate access, set PI2_HOST=127.0.0.1 to restrict`) |
 | `service-manager` | – | systemd/launchd not found |
 | `linger` (Linux) | – | `Linger=no` |
 | `web-dist` | – | missing |
@@ -327,23 +340,47 @@ the command: if it is missing or fails, `pi2 open` prints the URL and still
 exits `0`. This is a local-only shortcut; use `pi2 pairing` for LAN/Tailscale
 browsers.
 
-### 8.5 `pi2 pairing [--public-url <url>]`
+### 8.5 `pi2 pairing [--base <url>]`
 
-`POST /api/v1/pair` with the local token and prints:
+`POST /api/v1/pair` with the local token, then prints a scannable report:
 
 ```
-url     http://127.0.0.1:7676/pair/ABCD2345
+url     http://192.168.2.10:7676/pair/ABCD2345
 code    ABCD2345
-expires 2026-10-21T04:30:15.085Z (600s)
-qr      {"v":1,"code":"ABCD2345","url":"…","expiresAt":…,"nonce":"…"}
+expires in 600s (2026-10-21T04:30:15.085Z)
+
+  ▄▄▄▄▄▄▄ ▄▄ ▄▄▄▄▄▄▄
+  █ ▄▄▄ █ ▀█▄▀█ ▄▄▄ █
+  █ ███ █ ▄▀▄ █ ███ █
+  …
 ```
 
-The URL is rebuilt from the *actual* daemon base URL because the daemon's own
-`url` field is derived from the configured port (stale after a retry or
-`--port 0`). `--public-url <url>` rebuilds both the printed `url` and the QR
-payload's `url` on that base (e.g. `https://host.ts.net/pair/ABCD2345`); it
-defaults to `daemon.json`'s `publicUrl`, then `PI2_PUBLIC_URL`. The code, expiry
-and nonce are unchanged.
+The daemon owns the URL, the QR matrix and the base list (see
+[ADR 0001](adr/0001-phone-first-pairing.md) §3); the CLI only renders them. The base is
+chosen for reachability, first non-empty wins:
+
+| # | Base (`kind`) | When |
+|---|---|---|
+| 1 | `PI2_PUBLIC_URL` (`public`) | behind `tailscale serve` or another proxy |
+| 2 | primary LAN address (`lan`) | the default — the daemon binds `0.0.0.0` |
+| 3 | other routed / tailnet address (`other`, `tailscale`) | multi-homed hosts |
+| 4 | `http://127.0.0.1:<port>` (`loopback`) | `PI2_HOST=127.0.0.1`, or a host with no LAN address |
+
+`--base <url>` pins a different address; the daemon validates it against the list it
+just returned and answers `400` for anything else, so a link can never point at an
+address nothing listens on.
+
+`GET /pair/<code>` answers `302` to `/connect?code=<code>&auto=1`, which is what makes a
+scanned link zero-input: the console redeems the code against its own origin and lands on
+`/workspaces` without a form.
+
+`qr` is byte mode, EC level M, versions 1–10, and lives in `src/core/qr.ts`; `rows` is the
+raw module matrix without a quiet zone (`size` strings of `size` `1`/`0` characters). The
+HTTP mint response carries the same matrix, so the console and a terminal draw the same
+symbol. A URL too long for version 10 is printed without a QR, with a note.
+
+Machines call `POST /api/v1/pair` directly — that is what `:PiWebPair` does — so the CLI
+keeps only this human report; there is no `--json`.
 
 ### 8.6 `pi2 install-service` / `pi2 uninstall-service`
 
@@ -455,7 +492,7 @@ debugging.
 | `EADDRINUSE` on an explicit port | pick another `--port` (only the default port retries) |
 | `403` with the browser console | origin not in `PI2_ORIGINS` (derived from the port) |
 | `pi2 open` → `403 console login is loopback-only` | the request came from a non-loopback address; pair the device instead |
-| `pi2 doctor` → `access FAIL` | `PI2_ACCESS_MODE=lan/tailscale` binds a non-loopback address without `PI2_PUBLIC_URL`; set it or use `tailscale serve` |
+| `pi2 doctor` → `bind warn` | the daemon listens on a non-loopback address without TLS; that is the default posture — pair each device, or set `PI2_HOST=127.0.0.1` / `PI2_PUBLIC_URL=https://…` |
 | `health: static=FAIL` | `web/dist` missing — build the web UI or set `PI2_STATIC_DIR` |
 | Browser console loads but no workspaces | no nvim with the plugin has connected yet; run `pi2 attach` in a project |
 | `pi2 doctor` → `plugin FAIL` | install pi2.nvim, or point `PI2_PLUGIN_DIR` at the checkout |

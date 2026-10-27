@@ -18,13 +18,12 @@ describe("auth device store", () => {
 
     it("creates a device, persists its hash and never leaks it", () => {
         const auth = new AuthStore({ path });
-        const { token, device } = auth.createDevice({ name: "Pixel", kind: "phone", scopes: ["read", "steer"] });
+        const { token, device } = auth.createDevice({ name: "Pixel", kind: "phone" });
 
         expect(token.length).toBeGreaterThanOrEqual(40);
         expect(device.id).toMatch(/^dev-/);
         expect(device.name).toBe("Pixel");
         expect(device.kind).toBe("phone");
-        expect(device.scopes).toEqual(["read", "steer"]);
         expect((device as unknown as Record<string, unknown>).tokenHash).toBeUndefined();
 
         const persisted = JSON.parse(readFileSync(path, "utf8")) as {
@@ -93,12 +92,11 @@ describe("auth device store", () => {
 
     it("redeems a pairing code exactly once", () => {
         let now = 1_700_000_000_000;
-        const auth = new AuthStore({ path, now: () => now, baseUrl: "http://127.0.0.1:7676" });
+        const auth = new AuthStore({ path, now: () => now });
         const pair = auth.pairCreate({ ttlSec: 600 });
 
         expect(pair.code).toMatch(/^[A-Z0-9]{8}$/);
         expect(pair.nonce).toMatch(/^[0-9a-f]+$/);
-        expect(pair.url).toContain(pair.code);
         expect(pair.expiresAt).toBe(now + 600_000);
 
         const redeemed = auth.pairRedeem({ code: pair.code, deviceName: "Pixel", kind: "phone" });
@@ -138,13 +136,12 @@ describe("local browser session", () => {
 
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-    it("creates exactly one local-browser device with every scope", () => {
+    it("creates exactly one local-browser device", () => {
         const auth = new AuthStore({ path, now: () => 1_000 });
         const session = auth.localBrowserSession();
 
         expect(session.device.name).toBe("local browser");
         expect(session.device.kind).toBe("laptop");
-        expect(session.device.scopes).toEqual(["read", "steer", "control", "admin"]);
         expect(session.device.createdAt).toBe(1_000);
         expect(session.device.lastSeenAt).toBe(1_000);
         expect(session.device.revokedAt).toBeNull();

@@ -183,33 +183,37 @@ describe("daemon.json", () => {
         handle.release();
     });
 
-    it("carries the optional access/publicUrl fields and stays readable without them", () => {
+    it("carries the optional host/publicUrl fields and stays readable without them", () => {
         const handle = acquireLock({
             lockPath,
             payload: {
                 port: 7676,
-                daemonId: "d-access",
+                daemonId: "d-bind",
                 startedAt: 5,
                 protocolVersion: PROTOCOL_VERSION,
-                access: "tailscale",
+                host: "0.0.0.0",
                 publicUrl: "https://host.ts.net",
             },
             bootId: () => BOOT,
         });
-        expect(readLockFile(lockPath)?.access).toBe("tailscale");
+        expect(readLockFile(lockPath)?.host).toBe("0.0.0.0");
         expect(readLockFile(lockPath)?.publicUrl).toBe("https://host.ts.net");
         handle.release();
 
         // A legacy payload (no new fields) still parses.
         const legacy = { ...payload(), pid: process.pid, bootId: BOOT };
         writeFileSync(lockPath, `${JSON.stringify(legacy)}\n`);
-        expect(readLockFile(lockPath)?.access).toBeUndefined();
+        expect(readLockFile(lockPath)?.host).toBeUndefined();
         expect(readLockFile(lockPath)?.publicUrl).toBeUndefined();
     });
 
-    it("refuses a malformed access field", () => {
-        const legacy = { ...payload(), pid: process.pid, bootId: BOOT, access: "public" };
+    it("ignores a legacy access field and refuses a malformed host", () => {
+        const legacy = { ...payload(), pid: process.pid, bootId: BOOT, access: "tailscale" };
         writeFileSync(lockPath, `${JSON.stringify(legacy)}\n`);
+        expect(readLockFile(lockPath)?.host).toBeUndefined();
+
+        const malformed = { ...payload(), pid: process.pid, bootId: BOOT, host: 7676 };
+        writeFileSync(lockPath, `${JSON.stringify(malformed)}\n`);
         expect(readLockFile(lockPath)).toBeUndefined();
     });
 

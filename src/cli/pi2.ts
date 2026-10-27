@@ -21,7 +21,6 @@ import { platform as osPlatform } from "node:os";
 import { runtimeDir } from "../core/paths.js";
 import type { InstanceResourcesSnapshot } from "../core/interfaces.js";
 import type { WorkspaceInfo } from "../protocol/types.js";
-import { PROTOCOL_VERSION } from "../protocol/types.js";
 import { main as runDaemonMain } from "./daemon.js";
 import { readDaemonJson, type DaemonLock } from "./lock.js";
 import { cliTokenPath, readCliToken } from "./token.js";
@@ -54,15 +53,17 @@ Usage:
   pi2 status [--json]                daemon info, instances, resources, health
   pi2 open [--print] [--no-browser]  open the web console signed in (local only)
   pi2 doctor [--json]                environment checks
-  pi2 pairing [--public-url <url>]   create a pairing code (URL + code + QR payload)
+  pi2 pairing [--base <url>]         create a pairing code (URL + code + QR)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
   pi2 --version | --help
 
 \`pi2 open\` flags: --print prints the URL only; --no-browser prints it instead
 of launching a browser (--print implies --no-browser).
-\`pi2 pairing\` flags: --public-url <url> rebuilds the URL on that public base
-(defaults to daemon.json's publicUrl, then PI2_PUBLIC_URL).
+\`pi2 pairing\` flags: --base <url> pins the link to one of the addresses the
+daemon advertises (it prints the alternatives; anything else is rejected).
+The link prefers a phone-reachable address: the public URL when one is
+configured, the primary LAN address, and loopback otherwise.
 
 The daemon endpoint comes from $PI2_RUNTIME_DIR/daemon.json (port) and
 $PI2_RUNTIME_DIR/cli.token (local admin token). Start it with \`pi2 daemon\`.
@@ -265,7 +266,7 @@ interface InfoBody {
     platform: string;
     capabilities: string[];
     limits: { maxBodyBytes: number; maxFrameBytes: number; maxConnections: number };
-    access?: string;
+    host?: string;
     publicUrl?: string | null;
 }
 
@@ -311,7 +312,7 @@ export async function runStatus(options: StatusOptions): Promise<number> {
                         url: client.baseUrl,
                         ...info,
                         // Older daemons may not report them; daemon.json does.
-                        access: info.access ?? client.daemon.access,
+                        host: info.host ?? client.daemon.host ?? null,
                         publicUrl: info.publicUrl ?? client.daemon.publicUrl ?? null,
                     },
                     instances,
@@ -365,45 +366,147 @@ export async function runStatus(options: StatusOptions): Promise<number> {
 export interface PairingOptions {
     client: DaemonClient;
     print?: (line: string) => void;
-    /** Rebuild the printed/QR url on this public base (e.g. `https://host.ts.net`). */
-    publicUrl?: string | null;
+    /** `--base <url>`: pin the link to one of the addresses the daemon advertises. */
+    base?: string | null;
 }
 
-function withoutTrailingSlash(value: string): string {
-    return value.trim().replace(/\/+$/, "");
+/** One address the daemon says it is reachable on (`bases[]` in the mint response). */
+export interface PairingBase {
+    kind: string;
+    name: string;
+    address: string;
+    url: string;
 }
 
-/** `--public-url` → `daemon.json.publicUrl` → `PI2_PUBLIC_URL`, first non-empty wins. */
-export function resolvePublicUrl(client: DaemonClient, flag: string | undefined): string | null {
-    for (const candidate of [flag, client.daemon.publicUrl, process.env.PI2_PUBLIC_URL]) {
-        const value = candidate === undefined || candidate === null ? "" : withoutTrailingSlash(candidate);
-        if (value !== "") return value;
+export interface PairingQr {
+    version: number;
+    ecc: string;
+    mask: number;
+    size: number;
+    /** One string per module row, `1` = dark, without a quiet zone. */
+    rows: string[];
+}
+
+export interface PairingResult {
+    code: string;
+    url: string;
+    expiresAt?: number;
+    nonce?: string;
+    qr?: PairingQr;
+    bases: PairingBase[];
+}
+
+/** Quiet zone around the terminal QR, in modules. */
+const QR_QUIET_ZONE = 2;
+
+/**
+ * Render a QR matrix for a terminal: one character per module, two module rows
+ * per text row via half blocks. The caller owns the width budget; a version 3
+ * symbol (29 modules) plus the quiet zone stays well inside 80 columns.
+ */
+export function renderTerminalQr(rows: readonly string[]): string[] {
+    const size = rows[0]?.length ?? 0;
+    if (size === 0) return [];
+    const width = size + QR_QUIET_ZONE * 2;
+    const blank = "0".repeat(width);
+    const frame = Array.from({ length: QR_QUIET_ZONE }, () => blank);
+    const padded = [
+        ...frame,
+        ...rows.map((row) => `${"0".repeat(QR_QUIET_ZONE)}${row}${"0".repeat(QR_QUIET_ZONE)}`),
+        ...frame,
+    ];
+
+    const lines: string[] = [];
+    for (let index = 0; index < padded.length; index += 2) {
+        const top = padded[index] ?? blank;
+        const bottom = padded[index + 1] ?? blank;
+        let line = "";
+        for (let column = 0; column < width; column += 1) {
+            const up = top[column] === "1";
+            const down = bottom[column] === "1";
+            line += up && down ? "█" : up ? "▀" : down ? "▄" : " ";
+        }
+        lines.push(line);
     }
-    return null;
+    return lines;
 }
 
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : undefined;
+}
+
+function pairingQrOf(raw: unknown): PairingQr | undefined {
+    const record = recordOf(raw);
+    if (!record || !Array.isArray(record.rows) || record.rows.length === 0) return undefined;
+    const rows = record.rows.filter((row: unknown): row is string => typeof row === "string");
+    if (rows.length === 0) return undefined;
+    return {
+        version: typeof record.version === "number" ? record.version : 0,
+        ecc: typeof record.ecc === "string" ? record.ecc : "M",
+        mask: typeof record.mask === "number" ? record.mask : 0,
+        size: typeof record.size === "number" ? record.size : (rows[0]?.length ?? 0),
+        rows,
+    };
+}
+
+function pairingBasesOf(raw: unknown): PairingBase[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((value) => {
+        const record = recordOf(value);
+        if (!record || typeof record.url !== "string") return [];
+        return [
+            {
+                kind: typeof record.kind === "string" ? record.kind : "other",
+                name: typeof record.name === "string" ? record.name : "",
+                address: typeof record.address === "string" ? record.address : "",
+                url: record.url,
+            },
+        ];
+    });
+}
+
+/**
+ * `pi2 pairing` — mint a code and print a scannable link.
+ *
+ * The daemon owns the URL, the QR matrix and the list of usable bases (ADR
+ * 0001); the CLI only renders them. `--base` narrows the choice, and the daemon
+ * rejects anything it did not offer.
+ */
 export async function runPairing(options: PairingOptions): Promise<number> {
     const print = options.print ?? ((line: string) => process.stdout.write(`${line}\n`));
-    const result = await options.client.post("/api/v1/pair", {});
-    const code = typeof result.body.code === "string" ? result.body.code : undefined;
-    if (code === undefined) throw new CliError("pairing failed: daemon returned no code");
-    const expiresAt = typeof result.body.expiresAt === "number" ? result.body.expiresAt : undefined;
-    const nonce = typeof result.body.nonce === "string" ? result.body.nonce : undefined;
-    // Rebuild the URL from the *actual* base URL (or the public base when one is
-    // known): the daemon's own `url` field is derived from the configured port,
-    // which is stale after a retry or `--port 0`.
-    const base = options.publicUrl === undefined || options.publicUrl === null || options.publicUrl.trim() === ""
-        ? options.client.baseUrl
-        : withoutTrailingSlash(options.publicUrl);
-    const url = `${base}/pair/${code}`;
-    const payload = JSON.stringify({ v: PROTOCOL_VERSION, code, url, ...(expiresAt === undefined ? {} : { expiresAt }), ...(nonce === undefined ? {} : { nonce }) });
+    const base = options.base?.trim() ?? "";
+    const response = await options.client.post("/api/v1/pair", base === "" ? {} : { base });
+
+    const code = typeof response.body.code === "string" ? response.body.code : undefined;
+    const url = typeof response.body.url === "string" ? response.body.url : undefined;
+    if (code === undefined || url === undefined) throw new CliError("pairing failed: daemon returned no code");
+
+    const expiresAt = typeof response.body.expiresAt === "number" ? response.body.expiresAt : undefined;
+    const qr = pairingQrOf(response.body.qr);
+    const bases = pairingBasesOf(response.body.bases);
 
     print(`url     ${url}`);
     print(`code    ${code}`);
     if (expiresAt !== undefined) {
-        print(`expires ${new Date(expiresAt).toISOString()} (${Math.max(0, Math.round((expiresAt - Date.now()) / 1000))}s)`);
+        const seconds = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+        print(`expires in ${seconds}s (${new Date(expiresAt).toISOString()})`);
     }
-    print(`qr      ${payload}`);
+    if (qr === undefined) {
+        print("");
+        print("note    the link is too long to encode as a QR code; open the url on the phone instead.");
+    } else {
+        print("");
+        for (const line of renderTerminalQr(qr.rows)) print(line);
+    }
+    if (bases.length > 1) {
+        print("");
+        print("other addresses the phone could use (pi2 pairing --base <url>):");
+        for (const candidate of bases) {
+            print(`  ${candidate.kind.padEnd(9)} ${candidate.name.padEnd(12)} ${candidate.url}`);
+        }
+    }
     return 0;
 }
 
@@ -633,7 +736,7 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
             case "pairing":
             case "pair": {
                 const parsed = parseArgs(rest, {
-                    values: ["--public-url"],
+                    values: ["--base"],
                     booleans: ["--help"],
                     aliases: { "-h": "--help" },
                 });
@@ -645,7 +748,7 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                 return await runPairing({
                     client,
                     print: out,
-                    publicUrl: resolvePublicUrl(client, stringFlag(parsed.flags, "--public-url")),
+                    base: stringFlag(parsed.flags, "--base"),
                 });
             }
             case "install-service":

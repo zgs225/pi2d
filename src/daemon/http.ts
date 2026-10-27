@@ -8,9 +8,12 @@ import type { Bus, InstanceManager, Logger, WorkspaceStore } from "../core/inter
 import { ERROR_CODES, errorBody } from "../protocol/errors.js";
 import { PROTOCOL_VERSION, type CommandRequest } from "../protocol/types.js";
 import type { Config } from "../config.js";
+import { networkBases } from "../core/network.js";
+import { encodeQr, fitsQr } from "../core/qr.js";
 import type { AuthStore, DevicePublic } from "./auth.js";
 import { isAllowedOrigin, LOCAL_CLI_DEVICE_ID } from "./auth.js";
 import { DaemonError, toErrorPayload } from "./errors.js";
+import { PairRateLimiter } from "./rate-limit.js";
 import { CommandRouter } from "./router.js";
 import { createSseHandler } from "./sse.js";
 import { serveStatic } from "./static.js";
@@ -36,6 +39,8 @@ export interface AppDeps {
     startedAt?: number;
     now?: () => number;
     metrics?: () => DaemonMetrics;
+    /** Redeem budget; injectable so tests can advance the clock. */
+    pairLimiter?: PairRateLimiter;
 }
 
 function bearer(c: Context<Env>): string | undefined {
@@ -48,6 +53,16 @@ function bearer(c: Context<Env>): string | undefined {
 function isLoopback(c: Context<Env>): boolean {
     const address = c.env?.incoming?.socket?.remoteAddress;
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+/** Rate-limit key for the public redeem endpoint. */
+function clientAddress(c: Context<Env>): string {
+    return c.env?.incoming?.socket?.remoteAddress ?? "unknown";
+}
+
+/** `http://host:port` without a trailing slash, for `base` validation. */
+function normalizeBase(raw: string): string {
+    return raw.trim().replace(/\/+$/, "");
 }
 
 /** Daemon package version; falls back to the v1 baseline when package.json is unavailable. */
@@ -138,6 +153,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
     const startedAt = deps.startedAt ?? now();
     const app = new Hono<Env>();
     const router = new CommandRouter({ auth, instances, workspaces, logger, now, daemonId: deps.daemonId });
+    const pairLimiter = deps.pairLimiter ?? new PairRateLimiter(undefined, { now });
 
     // Origin check + CORS. Applies to every surface, including SSE.
     app.use("*", async (c, next) => {
@@ -163,8 +179,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
         if (path === "/api/v1/info" || path === "/api/v1/health") {
             if (isLoopback(c)) return next();
         }
-        // Pairing redeem is public; pair.create enforces auth in its handler.
-        if (path === "/api/v1/pair") return next();
+        // Redeeming a code is public by design (the code is the capability) and
+        // rate limited below; minting one requires a device token.
+        if (path === "/api/v1/pair/redeem") return next();
         const token = bearer(c);
         const device = token ? auth.verifyToken(token) : null;
         if (!device) {
@@ -188,7 +205,7 @@ export function createApp(deps: AppDeps): Hono<Env> {
             port: config.port,
             capabilities: ["ws", "sse", "devices", "attention"],
             limits: config.limits,
-            access: config.access,
+            host: config.host,
             publicUrl: config.publicUrl,
         }),
     );
@@ -331,21 +348,84 @@ export function createApp(deps: AppDeps): Hono<Env> {
         return json(result.status, result.body);
     });
 
+    /**
+     * Mint a pairing code. Authenticated (a device token or the local CLI token);
+     * the response carries everything a renderer needs — the chosen URL, the QR
+     * matrix and every base a client may ask for next time (`base`).
+     */
     app.post("/api/v1/pair", async (c) => {
-        const body = await readJsonBody(c, config.limits.maxBodyBytes);
-        if (typeof body.code === "string") {
-            if (typeof body.kind !== "string") throw DaemonError.badRequest("kind is required");
-            const redeemed = auth.pairRedeem({
-                code: body.code,
-                deviceName: typeof body.deviceName === "string" ? body.deviceName : "",
-                kind: body.kind as "phone" | "laptop" | "tablet",
-            });
-            return c.json({ token: redeemed.token, device: redeemed.device });
-        }
         publicDeviceOrThrow(c, auth);
+        const body = await readJsonBody(c, config.limits.maxBodyBytes);
         const ttlSec = typeof body.ttlSec === "number" ? body.ttlSec : undefined;
         const pair = auth.pairCreate(ttlSec === undefined ? {} : { ttlSec });
-        return c.json({ accepted: true, ...pair });
+
+        const bases = networkBases({
+            port: config.port,
+            bindHost: config.host,
+            publicUrl: config.publicUrl,
+        });
+        const requested = typeof body.base === "string" ? normalizeBase(body.base) : null;
+        let base = bases[0]?.url ?? `http://127.0.0.1:${config.port}`;
+        if (requested !== null && requested !== "") {
+            const match = bases.find((candidate) => normalizeBase(candidate.url) === requested);
+            if (!match) {
+                throw DaemonError.badRequest(
+                    `base must be one of: ${bases.map((candidate) => candidate.url).join(", ")}`,
+                );
+            }
+            base = match.url;
+        }
+
+        const url = `${normalizeBase(base)}/pair/${pair.code}`;
+        const qr = fitsQr(url) ? encodeQr(url) : null;
+        return c.json({
+            accepted: true,
+            code: pair.code,
+            url,
+            expiresAt: pair.expiresAt,
+            nonce: pair.nonce,
+            qr,
+            bases,
+        });
+    });
+
+    /**
+     * Redeem a code with no credentials — the code *is* the capability. Rate
+     * limited per client and globally so guessing is not worth the bandwidth.
+     */
+    app.post("/api/v1/pair/redeem", async (c) => {
+        const decision = pairLimiter.check(clientAddress(c));
+        if (!decision.allowed) {
+            const retryAfter = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
+            return json(
+                429,
+                errorBody(ERROR_CODES.RATE_LIMITED, "too many pairing attempts, try again later"),
+                { "retry-after": String(retryAfter) },
+            );
+        }
+        const body = await readJsonBody(c, config.limits.maxBodyBytes);
+        if (typeof body.kind !== "string") throw DaemonError.badRequest("kind is required");
+        const redeemed = auth.pairRedeem({
+            code: typeof body.code === "string" ? body.code : "",
+            deviceName: typeof body.deviceName === "string" ? body.deviceName : "",
+            kind: body.kind as "phone" | "laptop" | "tablet",
+        });
+        return c.json({ token: redeemed.token, device: redeemed.device });
+    });
+
+    /**
+     * The scanned link. A redirect rather than an API call: the phone's browser
+     * lands on the console with the code already in the query string, and the
+     * SPA's zero-input branch redeems it without a form.
+     */
+    app.get("/pair/:code", (c) => {
+        const raw = (c.req.param("code") ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const query = new URLSearchParams();
+        if (/^[A-Z0-9]{8}$/.test(raw)) query.set("code", raw);
+        const next = c.req.query("next");
+        if (next !== undefined && next !== "") query.set("next", next);
+        query.set("auto", "1");
+        return c.redirect(`/connect?${query.toString()}`, 302);
     });
 
     app.get("/events", createSseHandler({ auth, bus, corsOrigins: config.corsOrigins, logger }));

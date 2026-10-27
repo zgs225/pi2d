@@ -28,7 +28,6 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
         limits: TEST_LIMITS,
         tokenPath: "/tmp/pi2-daemon-cli-test.sock.token",
         deviceStorePath: "/tmp/pi2-daemon-cli-test-devices.json",
-        access: "local",
         publicUrl: null,
     };
     return { ...base, ...overrides, limits: { ...base.limits, ...(overrides.limits ?? {}) } };

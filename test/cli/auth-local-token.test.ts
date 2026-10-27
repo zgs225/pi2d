@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AuthStore, LOCAL_CLI_DEVICE_ID, SCOPES } from "../../src/daemon/auth.js";
+import { AuthStore, LOCAL_CLI_DEVICE_ID } from "../../src/daemon/auth.js";
 import { writeCliToken } from "../../src/cli/token.js";
 import { removeDir, tempDir } from "./helpers.js";
 
@@ -27,8 +27,6 @@ describe("AuthStore local CLI token", () => {
         expect(device!.id).toBe(LOCAL_CLI_DEVICE_ID);
         expect(device!.id).toBe("local-cli");
         expect(device!.name).toBe("local CLI");
-        expect(device!.scopes).toEqual([...SCOPES]);
-        expect(device!.scopes).toEqual(["read", "steer", "control", "admin"]);
         expect(device!.revokedAt).toBeNull();
         expect((device as unknown as Record<string, unknown>).tokenHash).toBeUndefined();
     });
@@ -71,7 +69,7 @@ describe("AuthStore local CLI token", () => {
     it("keeps paired devices working and never lists the synthetic one", () => {
         writeCliToken(tokenPath);
         const auth = new AuthStore({ path: storePath, localTokenPath: tokenPath });
-        const { token } = auth.createDevice({ name: "Pixel", kind: "phone", scopes: ["read"] });
+        const { token } = auth.createDevice({ name: "Pixel", kind: "phone" });
 
         expect(auth.verifyToken(token)?.name).toBe("Pixel");
         expect(auth.listDevices().map((device) => device.id)).not.toContain(LOCAL_CLI_DEVICE_ID);

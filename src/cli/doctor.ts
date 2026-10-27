@@ -11,7 +11,8 @@ import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT, loadConfig, type AccessMode } from "../config.js";
+import { DEFAULT_HOST, DEFAULT_PORT, describeHost, loadConfig } from "../config.js";
+import { isLoopbackHost } from "../core/network.js";
 import { daemonSocketPath, runtimeDir } from "../core/paths.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
 import { formatTable } from "./util.js";
@@ -43,8 +44,7 @@ export interface BinaryProbe {
     error?: string;
 }
 
-export interface AccessModeContext {
-    mode: AccessMode;
+export interface BindContext {
     host: string;
     port: number;
     publicUrl: string | null;
@@ -62,7 +62,7 @@ export interface DoctorContext {
     socket: { path: string; exists: boolean };
     daemon: { reachable: boolean; port?: number; protocolVersion?: number; error?: string };
     port: { configured: number; bound: boolean };
-    access: AccessModeContext;
+    bind: BindContext;
     serviceManager: { name: "systemd" | "launchd"; available: boolean; detail?: string };
     linger: { checked: boolean; enabled?: boolean; detail?: string };
     webDist: { path: string; exists: boolean };
@@ -217,27 +217,24 @@ export function checkPort(probe: DoctorContext["port"]): DoctorCheck {
     return { name: "port", status: "ok", detail: `${probe.configured} free` };
 }
 
-function isLoopbackHost(host: string): boolean {
-    return host === "127.0.0.1" || host === "::1" || host === "localhost";
-}
-
 /**
- * `access`: local is fine; lan/tailscale warn because the daemon has no TLS of
- * its own, and fail when a non-loopback bind is exposed without a public URL.
+ * `bind`: where the daemon listens. Loopback is private; anything else is
+ * reachable from the LAN, which is the point of the console — so a non-loopback
+ * bind only *warns*. Access is gated by pairing codes and per-device tokens,
+ * and an `https:` public URL (e.g. behind `tailscale serve`) covers TLS.
  */
-export function checkAccess(probe: AccessModeContext): DoctorCheck {
-    if (probe.mode === "local") return { name: "access", status: "ok", detail: "local (loopback only)" };
-
-    const publicSuffix = probe.publicUrl === null ? "" : `, public ${probe.publicUrl}`;
-    const detail = `${probe.mode} (bind ${probe.host}/${probe.port}${publicSuffix})`;
-    if (probe.publicUrl === null && !isLoopbackHost(probe.host)) {
-        return { name: "access", status: "fail", detail };
+export function checkBind(probe: BindContext): DoctorCheck {
+    const suffix = probe.publicUrl === null ? "" : `, public ${probe.publicUrl}`;
+    if (isLoopbackHost(probe.host)) {
+        return { name: "bind", status: "ok", detail: `${probe.host}/${probe.port} (loopback only)${suffix}` };
     }
+    const detail = `${describeHost(probe.host)}/${probe.port}${suffix}`;
     const tls = probe.publicUrl !== null && probe.publicUrl.startsWith("https:");
+    if (tls) return { name: "bind", status: "ok", detail };
     return {
-        name: "access",
+        name: "bind",
         status: "warn",
-        detail: tls ? detail : `${detail} — no TLS, prefer \`tailscale serve\``,
+        detail: `${detail} — no TLS; pairing codes gate access, set PI2_HOST=127.0.0.1 to restrict`,
     };
 }
 
@@ -286,7 +283,7 @@ export function defaultProbes(ctx: DoctorContext): DoctorProbe[] {
         { name: "socket", run: () => checkSocket(ctx.socket, ctx.daemon.reachable) },
         { name: "daemon", run: () => checkDaemon(ctx.daemon) },
         { name: "port", run: () => checkPort(ctx.port) },
-        { name: "access", run: () => checkAccess(ctx.access) },
+        { name: "bind", run: () => checkBind(ctx.bind) },
         { name: "service-manager", run: () => checkServiceManager(ctx.serviceManager) },
         ...(isLinux ? [{ name: "linger", run: () => checkLinger(ctx.linger) }] : []),
         { name: "web-dist", run: () => checkWebDist(ctx.webDist) },
@@ -370,15 +367,14 @@ function statOrUndefined(path: string): { exists: boolean; mode: number | undefi
     }
 }
 
-/** Best-effort access context; an unparsable environment reports `local`. */
-function accessContext(env: NodeJS.ProcessEnv, port: number): AccessModeContext {
+/** Best-effort bind context; an unparsable environment reports the default bind. */
+function bindContext(env: NodeJS.ProcessEnv, port: number): BindContext {
     try {
         const config = loadConfig(env);
-        return { mode: config.access, host: config.host, port, publicUrl: config.publicUrl };
+        return { host: config.host, port, publicUrl: config.publicUrl };
     } catch {
         return {
-            mode: "local",
-            host: env.PI2_HOST?.trim() || "127.0.0.1",
+            host: env.PI2_HOST?.trim() || DEFAULT_HOST,
             port,
             publicUrl: env.PI2_PUBLIC_URL?.trim().replace(/\/+$/, "") || null,
         };
@@ -472,7 +468,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         socket: { path: socketPath, exists: existsSync(socketPath) },
         daemon,
         port: { configured: daemon.port ?? configuredPort, bound: daemon.reachable },
-        access: accessContext(env, daemon.port ?? configuredPort),
+        bind: bindContext(env, daemon.port ?? configuredPort),
         serviceManager,
         linger,
         webDist: { path: env.PI2_STATIC_DIR?.trim() || defaultWebDist(), exists: existsSync(env.PI2_STATIC_DIR?.trim() || defaultWebDist()) },

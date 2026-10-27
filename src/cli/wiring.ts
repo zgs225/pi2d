@@ -93,7 +93,6 @@ export async function wireDaemon(options: WireOptions = {}): Promise<WiredDaemon
     const cliTokenPath = join(runtime, CLI_TOKEN_FILE);
     const auth = new AuthStore({
         path: config.deviceStorePath,
-        baseUrl: `http://${config.host}:${config.port}`,
         localTokenPath: cliTokenPath,
         ...(options.now === undefined ? {} : { now: options.now }),
     });

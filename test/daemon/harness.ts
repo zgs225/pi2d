@@ -26,7 +26,6 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
         limits: TEST_LIMITS,
         tokenPath: "/tmp/pi2-daemon-test.sock.token",
         deviceStorePath: "/tmp/pi2-daemon-test-devices.json",
-        access: "local",
         publicUrl: null,
     };
     return { ...base, ...overrides, limits: { ...base.limits, ...(overrides.limits ?? {}) } };
@@ -80,7 +79,6 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 
     const auth = new AuthStore({
         path: join(dir, "devices.json"),
-        baseUrl: "http://127.0.0.1:0",
         ...(options.cliToken === undefined
             ? {}
             : { localTokenPath: join(dir, "cli.token") }),

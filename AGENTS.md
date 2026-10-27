@@ -30,7 +30,9 @@ Adding bulk to this file is a mistake, not a contribution.
 | `src/instances/` | discovery, lazy spawn, one-instance-per-workspace, crash handling |
 | `src/workspaces/` | registry, disk discovery, aliases/trust, visibility policy |
 | `src/cli/` | `pi2` — `daemon`, `open`, `attach`, `status`, `doctor`, `pairing`, `install-service` |
-| `src/config.ts` | env-only configuration (`PI2_*`, `PI2_ACCESS_MODE`, `PI2_WORKSPACE_*`) |
+| `src/config.ts` | env-only configuration (`PI2_*`, `PI2_HOST`, `PI2_WORKSPACE_*`) |
+| `src/core/network.ts` | reachable addresses: kind classification, `bases[]` order, CORS origins |
+| `src/core/qr.ts` | zero-dependency QR encoder (pairing links; rows, no quiet zone) |
 | `web/` | React console (own lockfile + workspace); built into `web/dist` and served by the daemon |
 | `fixtures/` | golden event streams + expected state, shared with pi2.nvim conformance tests |
 | `test/` | vitest, hermetic, injectable I/O |
@@ -68,7 +70,7 @@ owner/repo/workflow filename, not the npm name).
 | `docs/deployment.md` | env vars, runtime files, ports, auth, services, troubleshooting |
 | `docs/e2e.md` | scenario ids, isolation, skip conditions, report paths |
 | `docs/releasing.md` | npm Trusted Publishing, the bootstrap phases, verification |
-| `README.md` | install paths, `:PiWeb`, access modes |
+| `README.md` | install paths, `:PiWeb`, binding & pairing |
 | `.agents/skills/release/` | how to cut and verify a release |
 
 ## Before you say "done"

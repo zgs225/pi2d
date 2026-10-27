@@ -317,30 +317,102 @@ describe("HTTP API", () => {
         expect(h.auth.verifyToken(token)).toBeNull();
     });
 
-    it("redeems a pairing code over HTTP", async () => {
-        const pair = h.auth.pairCreate();
-        const res = await fetch(`${h.url}/api/v1/pair`, {
+    /** `POST /api/v1/pair/redeem` — the public half of pairing (ADR 0001 §3). */
+    async function redeem(code: string, kind = "phone"): Promise<Response> {
+        return fetch(`${h.url}/api/v1/pair/redeem`, {
             method: "POST",
-            body: JSON.stringify({ code: pair.code, deviceName: "Pixel", kind: "phone" }),
+            body: JSON.stringify({ code, deviceName: "Pixel", kind }),
         });
+    }
+
+    it("redeems a pairing code over the public endpoint, once", async () => {
+        const pair = h.auth.pairCreate();
+        const res = await redeem(pair.code);
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { token: string; device: { name: string } };
+        const body = (await res.json()) as { token: string; device: { name: string; scopes?: unknown } };
         expect(body.device.name).toBe("Pixel");
+        expect(body.device.scopes).toBeUndefined();
         expect(h.auth.verifyToken(body.token)?.name).toBe("Pixel");
 
-        const replay = await fetch(`${h.url}/api/v1/pair`, {
-            method: "POST",
-            body: JSON.stringify({ code: pair.code, deviceName: "Pixel", kind: "phone" }),
-        });
-        expect(replay.status).toBe(401);
+        expect((await redeem(pair.code)).status).toBe(401);
     });
 
-    it("creates a pairing code for an authenticated client", async () => {
+    it("rate limits repeated redeem attempts", async () => {
+        // The default budget is 5/minute per client; the 6th attempt is refused
+        // before it can touch the code store.
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            expect((await redeem("ZZZZZZZZ")).status).toBe(401);
+        }
+        const limited = await redeem("ZZZZZZZZ");
+        expect(limited.status).toBe(429);
+        expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+        const body = (await limited.json()) as { code: string };
+        expect(body.code).toBe(ERROR_CODES.RATE_LIMITED);
+    });
+
+    it("mints a code, its QR matrix and every usable base for an authenticated client", async () => {
         const res = await fetch(`${h.url}/api/v1/pair`, authed({ method: "POST", body: "{}" }));
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { code: string; url: string; expiresAt: number };
+        const body = (await res.json()) as {
+            code: string;
+            url: string;
+            expiresAt: number;
+            nonce: string;
+            qr: { version: number; ecc: string; size: number; rows: string[] } | null;
+            bases: { kind: string; name: string; url: string }[];
+        };
         expect(body.code).toMatch(/^[A-Z0-9]{8}$/);
-        expect(body.url).toContain(body.code);
+        expect(body.url).toContain(`/pair/${body.code}`);
         expect(body.expiresAt).toBeGreaterThan(Date.now());
+        expect(body.nonce).toMatch(/^[0-9a-f]{32}$/);
+        expect(body.qr).not.toBeNull();
+        expect(body.qr!.size).toBe(body.qr!.version * 4 + 17);
+        expect(body.qr!.rows).toHaveLength(body.qr!.size);
+        expect(body.qr!.rows.every((row) => row.length === body.qr!.size && /^[01]+$/.test(row))).toBe(true);
+        expect(body.bases.length).toBeGreaterThan(0);
+        expect(body.bases.every((base) => typeof base.url === "string" && base.url.startsWith("http"))).toBe(true);
+        // The chosen URL is always one of the offered bases.
+        expect(body.bases.some((base) => body.url.startsWith(base.url))).toBe(true);
+    });
+
+    it("accepts a base it offered and rejects a foreign one", async () => {
+        const first = (await (await fetch(`${h.url}/api/v1/pair`, authed({ method: "POST", body: "{}" }))).json()) as {
+            bases: { url: string }[];
+        };
+        const chosen = first.bases.at(-1)!.url;
+
+        const ok = await fetch(
+            `${h.url}/api/v1/pair`,
+            authed({ method: "POST", body: JSON.stringify({ base: chosen }) }),
+        );
+        expect(ok.status).toBe(200);
+        const minted = (await ok.json()) as { url: string };
+        expect(minted.url.startsWith(chosen)).toBe(true);
+
+        const foreign = await fetch(
+            `${h.url}/api/v1/pair`,
+            authed({ method: "POST", body: JSON.stringify({ base: "http://evil.example:9999" }) }),
+        );
+        expect(foreign.status).toBe(400);
+    });
+
+    it("requires a token to mint a code", async () => {
+        const res = await fetch(`${h.url}/api/v1/pair`, { method: "POST", body: "{}" });
+        expect(res.status).toBe(401);
+    });
+
+    it("redirects a scanned /pair/<code> link to the zero-input connect page", async () => {
+        const res = await fetch(`${h.url}/pair/abcd2345`, { redirect: "manual" });
+        expect(res.status).toBe(302);
+        const location = res.headers.get("location") ?? "";
+        expect(location).toContain("/connect?");
+        expect(location).toContain("code=ABCD2345");
+        expect(location).toContain("auto=1");
+
+        // A malformed code still lands on the console, just without a code.
+        const malformed = await fetch(`${h.url}/pair/nope!`, { redirect: "manual" });
+        expect(malformed.status).toBe(302);
+        expect(malformed.headers.get("location")).not.toContain("code=");
+        expect(malformed.headers.get("location")).toContain("auto=1");
     });
 });

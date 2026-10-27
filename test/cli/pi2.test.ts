@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DaemonClient } from "../../src/cli/pi2.js";
-import { CliError, createClient, main, resolveEndpoint, runAttach, runDoctorCommand, runOpen, runPairing, runStatus } from "../../src/cli/pi2.js";
+import { CliError, createClient, main, renderTerminalQr, resolveEndpoint, runAttach, runDoctorCommand, runOpen, runPairing, runStatus } from "../../src/cli/pi2.js";
 import { writeDaemonJson, type DaemonLock } from "../../src/cli/lock.js";
 import { writeCliToken } from "../../src/cli/token.js";
 import type { WorkspaceInfo } from "../../src/protocol/types.js";
@@ -339,17 +339,63 @@ describe("pi2 status", () => {
 });
 
 describe("pi2 pairing", () => {
-    it("posts with the local token and prints url, code and qr payload", async () => {
+    const minted = (overrides: Record<string, unknown> = {}) => ({
+        accepted: true,
+        code: "ABCD2345",
+        url: "http://192.168.2.10:7712/pair/ABCD2345",
+        expiresAt: Date.now() + 600_000,
+        nonce: "abc123",
+        qr: {
+            version: 2,
+            ecc: "M",
+            mask: 3,
+            size: 25,
+            // A checkerboard keeps the terminal renderer honest: dark modules exist.
+            rows: Array.from({ length: 25 }, (_, y) =>
+                Array.from({ length: 25 }, (_, x) => ((x + y) % 2 === 0 ? "1" : "0")).join(""),
+            ),
+        },
+        bases: [
+            { kind: "lan", name: "wlan0", address: "192.168.2.10", url: "http://192.168.2.10:7712" },
+            { kind: "loopback", name: "loopback", address: "127.0.0.1", url: "http://127.0.0.1:7712" },
+        ],
+        ...overrides,
+    });
+
+    it("prints the url, the code, the expiry and a terminal QR", async () => {
         const lines: string[] = [];
-        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345", expiresAt: Date.now() + 60_000 } });
+        const client = fakeClient({ pair: minted() });
+
         const code = await runPairing({ client, print: (line) => lines.push(line) });
+
         expect(code).toBe(0);
         const text = lines.join("\n");
-        expect(text).toContain("url     http://127.0.0.1:7712/pair/ABCD2345");
+        expect(text).toContain("url     http://192.168.2.10:7712/pair/ABCD2345");
         expect(text).toContain("code    ABCD2345");
-        expect(text).toContain('"code":"ABCD2345"');
-        expect(text).toContain('"v":1');
+        expect(text).toMatch(/expires in \d+s/);
+        // 25 modules + 2 modules of quiet zone a side = 29 module rows, two per
+        // text row → 15 rows, of which the first and last are pure quiet zone.
+        expect(lines.filter((line) => /[█▀▄]/.test(line))).toHaveLength(13);
+        expect(lines.some((line) => line.includes("wlan0"))).toBe(true);
         expect(client.calls[0]).toBe("/api/v1/pair {}");
+    });
+
+    it("passes --base through so the operator can pin the interface", async () => {
+        const client = fakeClient({ pair: minted() });
+
+        await main(["pairing", "--base", "http://127.0.0.1:7712"], { out: () => {}, client: () => client });
+
+        expect(client.calls[0]).toBe('/api/v1/pair {"base":"http://127.0.0.1:7712"}');
+    });
+
+    it("prints a note instead of a QR when the daemon cannot encode the link", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: minted({ qr: null }) });
+
+        await runPairing({ client, print: (line) => lines.push(line) });
+
+        expect(lines.join("\n")).toContain("too long");
+        expect(lines.some((line) => /[█▀▄]/.test(line))).toBe(false);
     });
 
     it("exits non-zero when the daemon rejects the request", async () => {
@@ -357,32 +403,20 @@ describe("pi2 pairing", () => {
             runPairing({ client: fakeClient({ postError: new CliError("pair failed: E_UNAUTHORIZED") }) }),
         ).rejects.toThrowError(/E_UNAUTHORIZED/);
     });
+});
 
-    it("rebuilds the URL on --public-url when given", async () => {
-        const lines: string[] = [];
-        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
-        await runPairing({ client, print: (line) => lines.push(line), publicUrl: "https://myhost.tail1234.ts.net/" });
-        const text = lines.join("\n");
-        expect(text).toContain("url     https://myhost.tail1234.ts.net/pair/ABCD2345");
-        expect(text).toContain('"url":"https://myhost.tail1234.ts.net/pair/ABCD2345"');
-        expect(text).toContain("code    ABCD2345");
+describe("renderTerminalQr", () => {
+    it("packs two module rows per line and adds the quiet zone", () => {
+        const lines = renderTerminalQr(["10", "01"]);
+        // 2 modules + 2+2 quiet zone = 6 columns; (2 + 4) rows → 3 text rows.
+        expect(lines).toHaveLength(3);
+        expect(lines.every((line) => line.length === 6)).toBe(true);
+        expect(lines.join("")).not.toMatch(/[01]/);
+        expect(lines[1]).toBe("  ▀▄  ");
     });
 
-    it("defaults --public-url to daemon.json's publicUrl", async () => {
-        const lines: string[] = [];
-        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
-        await main(["pairing"], {
-            out: (line) => lines.push(line),
-            client: () => ({ ...client, daemon: { ...DAEMON, publicUrl: "https://from-daemon.ts.net" } }),
-        });
-        expect(lines.join("\n")).toContain("url     https://from-daemon.ts.net/pair/ABCD2345");
-    });
-
-    it("keeps the loopback URL without flags", async () => {
-        const lines: string[] = [];
-        const client = fakeClient({ pair: { accepted: true, code: "ABCD2345" } });
-        await main(["pairing"], { out: (line) => lines.push(line), client: () => client });
-        expect(lines.join("\n")).toContain("url     http://127.0.0.1:7712/pair/ABCD2345");
+    it("returns nothing for an empty matrix", () => {
+        expect(renderTerminalQr([])).toEqual([]);
     });
 });
 

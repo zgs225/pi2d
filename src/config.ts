@@ -4,13 +4,18 @@
  * Defaults follow `docs/protocol.md`; deployment-specific values come from the
  * environment so `pi2 daemon` can be started without a config file.
  *
- * `PI2_ACCESS_MODE` picks the bind address and the derived CORS origins:
- * `local` is loopback-only, `lan` adds the detected LAN address and
- * `tailscale` adds the origin of `PI2_PUBLIC_URL`. `PI2_ORIGINS` is *additive*
- * to the derived list; it never replaces it.
+ * The daemon binds `0.0.0.0` by default: the console is meant to be opened from
+ * a phone as well as from the desktop, and access is gated by the pairing code
+ * and the device token — never by the bind address. `PI2_HOST` narrows the bind
+ * (e.g. `127.0.0.1` for a loopback-only daemon), `PI2_PUBLIC_URL` adds the
+ * external base used behind `tailscale serve`, and `PI2_ORIGINS` is *additive*.
+ *
+ * The CORS allowlist is derived by `core/network` from the addresses the daemon
+ * is actually reachable on, so it always matches the pairing link.
  */
-import { networkInterfaces } from "node:os";
+import type { NetworkInterfaceInfo } from "node:os";
 import { fileURLToPath } from "node:url";
+import { isLoopbackHost, isWildcardHost, localOrigins } from "./core/network.js";
 import { daemonTokenPath, dataDir } from "./core/paths.js";
 
 export const DEFAULT_PORT = 7676;
@@ -18,8 +23,8 @@ export const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_MAX_CONNECTIONS = 64;
 
-export type AccessMode = "local" | "lan" | "tailscale";
-export const ACCESS_MODES: readonly AccessMode[] = ["local", "lan", "tailscale"];
+/** Wildcard bind: reachable from the desktop, the LAN and a tailnet. */
+export const DEFAULT_HOST = "0.0.0.0";
 
 export interface Limits {
     maxBodyBytes: number;
@@ -37,7 +42,6 @@ export interface Config {
     limits: Limits;
     tokenPath: string;
     deviceStorePath: string;
-    access: AccessMode;
     /** External base URL (no trailing slash), e.g. `https://host.tail1234.ts.net`. */
     publicUrl: string | null;
 }
@@ -45,8 +49,8 @@ export interface Config {
 export type ConfigEnv = Record<string, string | undefined>;
 
 export interface ConfigOptions {
-    /** LAN address probe for `PI2_ACCESS_MODE=lan`; overridable in tests. */
-    detectLanIp?: () => string | null;
+    /** Network interfaces used to derive the CORS origins; overridable in tests. */
+    interfaces?: NodeJS.Dict<NetworkInterfaceInfo[]>;
 }
 
 function defaultStaticDir(): string {
@@ -63,14 +67,6 @@ function parsePort(raw: string | undefined): number {
     return port;
 }
 
-/** Unknown modes fail fast; the daemon prints the message as a one-line `pi2: ` error. */
-export function parseAccessMode(raw: string | undefined): AccessMode {
-    const value = raw?.trim() ?? "";
-    if (value === "") return "local";
-    if ((ACCESS_MODES as readonly string[]).includes(value)) return value as AccessMode;
-    throw new Error("PI2_ACCESS_MODE must be local, lan or tailscale");
-}
-
 /** Trailing slashes and empty strings are not meaningful origins. */
 function normalizeOrigin(raw: string): string | null {
     const value = raw.trim().replace(/\/+$/, "");
@@ -80,15 +76,6 @@ function normalizeOrigin(raw: string): string | null {
 function normalizePublicUrl(raw: string | undefined): string | null {
     if (raw === undefined) return null;
     return normalizeOrigin(raw);
-}
-
-/** `https://host/path?q=1` → `https://host`; unparsable values fall back verbatim. */
-function originOf(url: string): string | null {
-    try {
-        return new URL(url).origin;
-    } catch {
-        return normalizeOrigin(url);
-    }
 }
 
 function parseOrigins(raw: string | undefined): string[] {
@@ -103,61 +90,16 @@ function dedupe(origins: readonly string[]): string[] {
     return [...new Set(origins)];
 }
 
-function defaultHostFor(access: AccessMode): string {
-    return access === "lan" ? "0.0.0.0" : "127.0.0.1";
-}
-
-function loopbackOrigins(port: number): string[] {
-    return [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`];
-}
-
-/**
- * First non-internal IPv4 address, best effort: `lan` mode only *adds* an
- * origin, and an unknown address just leaves the loopback list in place.
- */
-export function detectLanIp(): string | null {
-    try {
-        for (const addresses of Object.values(networkInterfaces())) {
-            for (const address of addresses ?? []) {
-                if (address.family !== "IPv4" || address.internal) continue;
-                if (address.address.startsWith("169.254.")) continue;
-                return address.address;
-            }
-        }
-    } catch {
-        // best effort only
-    }
-    return null;
-}
-
-function derivedOrigins(
-    access: AccessMode,
-    port: number,
-    publicUrl: string | null,
-    detect: () => string | null,
-): string[] {
-    const origins = loopbackOrigins(port);
-    if (access === "lan") {
-        let lanIp: string | null = null;
-        try {
-            lanIp = detect();
-        } catch {
-            lanIp = null;
-        }
-        if (lanIp !== null && lanIp.trim() !== "") origins.push(`http://${lanIp.trim()}:${port}`);
-    } else if (access === "tailscale" && publicUrl !== null) {
-        const origin = originOf(publicUrl);
-        if (origin !== null) origins.push(origin);
-    }
-    return origins;
-}
-
 export function loadConfig(env: ConfigEnv = process.env, options: ConfigOptions = {}): Config {
     const port = parsePort(env.PI2_PORT);
-    const access = parseAccessMode(env.PI2_ACCESS_MODE);
     const publicUrl = normalizePublicUrl(env.PI2_PUBLIC_URL);
-    const host = env.PI2_HOST?.trim() || defaultHostFor(access);
-    const derived = derivedOrigins(access, port, publicUrl, options.detectLanIp ?? detectLanIp);
+    const host = env.PI2_HOST?.trim() || DEFAULT_HOST;
+    const derived = localOrigins({
+        port,
+        bindHost: host,
+        publicUrl,
+        ...(options.interfaces === undefined ? {} : { interfaces: options.interfaces }),
+    });
 
     return {
         host,
@@ -171,7 +113,13 @@ export function loadConfig(env: ConfigEnv = process.env, options: ConfigOptions 
         },
         tokenPath: daemonTokenPath(),
         deviceStorePath: `${dataDir()}/devices.json`,
-        access,
         publicUrl,
     };
+}
+
+/** Human-readable bind summary, shared by `pi2 status` and `pi2 doctor`. */
+export function describeHost(host: string): string {
+    if (isWildcardHost(host)) return "all interfaces";
+    if (isLoopbackHost(host)) return "loopback only";
+    return host;
 }

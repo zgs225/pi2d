@@ -85,7 +85,10 @@ Plugin obligations:
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
 | `GET /api/v1/sessions/:sid/entries?before=&limit=` | relayed; plugin paginates |
 | `GET /api/v1/attention?workspaceId=` | pending attention for one workspace |
-| `GET /api/v1/devices` | paired devices (daemon-owned) |
+| `GET /api/v1/devices` | paired devices (daemon-owned; `{id, name, kind, createdAt, lastSeenAt, revokedAt}`) |
+| `POST /api/v1/pair` | **authenticated**; mints `{code, url, expiresAt, nonce, qr, bases}` |
+| `POST /api/v1/pair/redeem` | public + rate limited (`E_RATE_LIMITED`); `{code, kind, deviceName}` → `{token, device}` |
+| `GET /pair/:code` | public; `302 /connect?code=<code>&auto=1` (scanned links) |
 | `GET /api/v1/models?workspaceId=` | relayed to the instance |
 | `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice |
 | `GET /api/v1/diagnostics` | connections, event rates, slow queries, instance table |
@@ -276,7 +279,8 @@ browser cmd(sessionId=s1)
 |---|---|---|
 | `E_BAD_REQUEST` | 400 | malformed JSON / missing field |
 | `E_UNAUTHORIZED` | 401 | missing/invalid device token |
-| `E_FORBIDDEN` | 403 | bad `Origin`, insufficient scope, cwd outside `PI2_WORKSPACE_ROOTS` |
+| `E_FORBIDDEN` | 403 | bad `Origin`, cwd outside `PI2_WORKSPACE_ROOTS` |
+| `E_RATE_LIMITED` | 429 | too many pairing attempts (per client and globally) |
 | `E_NOT_FOUND` | 404 | unknown workspace/session/instance |
 | `E_PROTOCOL_VERSION` | 426 | `v` unsupported |
 | `E_PAYLOAD_TOO_LARGE` | 413 | body/frame > limits |

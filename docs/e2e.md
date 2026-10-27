@@ -139,7 +139,7 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
 - `GET /api/v1/health` → `ok=true`, `static` item ok (web/dist served).
 - `GET /` → 200 HTML containing the app root.
 - unauthenticated `GET /api/v1/workspaces` → 401 `E_UNAUTHORIZED`; bogus bearer → 401.
-- `POST /api/v1/pair` redeem: valid code → `{token, device}`; same code again → 401;
+- `POST /api/v1/pair/redeem`: valid code → `{token, device}`; same code again → 401;
   the token authorizes the API; `DELETE /api/v1/devices/:id` revokes it (next call 401).
 
 **A1 Workspaces**
@@ -222,7 +222,7 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
 
 **A13 Console login handoff**
 - `POST /api/v1/console/session` with the CLI token → 200, one `local browser`/`laptop`
-  device with every scope, and a `http://127.0.0.1:<port>/#t=<token>` URL (fragment only,
+  device, and a `http://127.0.0.1:<port>/#t=<token>` URL (fragment only,
   never `?t=`).
 - the handed-off token authenticates; a second login returns the **same** token so a second
   `:PiWeb` does not log the open tab out.
@@ -244,8 +244,8 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
   allow-listed `next`.
 
 **B2 Pairing (manual)**
-- enter host/port/pairing code/device name → `POST /api/v1/pair` succeeds; the summary
-  shows server/endpoint/device/scopes; localStorage keys are written; redirect to `next`.
+- enter host/port/pairing code/device name → `POST /api/v1/pair/redeem` succeeds; the summary
+  shows server/endpoint/device; localStorage keys are written; redirect to `next`.
 - wrong code → inline localized error, still unpaired, form stays usable.
 - while paired, `/connect` shows the summary, not the form; disconnect asks for
   confirmation and clears the connection (returns to `/connect`).
@@ -254,6 +254,12 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
 - paste a `pi2://pair?host=…&port=…&code=…` link in the scan fallback → confirmation
   modal shows the masked token → confirm pairs; cancel changes nothing.
 - the daemon's own `http://host:port/pair/<code>` URL is accepted by the parser.
+- opening that URL directly is **zero-input**: `/pair/<code>` redirects to
+  `/connect?code=<code>&auto=1`, which redeems against its own origin with the
+  localized default device name and lands on `/workspaces` (or `next`) without the
+  form ever being shown; the device then appears on the status page.
+- a rejected/expired code falls back to the manual form with host, port and code
+  prefilled from the link, plus the inline pairing error.
 
 **B4 Workspaces**
 - seeded W1/W2 render as `[data-workspace-id]` rows, pinned/last-active order, context
@@ -284,11 +290,14 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
 - change the thinking select to `low` → API command sent, state/toast update, value
   survives a reload; change the model select → the same, and the tree subtitle updates.
 
-**B9 Chat: panels (Subagents / Todo / Tasks)**
-- panel tabs switch; each renders either real data or its empty state; no mock copy.
-- Dispatch modal creates a real batch (`items[]`), the subagent row/batch appears, and
-  the preview modal opens (real tail or an explicit empty state); “Back to parent” works.
-- Tasks tab shows real tasks or the empty state; the task output modal shows the real
+**B9 Chat: session tray (Todo / Tasks) + subagent child view**
+- the stream-head chips (`计划` / `任务`) open the session tray; the two tabs switch and
+  each renders either real data or its empty state; no mock copy; the right panel is gone
+  (`.panel-pane` count is 0) and Esc returns focus to the chip.
+- the row `…` popover dispatches a subagent: a real batch (`items[]`) appears, the row
+  shows the child in the tree, and the in-place child view renders the synthesized
+  timeline (`sub-timeline`) or an explicit empty state; `← 父级` / Esc works.
+- the Tasks tab shows real tasks or the empty state; the task output modal shows the real
   output tail or an explicit unsupported state (no fake pid).
 
 **B10 Attention**
@@ -296,8 +305,9 @@ The plan's original intent below is unchanged; the legend **P0**/**P1**/**P2** s
   title/options; Accept writes the file; the dialog closes; a second client cannot answer.
 
 **B11 Status**
-- `/status` renders info/health/resources/models/tasks/devices/connection cards from the
-  API; no server/workspace selector; resources refresh; health items show pass/fail.
+- `/status` renders the four metric tiles + info/health/models/tasks/devices/connection
+  cards from the API; no server/workspace selector; metrics refresh; health items show
+  pass/fail. The page has zero primary actions.
 - paired devices come from the API and can be revoked with confirmation; a revoked
   device token stops working.
 - disconnect clears connection and returns to `/connect`.

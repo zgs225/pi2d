@@ -203,7 +203,6 @@ export function attachWsServer(options: WsServerOptions): WsServerHandle {
                 id: state.device.id,
                 name: state.device.name,
                 kind: state.device.kind,
-                scopes: state.device.scopes,
             },
         });
     };

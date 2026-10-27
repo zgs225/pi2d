@@ -79,22 +79,28 @@ The plugin looks for the daemon in this order, and `:PiWebStatus` reports which 
 
 ## Remote access (phone, LAN, Tailscale)
 
-The daemon binds `127.0.0.1` by default and never exposes itself to the network on its own.
-`:PiWeb` asks once which access mode you want and remembers the answer; `web.access = "lan"`
-(or `"tailscale"`, or `"local"`) skips the prompt.
+The daemon binds `0.0.0.0` by default, so a phone on the same network can open the console;
+access is gated by pairing codes and per-device tokens, never by the bind address. Set
+`web.host = "127.0.0.1"` (or `PI2_HOST=127.0.0.1`) for a loopback-only daemon, and
+`web.public_url` when a `tailscale serve` portal is in front.
 
-| Mode | Bind | Browser access | Login |
-|---|---|---|---|
-| `local` | `127.0.0.1` | same machine | automatic (one-time token handed to the browser) |
-| `lan` | `0.0.0.0` | `http://<lan-ip>:7676` | pairing code / QR, **never** automatic |
-| `tailscale` | `127.0.0.1` + `tailscale serve` | `https://<host>.<tailnet>.ts.net` | pairing code / QR, **never** automatic |
+| Bind (`PI2_HOST`) | Browser access | Login |
+|---|---|---|
+| unset → `0.0.0.0` | `http://127.0.0.1:7676` on the desktop, `http://<lan-ip>:7676` from a phone, or a `tailscale serve` URL | desktop: automatic one-time token; other devices: pairing code / QR |
+| `127.0.0.1` | this machine only (put `tailscale serve` in front if you need remote access) | automatic one-time token |
 
 Pair a device from the CLI:
 
 ```bash
-pi2 pairing                   # loopback URL + code + QR payload
-pi2 pairing --public-url https://myhost.tail1234.ts.net
+pi2 pairing                   # phone-reachable URL + code + terminal QR
+pi2 pairing --base https://myhost.tail1234.ts.net   # pin the interface to advertise
 ```
+
+The link is built on the primary LAN address by default, so scanning it from a phone
+actually works — the link carries host, port and code, so opening it pairs the device with
+no further input; the mint response additionally carries the QR module matrix (`qr.rows`) and every
+selectable base (`bases`), which is what `:PiWebPair` in Neovim uses: pick an interface
+(name + IP), then draw the code.
 
 Or from the web console's device page. Tokens are per-device, revocable, and stored
 hashed; `pi2 doctor` reports the active mode and warns when a non-loopback bind has no TLS.

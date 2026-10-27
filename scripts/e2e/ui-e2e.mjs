@@ -384,7 +384,6 @@ class Ctx {
             { name: "pi2-endpoint", value: BASE },
             // Raw token (web/src/lib/api.ts strips an optional `Bearer ` prefix).
             { name: "pi2-device-token", value: DEVICE_TOKEN },
-            { name: "pi2-device-scopes", value: JSON.stringify(["read", "steer", "apply"]) },
             { name: "pi2-device", value: "Playwright" },
             { name: "pi2-connected-at", value: String(Date.now()) },
             ...Object.entries(localExtra).map(([name, value]) => ({ name, value: String(value) })),
@@ -947,7 +946,7 @@ async function fillManualForm(page, code, device = "Playwright") {
     await page.locator('[data-testid="connect-submit"]').click();
 }
 
-scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair + redirect (wrong code → inline error)", async (ctx) => {
+scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair/redeem + redirect (wrong code → inline error)", async (ctx) => {
     const { page } = await ctx.openPage("unpaired");
     await page.goto(`${BASE}/connect?next=%2Fworkspaces`, { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="connect-pair-code"]').waitFor({ state: "visible", timeout: 15000 });
@@ -975,13 +974,13 @@ scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair
         return null;
     }, 25000);
 
-    const pairCalls = ctx.apiCalls.filter((call) => call.method === "POST" && call.path === "/api/v1/pair");
+    const pairCalls = ctx.apiCalls.filter((call) => call.method === "POST" && call.path === "/api/v1/pair/redeem");
     ctx.log(`redeem calls: ${JSON.stringify(pairCalls)}`);
-    ctx.check("the redeem posts the public POST /api/v1/pair", pairCalls.length >= 1, {
-        expected: "POST /api/v1/pair {code,deviceName,kind}",
+    ctx.check("the redeem posts the public POST /api/v1/pair/redeem", pairCalls.length >= 1, {
+        expected: "POST /api/v1/pair/redeem {code,deviceName,kind}",
         observed: { pairCalls, cmdMethods: ctx.cmdRequests.map((request) => request.method) },
     });
-    ctx.check("POST /api/v1/pair answered 200", pairCalls.some((call) => call.status === 200), {
+    ctx.check("POST /api/v1/pair/redeem answered 200", pairCalls.some((call) => call.status === 200), {
         expected: 200,
         observed: pairCalls,
     });
@@ -1000,11 +999,10 @@ scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair
     const storage = await page.evaluate(() => ({
         connection: localStorage.getItem("pi2-connection"),
         token: localStorage.getItem("pi2-device-token"),
-        scopes: localStorage.getItem("pi2-device-scopes"),
         endpoint: localStorage.getItem("pi2-endpoint"),
     }));
     const connWrites = await page.evaluate(() =>
-        (window.__pi2Writes ?? []).filter((write) => ["pi2-connection", "pi2-device-token", "pi2-device-scopes"].includes(write.key)),
+        (window.__pi2Writes ?? []).filter((write) => ["pi2-connection", "pi2-device-token"].includes(write.key)),
     );
     ctx.note(`pi2-* storage writes: ${short(connWrites, 700)}`);
     ctx.note(`navigations: ${short(ctx.navigations, 400)}`);
@@ -1014,7 +1012,6 @@ scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair
         /^Bearer\s+/i,
         "",
     );
-    const mintedScopes = (connWrites.find((write) => write.key === "pi2-device-scopes" && write.op === "set")?.value ?? "").trim();
 
     const wsErrors = socketErrors(ctx.wsFrames);
     const wsAuthErrors = wsErrors.filter((entry) => entry.code === "E_UNAUTHORIZED");
@@ -1036,22 +1033,17 @@ scenario("B2", "Manual pairing: host/port/pair-code/device → POST /api/v1/pair
         expected: "paired",
         observed: { connection: storage.connection, setToken: Boolean(mintedRaw), writes: connWrites, navigations: ctx.navigations },
         cause:
-            "the flow writes pi2-connection=paired (see the write log), then ~100 ms later the app removes the token + scopes and writes 'unpaired' " +
+            "the flow writes pi2-connection=paired (see the write log), then ~100 ms later the app removes the token and writes 'unpaired' " +
             "because the socket auth of that same token fails with E_UNAUTHORIZED",
     });
     ctx.softCheck("localStorage pi2-device-token is still set", Boolean(storage.token), {
         expected: "<device token>",
         observed: storage.token ? "set" : { removedAfterMs: connWrites.at(-1)?.at, writes: connWrites },
     });
-    let scopes = null;
-    try {
-        scopes = JSON.parse(storage.scopes ?? mintedScopes ?? "null");
-    } catch {
-        scopes = null;
-    }
-    ctx.softCheck("the paired scopes are a non-empty array", Array.isArray(scopes) && scopes.length > 0, {
-        expected: '["read", …]',
-        observed: storage.scopes ?? mintedScopes,
+    const legacyScopes = await page.evaluate(() => localStorage.getItem("pi2-device-scopes"));
+    ctx.softCheck("the browser writes no legacy pi2-device-scopes key (ADR 0001)", legacyScopes === null, {
+        expected: null,
+        observed: { legacyScopes },
     });
 
     // A paired browser shows the summary instead of the form.
@@ -1178,10 +1170,9 @@ scenario("B3", "Paste-link pairing: pi2:// and /pair/<code> links reach the conf
     const linkStorage = await page.evaluate(() => ({
         connection: localStorage.getItem("pi2-connection"),
         token: localStorage.getItem("pi2-device-token"),
-        scopes: localStorage.getItem("pi2-device-scopes"),
     }));
     const linkWrites = await page.evaluate(() =>
-        (window.__pi2Writes ?? []).filter((write) => ["pi2-connection", "pi2-device-token", "pi2-device-scopes"].includes(write.key)),
+        (window.__pi2Writes ?? []).filter((write) => ["pi2-connection", "pi2-device-token"].includes(write.key)),
     );
     ctx.note(`link-flow pi2-* storage writes: ${short(linkWrites, 700)}`);
     const linkWsErrors = socketErrors(ctx.wsFrames);
@@ -1194,7 +1185,7 @@ scenario("B3", "Paste-link pairing: pi2:// and /pair/<code> links reach the conf
             cause: "same stored 'Bearer <token>' passed verbatim to the WS auth frame (web/src/lib/api.ts + web/src/lib/ws.ts:219)",
         },
     );
-    ctx.softCheck("the link flow keeps paired + token + scopes", linkStorage.connection === "paired" && Boolean(linkStorage.token), {
+    ctx.softCheck("the link flow keeps paired + token", linkStorage.connection === "paired" && Boolean(linkStorage.token), {
         expected: { connection: "paired", token: "set" },
         observed: { ...linkStorage, token: linkStorage.token ? "set" : null, writes: linkWrites },
         cause: "the same write-then-clear sequence as B2 (socket auth of the fresh token is rejected → app-shell disconnects)",
@@ -2253,7 +2244,7 @@ scenario("B11", "Status: six API-backed cards + metrics strip, devices list/revo
     const created = await cmd("pair.create", { ttlSec: 600 });
     const code = created.json?.code;
     ctx.check("pair.create returns a code", typeof code === "string" && code.length > 0, { observed: created.json });
-    const redeemed = await apiRaw("POST", "/api/v1/pair", { token: null, body: { code, deviceName: "e2e-second-device", kind: "phone" } });
+    const redeemed = await apiRaw("POST", "/api/v1/pair/redeem", { token: null, body: { code, deviceName: "e2e-second-device", kind: "phone" } });
     ctx.check("second device pairs", redeemed.status === 200 && Boolean(redeemed.json?.token), {
         expected: "200 with a device token",
         observed: { status: redeemed.status, body: short(redeemed.json) },

@@ -16,7 +16,6 @@ interface SessionBody {
         id: string;
         name: string;
         kind: string;
-        scopes: string[];
         createdAt: number;
         lastSeenAt: number;
         revokedAt: number | null;
@@ -61,7 +60,6 @@ describe("POST /api/v1/console/session", () => {
 
         expect(body.device.name).toBe("local browser");
         expect(body.device.kind).toBe("laptop");
-        expect(body.device.scopes).toEqual(["read", "steer", "control", "admin"]);
         expect(body.token.length).toBeGreaterThanOrEqual(40);
         expect(body.url).toBe(`http://127.0.0.1:${h.server.port}/#t=${encodeURIComponent(body.token)}`);
         expect(body.url).not.toContain("?t=");
@@ -149,7 +147,6 @@ describe("POST /api/v1/console/session", () => {
                 limits: TEST_LIMITS,
                 tokenPath: join(dir, "d.sock.token"),
                 deviceStorePath: join(dir, "devices.json"),
-                access: "lan",
                 publicUrl: null,
             };
 
@@ -168,12 +165,12 @@ describe("POST /api/v1/console/session", () => {
     });
 });
 
-describe("GET /api/v1/info access fields", () => {
-    it("reports access always and publicUrl as string|null", async () => {
-        const h = await createHarness({ config: { access: "tailscale", publicUrl: "https://host.ts.net" } });
+describe("GET /api/v1/info bind fields", () => {
+    it("reports the bind host always and publicUrl as string|null", async () => {
+        const h = await createHarness({ config: { host: "127.0.0.1", publicUrl: "https://host.ts.net" } });
         try {
             const body = (await (await fetch(`${h.url}/api/v1/info`)).json()) as Record<string, unknown>;
-            expect(body.access).toBe("tailscale");
+            expect(body.host).toBe("127.0.0.1");
             expect(body.publicUrl).toBe("https://host.ts.net");
             // Existing keys survive.
             expect(body.v).toBe(1);
@@ -183,11 +180,11 @@ describe("GET /api/v1/info access fields", () => {
         }
     });
 
-    it("keeps the local default", async () => {
-        const h = await createHarness();
+    it("reports the default wildcard bind", async () => {
+        const h = await createHarness({ config: { host: "0.0.0.0" } });
         try {
             const body = (await (await fetch(`${h.url}/api/v1/info`)).json()) as Record<string, unknown>;
-            expect(body.access).toBe("local");
+            expect(body.host).toBe("0.0.0.0");
             expect(body.publicUrl).toBeNull();
         } finally {
             await h.cleanup();
