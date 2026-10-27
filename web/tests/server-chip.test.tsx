@@ -68,6 +68,46 @@ describe("ServerChip", () => {
         expect(dot?.getAttribute("aria-label")).toBe("在线");
     });
 
+    it("renders dot--idle and Unknown / 未知 for the initial store value (unknown)", async () => {
+        expect(useConnectionStore.getState().serverStatus).toBe("unknown");
+
+        const { container } = await renderPage(routes(), "/", { paired: true });
+
+        const dot = container.querySelector(".server-chip .dot");
+        expect(dot).not.toBeNull();
+        expect(dot).toHaveClass("dot--idle");
+        expect(dot?.getAttribute("title")).toBe("Unknown");
+        expect(dot?.getAttribute("aria-label")).toBe("Unknown");
+
+        act(() => {
+            setLanguage("zh");
+        });
+        expect(dot?.getAttribute("title")).toBe("未知");
+        expect(dot?.getAttribute("aria-label")).toBe("未知");
+    });
+
+    it("renders dot--ok when server override carries a bogus status: 'offline' while store's serverStatus is online", async () => {
+        const bogusServer = { ...realisticInfo, status: "offline" } as unknown as InfoResponse;
+        const overrideRoutes = (): TestRoute[] => [
+            {
+                path: "/",
+                component: () => <ServerChip server={bogusServer} />,
+            },
+        ];
+
+        const { container } = await renderPage(overrideRoutes(), "/", { paired: true });
+
+        act(() => {
+            const store = useConnectionStore.getState();
+            store.setServerStatus("online");
+        });
+
+        const dot = container.querySelector(".server-chip .dot");
+        expect(dot).not.toBeNull();
+        expect(dot).toHaveClass("dot--ok");
+        expect(dot).not.toHaveClass("dot--exited");
+    });
+
     it("renders dot--idle and Unknown / 未知 when serverStatus is unknown", async () => {
         const { container } = await renderPage(routes(), "/", { paired: true });
 
