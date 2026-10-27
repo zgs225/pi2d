@@ -4,25 +4,38 @@ import { afterEach, vi } from "vitest";
 
 afterEach(() => {
     cleanup();
-    localStorage.clear();
-    document.documentElement.removeAttribute("data-theme");
+    if (typeof localStorage !== "undefined") {
+        localStorage.clear();
+    }
+    if (typeof document !== "undefined") {
+        document.documentElement.removeAttribute("data-theme");
+    }
 });
 
-// next-themes / responsive helpers expect these in jsdom.
-if (!window.matchMedia) {
-    Object.defineProperty(window, "matchMedia", {
-        writable: true,
-        value: vi.fn().mockImplementation((query: string) => ({
-            matches: false,
-            media: query,
-            onchange: null,
-            addListener: vi.fn(),
-            removeListener: vi.fn(),
-            addEventListener: vi.fn(),
-            removeEventListener: vi.fn(),
-            dispatchEvent: vi.fn(),
-        })),
-    });
+if (typeof window !== "undefined") {
+    // next-themes / responsive helpers expect these in jsdom.
+    if (!window.matchMedia) {
+        Object.defineProperty(window, "matchMedia", {
+            writable: true,
+            value: vi.fn().mockImplementation((query: string) => ({
+                matches: false,
+                media: query,
+                onchange: null,
+                addListener: vi.fn(),
+                removeListener: vi.fn(),
+                addEventListener: vi.fn(),
+                dispatchEvent: vi.fn(),
+            })),
+        });
+    }
+
+    // jsdom ships stubs that print "Not implemented: ..." errors to stderr.
+    // Replace them with silent vi.fn() mocks.
+    window.scrollTo = vi.fn();
+}
+
+if (typeof HTMLCanvasElement !== "undefined") {
+    HTMLCanvasElement.prototype.getContext = vi.fn();
 }
 
 if (!globalThis.ResizeObserver) {
@@ -34,6 +47,6 @@ if (!globalThis.ResizeObserver) {
     globalThis.ResizeObserver = ResizeObserverStub;
 }
 
-if (!Element.prototype.scrollIntoView) {
+if (typeof Element !== "undefined") {
     Element.prototype.scrollIntoView = vi.fn();
 }

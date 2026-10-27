@@ -69,6 +69,7 @@ owner/repo/workflow filename, not the npm name).
 | `docs/protocol.md` | the browser ↔ daemon ↔ plugin wire contract |
 | `docs/deployment.md` | env vars, runtime files, ports, auth, services, troubleshooting |
 | `docs/e2e.md` | scenario ids, isolation, skip conditions, report paths |
+| `docs/testing.md` | test architecture, performance tuning, hybrid core CPU guidelines |
 | `docs/releasing.md` | npm Trusted Publishing, the bootstrap phases, verification |
 | `README.md` | install paths, `:PiWeb`, binding & pairing |
 | `.agents/skills/release/` | how to cut and verify a release |
