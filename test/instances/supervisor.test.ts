@@ -190,7 +190,7 @@ describe("InstanceManager", () => {
         const fake = writeFakeNvim(env.dir, { mode: "no-hello" });
         const mgr = await create({ bin: fake.bin });
 
-        await expect(mgr.ensure("ws-1", { timeoutMs: 250 })).rejects.toMatchObject({
+        await expect(mgr.ensure("ws-1", { timeoutMs: 1_000 })).rejects.toMatchObject({
             code: "E_INSTANCE_STARTING",
             retryable: true,
         });
