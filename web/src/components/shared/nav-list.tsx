@@ -57,10 +57,10 @@ export interface NavListProps {
 export function NavList({ variant, page }: NavListProps) {
     const { t } = useTranslation();
     const server = useConnectionStore((state) => state.server);
+    const status = useConnectionStore((state) => state.serverStatus);
 
-    const status = server?.status ?? "offline";
     const name = server?.name ?? "pi2.nvim";
-    const version = server?.pluginVersion ?? server?.version ?? "";
+    const version = server?.pluginVersion || server?.version || "";
     const serverTip = t("shell.railServerTip", { name, status: t(`state.${status}`), version });
     const connectTip = t("shell.connection");
 

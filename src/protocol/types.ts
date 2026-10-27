@@ -199,6 +199,13 @@ export interface SessionState {
     visible?: boolean;
     /** List metadata only: the subagent task description carried by the list row. Never emitted by the reducer. */
     task?: string;
+    /**
+     * List metadata only: the first user message of the session file, carried by
+     * the list row's disk projection. The web client shows it as the provisional
+     * display name while the session has no name of its own (pi2.nvim's
+     * `first_message` fallback). Never emitted by the reducer.
+     */
+    firstMessage?: string | null;
 }
 
 /* ------------------------------------------------------------------ */

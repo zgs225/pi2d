@@ -31,7 +31,7 @@ import { mergeTasks,
     type DevicesResponse,
     type StatusTask,
 } from "@/features/status/queries";
-import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
+import { deriveServerIdentity, resolveServerStatus, type InfoExtras } from "@/features/status/server";
 import { ServerInfoCard } from "@/features/status/server-info-card";
 import { TasksCard } from "@/features/status/tasks-card";
 import { partitionWorkspaces } from "@/features/workspaces/visibility";
@@ -91,7 +91,7 @@ export function StatusPage() {
         wsState,
         fetchedAt: info.dataUpdatedAt || null,
         nameFallback: storedServer?.name || meta?.server?.name,
-        status: info.isError ? "offline" : healthOk === false ? "degraded" : undefined,
+        status: resolveServerStatus({ paired, info: info.data, infoError: info.isError, healthOk }),
     });
 
     // Background tasks: the live store covers open sessions, the REST session

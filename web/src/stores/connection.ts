@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import type { ServerStatusValue } from "@/features/status/server";
 import type { InfoResponse } from "@/lib/api";
 import { getDeviceToken, setDeviceToken } from "@/lib/api";
 import type { WsConnectionState } from "@/lib/ws";
@@ -43,6 +44,7 @@ export interface ConnectionStore {
     connectedAt: number;
     token: string | null;
     server: InfoResponse | null;
+    serverStatus: ServerStatusValue;
     wsState: WsConnectionState;
 
     isPaired: () => boolean;
@@ -50,6 +52,7 @@ export interface ConnectionStore {
     connect: (options?: { endpoint?: string; deviceName?: string; token?: string | null }) => void;
     disconnect: () => void;
     setServer: (server: InfoResponse | null) => void;
+    setServerStatus: (status: ServerStatusValue) => void;
     setWsState: (state: WsConnectionState) => void;
     setToken: (token: string | null) => void;
 }
@@ -62,6 +65,7 @@ function initialState() {
         connectedAt: Number(read(CONNECTED_AT_KEY)) || 0,
         token: getDeviceToken(),
         server: null as InfoResponse | null,
+        serverStatus: "unknown" as ServerStatusValue,
         wsState: "idle" as WsConnectionState,
     };
 }
@@ -102,11 +106,13 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
             connectedAt: 0,
             token: null,
             server: null,
+            serverStatus: "unknown",
             wsState: "idle",
         });
     },
 
     setServer: (server) => set({ server }),
+    setServerStatus: (serverStatus) => set({ serverStatus }),
     setWsState: (wsState) => set({ wsState }),
     setToken: (token) => {
         setDeviceToken(token);

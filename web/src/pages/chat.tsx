@@ -39,6 +39,7 @@ import { MessageStream } from "@/features/chat/message-stream";
 import { onSessionMigration, replaceChatUrl } from "@/features/chat/migration";
 import { DispatchModal, RenameDialog, TaskOutputModal, type DispatchInput } from "@/features/chat/modals";
 import { SessionTray } from "@/features/chat/session-tray";
+import { sessionTitle } from "@/features/chat/session-title";
 import {
     findSubagent,
     flattenSubagents,
@@ -115,9 +116,26 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         sessions,
         sessionsQuery.loaded,
     );
-    const history = useSessionHistory(active?.sessionId, active?.entries ?? NO_ENTRIES, paired);
+    const history = useSessionHistory(
+        active?.sessionId,
+        active?.entries ?? NO_ENTRIES,
+        paired,
+        active?.workspaceId ?? workspaceId,
+    );
     const models = useChatModels(workspaceId, paired);
     const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+    // pi2.nvim's placeholder vocabulary, and the display title of the routed
+    // session: name → first message → `(unnamed)`. Never the session id.
+    const titlePhrases = useMemo(
+        () => ({ unnamed: t("chat.sessionUnnamed"), subagentUnnamed: t("chat.subagentUnnamed") }),
+        [t],
+    );
+    // Patch the window title from the routed session's display title: name →
+    // first message → nothing (an unnamed session keeps the page title).
+    const activeTitle = useMemo(
+        () => (active ? sessionTitle(active, titlePhrases) : null),
+        [active, titlePhrases],
+    );
 
     const filter = useChatStore((state) => state.filter);
     const setFilter = useChatStore((state) => state.setFilter);
@@ -218,9 +236,11 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
     }, [activeSubagentId, closeDrawers, rowMenuId, setRowMenuId, setWsMenuOpen, treeOpen, trayOpen]);
 
     useEffect(() => {
-        const title = active?.name?.trim() || (sessionMissing ? t("errors.sessionNotFound") : t("nav.chat"));
+        // A placeholder title is not a title for the window chrome.
+        const fallback = sessionMissing ? t("errors.sessionNotFound") : t("nav.chat");
+        const title = activeTitle && !activeTitle.provisional ? activeTitle.text : fallback;
         document.title = `${title} — pi2.nvim`;
-    }, [active?.name, sessionMissing, t]);
+    }, [activeTitle, sessionMissing, t]);
 
     // The optimistic "sending" chip disappears when the authoritative user
     // entry arrives (via entry_appended) or after a safety timeout.
@@ -446,7 +466,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
 
     async function closeSession(session: SessionState) {
         await exec(chatCommands.closeSession(session.sessionId), "chat.closedProcess", {
-            name: session.name ?? session.sessionId,
+            name: sessionTitle(session, titlePhrases).text,
         });
         setClosing(null);
     }
@@ -518,7 +538,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                     <StatusDot status={sessionDot(active)} title={t(`state.${sessionStatusKey(active)}`)} />
                 ) : null}
                 <h2 className="stream-name truncate" tabIndex={-1} ref={streamNameRef}>
-                    {active?.name?.trim() || (active ? active.sessionId : (workspace?.name ?? t("nav.chat")))}
+                    {active ? activeTitle?.text : (workspace?.name ?? t("nav.chat"))}
                 </h2>
                 {active?.flags.attention && active.attention.length ? (
                     <Badge tone="warn">{t("chat.pending", { n: active.attention.length })}</Badge>
@@ -753,8 +773,8 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 title={renaming?.kind === "session" ? t("chat.renameSession") : t("chat.renameSubagentAria")}
                 initial={
                     renaming?.kind === "session"
-                        ? (renaming.session.name ?? renaming.session.sessionId)
-                        : (renaming?.subagent.name ?? renaming?.subagent.id ?? "")
+                        ? (renaming.session.name ?? "")
+                        : (renaming?.subagent.name ?? "")
                 }
                 hint={
                     renaming?.kind === "session" ? t("chat.renameSessionHint") : t("chat.renameSubagentHint")
@@ -770,7 +790,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 }}
                 title={t("chat.closeProcess")}
                 description={
-                    closing ? t("chat.closeSessionText", { name: closing.name ?? closing.sessionId }) : undefined
+                    closing ? t("chat.closeSessionText", { name: sessionTitle(closing, titlePhrases).text }) : undefined
                 }
                 confirmLabel={t("chat.closeProcess")}
                 danger

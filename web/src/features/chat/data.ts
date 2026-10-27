@@ -14,6 +14,7 @@ import {
     normalizeSessionSummary,
     normalizeSessionsPayload,
     normalizeSnapshotState,
+    tabSessionRows,
 } from "./session-state";
 import { setSessionMeta } from "./history";
 import { migrateSessionId } from "./migration";
@@ -148,7 +149,13 @@ export interface ChatSessions {
     refetch: () => void;
 }
 
-/** Sessions of one workspace, merged into the shared store (live state wins). */
+/**
+ * Sessions of one workspace, merged into the shared store (live state wins).
+ *
+ * "Sessions" here means the nvim tab set — `tab`-backed rows plus the sessions
+ * linked to them through `parentId` (see `tabSessionRows`). The plugin's list
+ * also carries every JSONL on disk, which is history, not a tab.
+ */
 export function useChatSessions(workspaceId: string | undefined, enabled: boolean): ChatSessions {
     const query = useQuery({
         queryKey: ["chat-sessions", workspaceId],
@@ -162,18 +169,18 @@ export function useChatSessions(workspaceId: string | undefined, enabled: boolea
 
     useEffect(() => {
         if (!workspaceId || !query.data) return;
-        const raw = query.data as { sessions?: Array<{ sessionId?: unknown; sessionFile?: unknown }> } | undefined;
-        for (const row of raw?.sessions ?? []) {
-            if (typeof row?.sessionId === "string") {
-                setSessionMeta(row.sessionId, {
-                    workspaceId,
-                    sessionFile: typeof row.sessionFile === "string" ? row.sessionFile : undefined,
-                });
-            }
+        // The payload is the union of the workspace's JSONL history and its live
+        // sessions; the console renders the nvim tab set only, so a historical
+        // row can never look like a tab (and never receives a prompt).
+        const rows = tabSessionRows(query.data);
+        for (const row of rows) {
+            const sessionId = str(row.sessionId) ?? str(row.session_id) ?? str(row.id);
+            if (!sessionId) continue;
+            setSessionMeta(sessionId, { workspaceId, sessionFile: str(row.sessionFile) });
         }
         const current = useSessionsStore.getState();
         const existing = current.byWorkspace[workspaceId] ?? [];
-        const next = normalizeSessionsPayload(query.data, workspaceId, existing);
+        const next = normalizeSessionsPayload(rows, workspaceId, existing);
         current.setSessions(workspaceId, next);
     }, [workspaceId, query.data]);
 

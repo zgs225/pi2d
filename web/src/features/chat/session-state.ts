@@ -321,6 +321,10 @@ export function normalizeSessionSummary(raw: unknown, workspaceId: string, exist
     const thinkingValue = str(record.thinking);
     const hasQueue = Array.isArray(record.queue);
     const task = str(record.task) ?? base.task;
+    // Provisional display name: the list row's disk projection of the session's
+    // first user message (pi2.nvim's `first_message` fallback). Absent means
+    // "not carried", `null` means "there is none".
+    const firstMessage = record.firstMessage === null ? null : str(record.firstMessage);
     return {
         ...base,
         sessionId,
@@ -346,7 +350,82 @@ export function normalizeSessionSummary(raw: unknown, workspaceId: string, exist
         parentId: summaryParentId(record, base),
         visible: typeof record.visible === "boolean" ? record.visible : base.visible,
         ...(task !== undefined ? { task } : {}),
+        ...(firstMessage !== undefined ? { firstMessage } : {}),
     };
+}
+
+/** `sessionId` of a raw list row (`sessionId` is the wire field; aliases are tolerated). */
+function rawSessionId(row: Record<string, unknown>): string {
+    return str(row.sessionId) ?? str(row.session_id) ?? str(row.id) ?? "";
+}
+
+/** `parentId` of a raw list row; `null` means a root. */
+function rawParentId(row: Record<string, unknown>): string | null {
+    return str(row.parentId) ?? str(row.parent_id) ?? null;
+}
+
+/** A row is a tab when the plugin's live projection carries `attached_tab`. */
+function hasTab(row: Record<string, unknown>): boolean {
+    return typeof row.tab === "number" && Number.isFinite(row.tab) && row.tab > 0;
+}
+
+/**
+ * Restrict a `workspace.query{kind:"sessions"}` payload to the sessions nvim's
+ * list renders.
+ *
+ * The plugin answers with the union of the workspace's session JSONL files on
+ * disk (`History.list()`) and its live sessions, so a tab-less root row is
+ * *history*, not a tab: it has no live owner and a command routed to it answers
+ * `E_SESSION_NOT_FOUND`. nvim's `:PiSessions` is `Sessions.list()` — the
+ * sessions attached to a tabpage — plus their children, and `tab` is the live
+ * projection of `Session.attached_tab`.
+ *
+ * So keep the connected component (through `parentId`, in both directions) of
+ * every row that carries a `tab`: the tabs themselves, the sub-sessions below
+ * them, and the parent row when a tab is in a child view. Everything else is
+ * disk history and stays out of the console (it is a `session.resume` target,
+ * never a prompt target).
+ */
+export function tabSessionRows(raw: unknown): Record<string, unknown>[] {
+    const record = rec(raw);
+    const list = Array.isArray(raw) ? raw : arr(record?.sessions ?? record?.items);
+    const rows: Record<string, unknown>[] = [];
+    for (const entry of list) {
+        const row = rec(entry);
+        if (row) rows.push(row);
+    }
+
+    // Parent links both ways; a duplicate id (a list race) keeps its first row.
+    const parentOf = new Map<string, string>();
+    const childrenOf = new Map<string, string[]>();
+    for (const row of rows) {
+        const id = rawSessionId(row);
+        if (id === "" || parentOf.has(id)) continue;
+        const parentId = rawParentId(row);
+        parentOf.set(id, parentId ?? "");
+        if (parentId !== null && parentId !== "") {
+            const siblings = childrenOf.get(parentId);
+            if (siblings) siblings.push(id);
+            else childrenOf.set(parentId, [id]);
+        }
+    }
+
+    const keep = new Set<string>();
+    const stack: string[] = [];
+    for (const row of rows) {
+        const id = rawSessionId(row);
+        if (id !== "" && hasTab(row)) stack.push(id);
+    }
+    while (stack.length > 0) {
+        const id = stack.pop();
+        if (id === undefined || keep.has(id)) continue;
+        keep.add(id);
+        const parentId = parentOf.get(id);
+        if (parentId) stack.push(parentId);
+        for (const childId of childrenOf.get(id) ?? []) stack.push(childId);
+    }
+
+    return rows.filter((row) => keep.has(rawSessionId(row)));
 }
 
 /** Parse `{sessions:[...]}` (also bare arrays) into render states. */

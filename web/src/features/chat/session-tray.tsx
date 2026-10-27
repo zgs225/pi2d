@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 
 import { TodoList } from "./blocks";
 import { formatDuration } from "./format";
+import { subagentTitle } from "./session-title";
 import type { TrayTab } from "./store";
 
 import "@/styles/pages/chat-tray.css";
@@ -71,9 +72,16 @@ export function SessionTray({
     const tabsRef = useRef<HTMLDivElement | null>(null);
     const [entered, setEntered] = useState(false);
 
-    const title = subagent
-        ? t("chat.subview.trayTitle", { name: subagent.name ?? subagent.id })
-        : t("chat.trayTitle");
+    // The tray names the subagent it is scoped to; a nameless subagent is
+    // labelled by its task prompt, never by its id (pi2.nvim parity).
+    const subagentName = subagent
+        ? subagentTitle(subagent, {
+              unnamed: t("chat.sessionUnnamed"),
+              subagentUnnamed: t("chat.subagentUnnamed"),
+          }).text
+        : "";
+
+    const title = subagent ? t("chat.subview.trayTitle", { name: subagentName }) : t("chat.trayTitle");
 
     // Enter animation: flip `is-open` on the frame after the node is painted.
     useEffect(() => {
@@ -185,7 +193,7 @@ export function SessionTray({
                 <p className="tray-scope" data-testid="tray-scope">
                     <span className="tray-scope__label">
                         {subagent
-                            ? t("chat.trayScopeSubagent", { name: subagent.name ?? subagent.id })
+                            ? t("chat.trayScopeSubagent", { name: subagentName })
                             : t("chat.trayScopeSession")}
                     </span>
                     {subagent ? <span className="tray-scope__note">{t("chat.trayScopeNote")}</span> : null}

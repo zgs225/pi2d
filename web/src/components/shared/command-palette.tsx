@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { Icon, type IconName } from "@/components/icons";
 import { NAV } from "@/components/shared/nav-list";
+import { sessionTitle } from "@/features/chat/session-title";
 import { cn } from "@/lib/utils";
 import { useSessionsStore } from "@/stores/sessions";
 import { useWorkspacesStore } from "@/stores/workspaces";
@@ -76,7 +77,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             id: `session-${session.sessionId}`,
             group: groupSessions,
             icon: "chat",
-            label: session.name ?? session.sessionId,
+            label: sessionTitle(session, {
+                unnamed: t("chat.sessionUnnamed"),
+                subagentUnnamed: t("chat.subagentUnnamed"),
+            }).text,
             hint: t(`state.${session.status}`),
             keywords: `${session.sessionId} ${session.model?.id ?? ""} ${session.cwd}`,
             href: `/chat/${encodeURIComponent(session.sessionId)}`,

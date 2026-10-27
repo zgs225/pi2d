@@ -18,12 +18,12 @@ export interface ServerChipProps {
 export function ServerChip({ server: override, className }: ServerChipProps) {
     const { t } = useTranslation();
     const stored = useConnectionStore((state) => state.server);
+    const status = useConnectionStore((state) => state.serverStatus);
     const server = override ?? stored;
 
     const name = server?.name ?? "pi2.nvim";
     const hostname =
         server?.hostname ?? (typeof window !== "undefined" ? window.location.hostname || "localhost" : "localhost");
-    const status = server?.status ?? "offline";
     const dot = serverDotClass(status);
     const dotStatus = dot.replace("dot--", "") as "ok" | "attention" | "exited" | "idle";
 

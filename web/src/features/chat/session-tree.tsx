@@ -8,6 +8,8 @@ import { StatusDot, subagentDotClass } from "@/components/ui/status-dot";
 import { cn } from "@/lib/utils";
 import { SessionRowMenu } from "./session-row-menu";
 import { flattenSubagents, sessionDot } from "./session-state";
+import { sessionTitle, subagentTitle } from "./session-title";
+import { SessionTitleSpinner } from "./session-title-spinner";
 import {
     buildSessionTreeView,
     treeNodeId,
@@ -104,6 +106,11 @@ export function SessionTree({
     const [wsMenuOpen, setWsMenuOpen] = useState(false);
     const [rowMenu, setRowMenu] = useState<{ session: SessionState; anchor: HTMLElement } | null>(null);
     const anchorRef = useRef<HTMLElement | null>(null);
+    // pi2.nvim's `(unnamed)` / `sub-session` placeholders, in the active locale.
+    const titlePhrases = useMemo(
+        () => ({ unnamed: t("chat.sessionUnnamed"), subagentUnnamed: t("chat.subagentUnnamed") }),
+        [t],
+    );
 
     const view = useMemo(
         () =>
@@ -172,7 +179,8 @@ export function SessionTree({
         const session = node.session;
         const selected = session.sessionId === selectedId;
         const menuOpen = rowMenu?.session.sessionId === session.sessionId;
-        const name = session.name?.trim() || session.sessionId;
+        // A row is never labelled with its id (pi2.nvim shows `(unnamed)`).
+        const title = sessionTitle(session, titlePhrases);
         const attention = session.attention.length;
         return (
             <div
@@ -197,12 +205,21 @@ export function SessionTree({
                 <button
                     type="button"
                     className="tree-row__main"
-                    title={rowTitle([name, session.model?.id, session.thinking])}
+                    title={rowTitle([title.text, session.model?.id, session.thinking])}
                     aria-current={selected ? "true" : undefined}
                     onClick={() => onSelectSession(session.sessionId)}
                 >
                     <StatusDot status={sessionDot(session)} />
-                    <span className="t-name truncate">{name}</span>
+                    {title.spinner ? <SessionTitleSpinner /> : null}
+                    <span
+                        className={cn(
+                            "t-name truncate",
+                            title.kind === "unnamed" && "is-unnamed",
+                            title.kind === "generating" && "is-generating",
+                        )}
+                    >
+                        {title.text}
+                    </span>
                     {attention > 0 ? <span className="t-attn">{`!${attention}`}</span> : null}
                 </button>
                 <button
@@ -227,9 +244,11 @@ export function SessionTree({
     function renderSubagentRow(node: SubagentTreeNode) {
         const { session, subagent } = node;
         const viewing = subagent.id === activeSubagentId;
-        const name = subagent.name?.trim() || subagent.id;
+        // Sub-session rows resolve name → task prompt (40 chars) → `sub-session`;
+        // the id stays an identity, never a label.
+        const title = subagentTitle(subagent, titlePhrases);
         // Status is carried by the dot only; text goes to title/aria-label.
-        const label = rowTitle([name, subagent.model, subagent.thinking, t(`state.${subagent.status}`)]);
+        const label = rowTitle([title.text, subagent.model, subagent.thinking, t(`state.${subagent.status}`)]);
         return (
             <div
                 className={cn(
@@ -257,7 +276,15 @@ export function SessionTree({
                     onClick={() => onSelectSubagent(session.sessionId, subagent.id)}
                 >
                     <span className={cn("dot", subagentDotClass(subagent.status))} aria-hidden="true" />
-                    <span className="t-name truncate">{name}</span>
+                    <span
+                        className={cn(
+                            "t-name truncate",
+                            title.kind === "unnamed" && "is-unnamed",
+                            title.kind === "generating" && "is-generating",
+                        )}
+                    >
+                        {title.text}
+                    </span>
                     {node.hiddenCount > 0 ? (
                         <span className="t-hidden tabular" title={t("chat.hiddenSubs", { n: node.hiddenCount })}>
                             {`+${node.hiddenCount}`}

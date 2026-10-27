@@ -63,6 +63,8 @@ The plugin dials the daemon (`<runtime>/d.sock`), sends `hello` first.
 {"v":1,"type":"sub.unsubscribe","sessionId":"s1"}
 {"v":1,"type":"instance.shutdown","payload":{"mode":"drain"}}
 {"v":1,"type":"workspace.query","id":"req-2","payload":{"kind":"sessions"}}
+// a session-scoped read keeps the sid on the envelope (see §3.1 entries)
+{"v":1,"type":"workspace.query","id":"req-3","sessionId":"s1","payload":{"kind":"entries","limit":50}}
 ```
 
 Plugin obligations:
@@ -83,7 +85,7 @@ Plugin obligations:
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
-| `GET /api/v1/sessions/:sid/entries?before=&limit=` | relayed; plugin paginates |
+| `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` | relayed `workspace.query{kind:"entries"}`; plugin paginates |
 | `GET /api/v1/attention?workspaceId=` | pending attention for one workspace |
 | `GET /api/v1/devices` | paired devices (daemon-owned; `{id, name, kind, createdAt, lastSeenAt, revokedAt}`) |
 | `POST /api/v1/pair` | **authenticated**; mints `{code, url, expiresAt, nonce, qr, bases}` |
@@ -92,6 +94,14 @@ Plugin obligations:
 | `GET /api/v1/models?workspaceId=` | relayed to the instance |
 | `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice |
 | `GET /api/v1/diagnostics` | connections, event rates, slow queries, instance table |
+
+The entries read is the only query that is *about a session*. `workspaceId` from the
+caller routes it (a disk-only row has no live owner); the `sid` always travels on the
+record envelope, so the plugin resolves the session — and its file — from its own
+registry. `sessionFile` is an optional fallback for a session the receiving instance
+does not know. A session that exists but has no JSONL yet (`pi` creates the file with
+the first entry) answers an **empty page** (`{entries:[], cursor:{hasMore:false}}`),
+never an error: a new session has no history to fail on.
 
 Workspace row (`GET /api/v1/workspaces`) — registry entry ∪ disk discovery ∪ live instance state. Every known workspace is returned; rows are never filtered, so `/workspace/<workspaceId>` deep links always resolve:
 
@@ -125,13 +135,25 @@ Session row (`GET /api/v1/workspaces/:id/sessions`) — a subset of `SessionStat
 | Field | Notes |
 |---|---|
 | `sessionId`, `sessionFile?`, `name?`, `cwd?`, `timestamp?`, `modified?`, `firstMessage?` | identity + disk projection |
-| `tab?`, `live?` | live projection |
+| `tab?` | live projection of `Session.attached_tab`; present ⇒ this row is an nvim tab |
+| `live?` | live projection: the session's `pi --mode rpc` process runs (a detached sub-session is live without a `tab`) |
 | `status?` | live status when `live` (`busy`, `compacting`, `idle`, `exited`); otherwise the child's manifest status (`dormant`, `done`, `error`, `interrupted`, `exited`). Absent on a non-live root. |
 | `model?`, `thinking?` | per-session model pin; the child's manifest thinking level |
 | `visible: boolean` | always present; the plugin's `:PiSessions` visibility decision |
 | `parentId?: string` | sub-session rows only: the parent session id (normally present in the same list) |
 | `task?`, `agentSpawned?`, `reported?` | sub-session rows only, carried through from the spawn request |
 | `createdAt?`, `lastActiveAt?` | epoch ms; ordering/aging hints, never required |
+
+The list is a union of every session JSONL the workspace has on disk and its live
+sessions, so a client must not assume every row is an nvim tab. A row carrying
+`tab` is a tab; a tab-less root row is *history* — it has no live owner, and a
+command routed to it answers `E_SESSION_NOT_FOUND`. A client that mirrors the
+nvim session list renders the tab-backed component: the rows with a `tab` plus
+every row linked to them through `parentId` in either direction (their
+sub-sessions, and the parent row when a tab is in a child view). That is exactly
+`:PiSessions` (`Sessions.list()` plus children); pi2 web applies this filter in
+`web/src/features/chat/session-state.ts` (`tabSessionRows`). A history row is a
+`session.resume` target, never a prompt target.
 
 Sub-session rows sit in the same flat list as their parent: build the tree from `parentId`
 (an unknown `parentId`, or one whose row was pruned, promotes the row to a root so a row is
@@ -204,6 +226,7 @@ interface SessionState {
   parentId?: string | null;   // null = root (client-side only; the plugin omits the field)
   visible?: boolean;          // plugin `:PiSessions` visibility decision
   task?: string;              // subagent task description from the spawn request
+  firstMessage?: string | null; // first user message of the session file (provisional title)
 }
 
 type Block =

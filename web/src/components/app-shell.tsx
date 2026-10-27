@@ -8,6 +8,8 @@ import { PagePill } from "@/components/shared/page-pill";
 import { PrefsMenu } from "@/components/shared/prefs-menu";
 import { ServerChip } from "@/components/shared/server-chip";
 import { clearPairMeta } from "@/features/connect/pairing";
+import { useHealthQuery } from "@/features/status/queries";
+import { resolveServerStatus } from "@/features/status/server";
 import { api, getDeviceToken, onUnauthorized } from "@/lib/api";
 import { CONNECT_PATH, safeNext } from "@/lib/routing";
 import { defaultWsUrl, PiWsClient, type WsConnectionState } from "@/lib/ws";
@@ -99,6 +101,7 @@ export function AppShell() {
     const href = useRouterState({ select: (state) => state.location.href });
     const paired = useConnectionStore((state) => state.paired);
     const setServer = useConnectionStore((state) => state.setServer);
+    const setServerStatus = useConnectionStore((state) => state.setServerStatus);
     const wsState = useConnectionStore((state) => state.wsState);
     const setWsState = useConnectionStore((state) => state.setWsState);
     const disconnect = useConnectionStore((state) => state.disconnect);
@@ -116,10 +119,23 @@ export function AppShell() {
         staleTime: 30_000,
         retry: 1,
     });
+    const health = useHealthQuery(paired && !isConnect);
+    const healthOk = health.data?.ok ?? (health.data ? health.data.items.every((item) => item.ok) : undefined);
 
     useEffect(() => {
         if (info.data) setServer(info.data);
     }, [info.data, setServer]);
+
+    useEffect(() => {
+        setServerStatus(
+            resolveServerStatus({
+                paired,
+                info: info.data,
+                infoError: info.isError,
+                healthOk,
+            }),
+        );
+    }, [healthOk, info.data, info.isError, paired, setServerStatus]);
 
     useEffect(() => {
         document.body.dataset.page = page;

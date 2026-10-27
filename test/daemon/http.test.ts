@@ -266,6 +266,9 @@ describe("HTTP API", () => {
             (call) => call.method === "workspace.query" && call.params?.kind === "entries",
         );
         expect(entryCall?.params).toEqual({ before: "e9", limit: 25, kind: "entries" });
+        // The routed sid rides on the envelope so the plugin can resolve the
+        // session file itself (no `sessionFile` guarantee on the wire).
+        expect(entryCall?.sessionId).toBe("s1");
         expect((await entries.json()) as { entries: unknown[] }).toHaveProperty("entries");
 
         const attention = await fetch(`${h.url}/api/v1/attention?workspaceId=ws-1`, authed());
@@ -275,6 +278,27 @@ describe("HTTP API", () => {
         expect(conn.commands.some((call) => call.method === "workspace.query" && call.params?.kind === "models")).toBe(
             true,
         );
+    });
+
+    it("routes a disk-only session's entries through workspaceId but keeps the sid", async () => {
+        // A row from disk discovery is not owned by the live instance, so the
+        // workspace hint is what routes it -- and the sid must survive that.
+        h.instances.sessionOwners.delete("s1");
+        conn.commandHandler = async () =>
+            ({ seq: 1, disposition: "started", entries: [] }) as never;
+
+        const res = await fetch(
+            `${h.url}/api/v1/sessions/disk-1/entries?limit=5&workspaceId=ws-1&sessionFile=${encodeURIComponent(
+                "/tmp/disk-1.jsonl",
+            )}`,
+            authed(),
+        );
+        expect(res.status).toBe(200);
+        const call = conn.commands.find(
+            (entry) => entry.method === "workspace.query" && entry.params?.kind === "entries",
+        );
+        expect(call?.sessionId).toBe("disk-1");
+        expect(call?.params).toEqual({ limit: 5, sessionFile: "/tmp/disk-1.jsonl", kind: "entries" });
     });
 
     it("returns resources and diagnostics", async () => {

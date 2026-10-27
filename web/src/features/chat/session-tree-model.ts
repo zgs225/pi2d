@@ -1,5 +1,7 @@
 import type { SessionState, Subagent } from "@protocol/types";
 
+import { sessionTitle, subagentTitle } from "./session-title";
+
 /**
  * The session tree the sidebar renders: workspace sessions nest under their
  * `parentId` (sub-sessions are separate rows of the same REST list), and a
@@ -145,12 +147,19 @@ function containsNode(node: TreeNode, id: string): boolean {
     return node.children.some((child) => containsNode(child, id));
 }
 
+/**
+ * English search phrases: the model is React-free, so it must not depend on
+ * i18n. Searching matches the rendered label *and* the raw id, which keeps a
+ * session findable even though an id is never displayed as its title.
+ */
+const SEARCH_PHRASES = { unnamed: "(unnamed)", subagentUnnamed: "sub-session" };
+
 function sessionLabel(session: SessionState): string {
-    return session.name?.trim() || session.sessionId;
+    return sessionTitle(session, SEARCH_PHRASES).text;
 }
 
 function subagentLabel(subagent: Subagent): string {
-    return subagent.name?.trim() || subagent.id;
+    return subagentTitle(subagent, SEARCH_PHRASES).text;
 }
 
 /** Search matches the session/subagent name or its model id (prototype behaviour). */
@@ -225,7 +234,13 @@ export function buildSessionTreeView(
      * active lens > plugin policy > "an kept descendant needs the ancestor".
      */
     function keepSession(session: SessionState, childCount: number): boolean {
-        if (needle !== "") return matches(sessionLabel(session), session.model?.id, needle) || childCount > 0;
+        if (needle !== "") {
+            return (
+                matches(sessionLabel(session), session.model?.id, needle) ||
+                session.sessionId.toLowerCase().includes(needle) ||
+                childCount > 0
+            );
+        }
         if (selectedId !== null && session.sessionId === selectedId) return true;
         if (activeOnly && !isSessionActive(session)) return childCount > 0;
         if (session.visible === false) return showHidden || childCount > 0;
@@ -298,7 +313,9 @@ export function buildSessionTreeView(
                 showHidden ||
                 selectedId === subagent.id ||
                 children.length > 0 ||
-                (needle !== "" && matches(subagentLabel(subagent), subagent.model, needle));
+                (needle !== "" &&
+                    (matches(subagentLabel(subagent), subagent.model, needle) ||
+                        subagent.id.toLowerCase().includes(needle)));
             if (!keep) {
                 if (needle === "") hiddenByPolicy += 1;
                 return null;

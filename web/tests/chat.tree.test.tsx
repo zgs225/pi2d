@@ -510,10 +510,12 @@ function workspaceBody() {
 }
 
 function sessionsBody() {
+    // Two live tabs. `tab` is the plugin's live projection of `attached_tab`;
+    // without it a row is disk history, not a tab.
     return {
         sessions: [
-            { sessionId: "s1", name: "Alpha", workspaceId: "W1", cwd: "/work/w1", status: "idle" },
-            { sessionId: "s2", name: "Beta", workspaceId: "W1", cwd: "/work/w1", status: "busy" },
+            { sessionId: "s1", name: "Alpha", workspaceId: "W1", cwd: "/work/w1", status: "idle", tab: 1, live: true },
+            { sessionId: "s2", name: "Beta", workspaceId: "W1", cwd: "/work/w1", status: "busy", tab: 2, live: true },
         ],
     };
 }
@@ -531,7 +533,16 @@ function subSessionBody() {
                 parentId: "s1",
                 visible: false,
             },
-            { sessionId: "s1", name: "Alpha", workspaceId: "W1", cwd: "/work/w1", status: "idle", visible: true },
+            {
+                sessionId: "s1",
+                name: "Alpha",
+                workspaceId: "W1",
+                cwd: "/work/w1",
+                status: "idle",
+                visible: true,
+                tab: 1,
+                live: true,
+            },
         ],
     };
 }
@@ -722,5 +733,70 @@ describe("chat session deep link", () => {
 
         release();
         expect(await screen.findByTestId("session-not-found")).toBeInTheDocument();
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* The list is the nvim tab set, not the workspace's JSONL history.    */
+/* ------------------------------------------------------------------ */
+
+/** What `workspace.query{kind:"sessions"}` answers: live tabs ∪ every JSONL on disk. */
+function mixedBody() {
+    return {
+        sessions: [
+            { sessionId: "hist", name: "Yesterday", workspaceId: "W1", cwd: "/work/w1", status: "done", modified: 2 },
+            {
+                sessionId: "s1",
+                name: "Alpha",
+                workspaceId: "W1",
+                cwd: "/work/w1",
+                status: "idle",
+                tab: 1,
+                live: true,
+            },
+        ],
+    };
+}
+
+describe("chat session list mirrors the nvim tabs", () => {
+    beforeEach(() => {
+        useSessionsStore.getState().reset();
+        useChatStore.setState({ history: {}, sending: null });
+        silentSocket();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("renders the tab-backed session and never a disk-only historical row", async () => {
+        mockApi([
+            { path: "/api/v1/workspaces", handler: () => ({ body: workspaceBody() }) },
+            { path: "/api/v1/workspaces/W1/sessions", handler: () => ({ body: mixedBody() }) },
+            { path: "/api/v1/models", handler: () => ({ body: [] }) },
+            { path: /^\/api\/v1\/sessions\/s1\/entries/, handler: () => ({ body: entriesBody("Alpha first message") }) },
+        ]);
+
+        await renderPage(chatRoutes(), "/chat?workspace=W1");
+
+        expect(await screen.findByText("Alpha first message")).toBeInTheDocument();
+        await waitFor(() => expect(document.querySelector('[data-session-id="s1"]')).not.toBeNull());
+        expect(document.querySelector('[data-session-id="hist"]')).toBeNull();
+        expect(screen.queryByText("Yesterday")).toBeNull();
+    });
+
+    it("answers a deep link into history with not-found and no composer", async () => {
+        const fetchMock = mockApi([
+            { path: "/api/v1/workspaces", handler: () => ({ body: workspaceBody() }) },
+            { path: "/api/v1/workspaces/W1/sessions", handler: () => ({ body: mixedBody() }) },
+            { path: "/api/v1/models", handler: () => ({ body: [] }) },
+        ]);
+
+        await renderPage(chatRoutes(), "/chat/hist?workspace=W1");
+
+        expect(await screen.findByTestId("session-not-found")).toBeInTheDocument();
+        // A historical row has no live owner: replying must not be offered.
+        expect(within(streamPane()).queryByLabelText("Message input")).toBeNull();
+        expect(requestedUrls(fetchMock).some((url) => url.includes("/sessions/hist/entries"))).toBe(false);
     });
 });

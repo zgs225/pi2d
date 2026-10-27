@@ -257,6 +257,7 @@ export interface InfoResponse {
     /** Additive identity fields (daemon ≥ 0.2): OS label and process uptime. */
     os?: string;
     uptimeMs?: number;
+    /** Daemon does not send status today; resolveServerStatus() is the authority (a newer daemon may still send it as an override). */
     status?: "online" | "degraded" | "offline";
 }
 

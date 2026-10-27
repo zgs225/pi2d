@@ -338,3 +338,111 @@ describe("chat message stream — layout contract", () => {
         expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
     });
 });
+
+/* ------------------------------------------------------------------ */
+/* Auto-follow: content growth must never look like a user scroll.     */
+/* ------------------------------------------------------------------ */
+
+describe("chat message stream — auto-follow", () => {
+    /**
+     * jsdom has no layout: give the scroll container a fake viewport so the
+     * distance heuristic can be exercised (2000px of content, 600px visible).
+     */
+    function renderWithViewport(props: Partial<MessageStreamProps> = {}) {
+        const utils = renderStream(props);
+        const scroll = utils.container.querySelector<HTMLElement>(".stream-scroll");
+        if (!scroll) throw new Error("the chat layout did not render a stream scroll");
+        const box = { top: 0, height: 2000, client: 600 };
+        Object.defineProperty(scroll, "scrollHeight", { configurable: true, get: () => box.height });
+        Object.defineProperty(scroll, "clientHeight", { configurable: true, get: () => box.client });
+        Object.defineProperty(scroll, "scrollTop", {
+            configurable: true,
+            get: () => box.top,
+            set: (value: number) => {
+                box.top = value;
+            },
+        });
+        const scrollTo = vi.fn((options?: ScrollToOptions) => {
+            box.top = Number(options?.top ?? box.height);
+        });
+        (scroll as unknown as { scrollTo: typeof scrollTo }).scrollTo = scrollTo;
+        const latest = () => utils.container.querySelector(".fab--latest.is-visible");
+        return { ...utils, scroll, box, scrollTo, latest };
+    }
+
+    it("keeps following when the stream grew under the viewport (no user input)", () => {
+        const { scroll, box, latest } = renderWithViewport();
+
+        // The virtualizer measured taller items after the pin: the scroll
+        // position is now far from the bottom, but nobody scrolled.
+        box.top = 900;
+        fireEvent.scroll(scroll);
+        expect(latest()).toBeNull();
+
+        // An explicit wheel up that moves the view up does stop following.
+        fireEvent.wheel(scroll, { deltaY: -120 });
+        box.top = 800;
+        fireEvent.scroll(scroll);
+        expect(latest()).not.toBeNull();
+
+        // Returning to the bottom (by wheel) re-arms it.
+        fireEvent.wheel(scroll, { deltaY: 4000 });
+        box.top = box.height - box.client;
+        fireEvent.scroll(scroll);
+        expect(latest()).toBeNull();
+    });
+
+    it("re-pins to the newest item on every content resize while following", () => {
+        const observed: (() => void)[] = [];
+        const original = globalThis.ResizeObserver;
+        class RecordingObserver {
+            constructor(callback: () => void) {
+                observed.push(callback);
+            }
+            observe(): void {}
+            unobserve(): void {}
+            disconnect(): void {}
+        }
+        globalThis.ResizeObserver = RecordingObserver as unknown as typeof ResizeObserver;
+        try {
+            const { box, scrollTo } = renderWithViewport();
+            expect(observed.length).toBeGreaterThan(0);
+
+            box.height = 3200;
+            for (const callback of observed) callback();
+            expect(scrollTo).toHaveBeenCalled();
+            expect(box.top).toBe(3200);
+        } finally {
+            globalThis.ResizeObserver = original;
+        }
+    });
+
+    it("stops re-pinning once the user scrolled away", () => {
+        const observed: (() => void)[] = [];
+        const original = globalThis.ResizeObserver;
+        class RecordingObserver {
+            constructor(callback: () => void) {
+                observed.push(callback);
+            }
+            observe(): void {}
+            unobserve(): void {}
+            disconnect(): void {}
+        }
+        globalThis.ResizeObserver = RecordingObserver as unknown as typeof ResizeObserver;
+        try {
+            const { scroll, box, scrollTo, latest } = renderWithViewport();
+
+            fireEvent.wheel(scroll, { deltaY: -200 });
+            box.top = 400;
+            fireEvent.scroll(scroll);
+            expect(latest()).not.toBeNull();
+
+            scrollTo.mockClear();
+            box.height = 3600;
+            for (const callback of observed) callback();
+            expect(scrollTo).not.toHaveBeenCalled();
+        } finally {
+            globalThis.ResizeObserver = original;
+        }
+    });
+});

@@ -34,17 +34,25 @@ export function remapSessionMeta(from: string, to: string): void {
     if (meta) sessionMeta.set(to, { ...sessionMeta.get(to), ...meta });
 }
 
-/** `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` → raw pi entries + cursor. */
+/**
+ * `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` → raw pi entries + cursor.
+ *
+ * `workspaceId` is the caller's routing hint (the page knows the workspace it is
+ * showing): the daemon needs it to reach the right instance for a row that is
+ * not live, and it must not depend on the list effect having filled
+ * `sessionMeta` first. `sessionFile` stays metadata-driven — it is a fallback
+ * for the plugin, which resolves the file from the session id itself.
+ */
 export async function fetchEntriesPage(
     sessionId: string,
-    before?: string,
-    limit = HISTORY_PAGE_SIZE,
-    signal?: AbortSignal,
+    options: { before?: string; limit?: number; signal?: AbortSignal; workspaceId?: string } = {},
 ): Promise<FetchedPage> {
+    const { before, limit = HISTORY_PAGE_SIZE, signal, workspaceId } = options;
     const query = new URLSearchParams({ limit: String(limit) });
     if (before) query.set("before", before);
     const meta = sessionMeta.get(sessionId);
-    if (meta?.workspaceId) query.set("workspaceId", meta.workspaceId);
+    const routedWorkspace = workspaceId ?? meta?.workspaceId;
+    if (routedWorkspace) query.set("workspaceId", routedWorkspace);
     if (meta?.sessionFile) query.set("sessionFile", meta.sessionFile);
     const raw = await apiRequest<unknown>(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/entries?${query.toString()}`,
@@ -82,11 +90,16 @@ export interface SessionHistory {
 /**
  * Historical pages merged with the live snapshot entries (live wins by id).
  * Paging is backwards (`before` cursor) and dedupes by entry id.
+ *
+ * `workspaceId` is the routing hint for the entries relay (see
+ * `fetchEntriesPage`); it is nullable because `/chat` can render before a
+ * workspace is resolved.
  */
 export function useSessionHistory(
     sessionId: string | null | undefined,
     liveEntries: Entry[],
     enabled = true,
+    workspaceId?: string | null,
 ): SessionHistory {
     const history = useChatStore((state) =>
         sessionId ? (state.history[sessionId] ?? EMPTY_HISTORY) : EMPTY_HISTORY,
@@ -100,7 +113,7 @@ export function useSessionHistory(
 
         const seq = nextRequest(sessionId);
         useChatStore.getState().beginInitial(sessionId);
-        void fetchEntriesPage(sessionId)
+        void fetchEntriesPage(sessionId, { workspaceId: workspaceId ?? undefined })
             .then((page) => {
                 if (!isCurrent(sessionId, seq)) return;
                 useChatStore.getState().receiveInitial(sessionId, page.entries, page.cursor);
@@ -111,7 +124,7 @@ export function useSessionHistory(
                 useChatStore.getState().historyError(sessionId, message);
             });
         // `token` is the resync generation; `sessionId`/`enabled` gate loading.
-    }, [sessionId, enabled, token]);
+    }, [sessionId, enabled, token, workspaceId]);
 
     const loadOlder = useCallback(() => {
         if (!sessionId) return;
@@ -122,7 +135,7 @@ export function useSessionHistory(
 
         const seq = nextRequest(sessionId);
         useChatStore.getState().beginOlder(sessionId);
-        void fetchEntriesPage(sessionId, before)
+        void fetchEntriesPage(sessionId, { before, workspaceId: workspaceId ?? undefined })
             .then((page) => {
                 if (!isCurrent(sessionId, seq)) return;
                 useChatStore.getState().receiveOlder(sessionId, page.entries, page.cursor);
@@ -132,7 +145,7 @@ export function useSessionHistory(
                 const message = error instanceof ApiError ? error.code : error instanceof Error ? error.message : String(error);
                 useChatStore.getState().historyError(sessionId, message);
             });
-    }, [sessionId]);
+    }, [sessionId, workspaceId]);
 
     const retry = useCallback(() => {
         if (!sessionId) return;

@@ -1,6 +1,41 @@
 import type { InfoResponse } from "@/lib/api";
 import type { WsConnectionState } from "@/lib/ws";
 
+export type ServerStatusValue = "online" | "degraded" | "offline" | "unknown";
+
+export interface ServerStatusInput {
+    /** The browser holds a paired device (localStorage `pi2-connection`). */
+    paired: boolean;
+    /** Cached `GET /api/v1/info` payload, or `null`/`undefined` before the first success. */
+    info?: InfoResponse | null;
+    /** The /info query failed (network error or non-2xx). */
+    infoError?: boolean;
+    /** `GET /api/v1/health` → `ok`, `null`/`undefined` while unknown. */
+    healthOk?: boolean | null;
+}
+
+/** Resolve the server status the UI may trust; never the wire's absent `status` field. */
+export function resolveServerStatus(input: ServerStatusInput): ServerStatusValue {
+    // 1. Unpaired clients cannot reach a server session.
+    if (!input.paired) {
+        return "offline";
+    }
+    // 2. The /info probe failed (network error or non-2xx) — daemon is unreachable.
+    if (input.infoError) {
+        return "offline";
+    }
+    // 3. /health reported a degraded subsystem while the daemon itself responds.
+    if (input.healthOk === false) {
+        return "degraded";
+    }
+    // 4. Cached or freshly fetched /info payload is present and healthy.
+    if (input.info != null) {
+        return "online";
+    }
+    // 5. First probe is still in flight — do not flash offline.
+    return "unknown";
+}
+
 /**
  * Optional identity fields the daemon may expose beyond the minimal /info
  * contract (`{v,daemonId,machineId,platform,hostname,os,version,uptimeMs,
@@ -36,7 +71,7 @@ export interface ServerIdentity {
     uptimeSec: number | null;
     uptimeMs: number | null;
     pid: number | null;
-    status: "online" | "degraded" | "offline";
+    status: ServerStatusValue;
     wsConnected: boolean;
     wsProto: string;
     lastHeartbeatAt: number | null;
@@ -85,7 +120,7 @@ export interface DeriveServerInput {
     wsState?: WsConnectionState;
     fetchedAt?: number | null;
     nameFallback?: string | null;
-    status?: "online" | "degraded" | "offline" | null;
+    status?: ServerStatusValue | null;
 }
 
 /** Resolve the single server's identity from /info + the locally stored endpoint. */

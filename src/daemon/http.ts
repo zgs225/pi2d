@@ -287,15 +287,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
         if (before !== undefined) params.before = before;
         const limit = Number(c.req.query("limit"));
         if (Number.isFinite(limit) && limit > 0) params.limit = Math.min(500, Math.floor(limit));
-        const workspaceId = c.req.query("workspaceId");
         const sessionFile = c.req.query("sessionFile");
         if (sessionFile) params.sessionFile = sessionFile;
-        const ack = workspaceId
-            ? await router.relayWorkspaceQuery(workspaceId, "entries", params)
-            : await router.relaySessionQuery(c.req.param("sid"), "workspace.query", {
-                  ...params,
-                  kind: "entries",
-              });
+        // `workspaceId` only routes the read (a disk-only row has no live owner);
+        // the sid still rides along so the plugin can answer from its registry.
+        const ack = await router.relaySessionQuery(
+            c.req.param("sid"),
+            "workspace.query",
+            { ...params, kind: "entries" },
+            c.req.query("workspaceId"),
+        );
         return json(200, ack);
     });
 

@@ -122,10 +122,11 @@ export function useInfoQuery(enabled = true) {
     });
 }
 
-export function useHealthQuery() {
+export function useHealthQuery(enabled = true) {
     return useQuery<HealthResponse>({
         queryKey: ["health"],
         queryFn: ({ signal }) => api.health(signal),
+        enabled,
         staleTime: 10_000,
     });
 }

@@ -1,6 +1,6 @@
 import type { Batch, Entry, QueueItem, SessionState, Subagent, TodoItem } from "@protocol/types";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
@@ -121,18 +121,50 @@ export function MessageStream({
     const queued = allItems.filter((item) => item.kind === "queued");
     const steerAll = steerAllOf(session.queue);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
     const [following, setFollowing] = useState(true);
     const followingRef = useRef(true);
     const pendingPrepend = useRef<number | null>(null);
     const loadRequested = useRef(false);
     const rafRef = useRef<number | null>(null);
+    /** Last observed `scrollTop`, so only an *upward* move counts as "stop following". */
+    const lastTopRef = useRef<number | null>(null);
+    /** Explicit scroll input (wheel / touch / keys / pointer drag) is the only way to stop following. */
+    const userInputRef = useRef(false);
+    const inputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    /** A smooth FAB scroll is in flight; instant pins would fight it. */
+    const smoothUntilRef = useRef(0);
 
     const setFollow = useCallback((value: boolean) => {
         followingRef.current = value;
         setFollowing(value);
     }, []);
 
+    /**
+     * Mark an explicit user scroll. `following` must never be cleared by content
+     * growth: the virtualizer measures real item heights after its estimated
+     * pass, so `scrollHeight` jumps while the view sits still — treating that
+     * as a user scroll froze the stream one or more screens above the newest
+     * entry (the stream then looked stuck at an old message).
+     */
+    const markScrollInput = useCallback(() => {
+        userInputRef.current = true;
+        if (inputTimerRef.current) clearTimeout(inputTimerRef.current);
+        inputTimerRef.current = setTimeout(() => {
+            inputTimerRef.current = null;
+            userInputRef.current = false;
+        }, 500);
+    }, []);
+
+    useEffect(
+        () => () => {
+            if (inputTimerRef.current) clearTimeout(inputTimerRef.current);
+        },
+        [],
+    );
+
     const virtualize = items.length >= VIRTUALIZE_THRESHOLD;
+    const hasItems = items.length > 0;
     const virtualizer = useVirtualizer({
         count: items.length,
         getScrollElement: () => scrollRef.current,
@@ -153,7 +185,7 @@ export function MessageStream({
 
     // Streaming keeps the DOM height changing; stay pinned while following.
     useLayoutEffect(() => {
-        if (!followingRef.current) return;
+        if (!followingRef.current || Date.now() < smoothUntilRef.current) return;
         if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
         rafRef.current = requestAnimationFrame(() => {
             rafRef.current = requestAnimationFrame(() => {
@@ -162,6 +194,20 @@ export function MessageStream({
             });
         });
     });
+
+    // A one-shot rAF after render lands short of the end: the virtualizer reports
+    // real heights only after its estimated pass, and images/tool output load
+    // later still. Observe the list so every real height change re-pins while
+    // the user is following.
+    useEffect(() => {
+        const list = listRef.current;
+        if (!list || typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(() => {
+            if (followingRef.current && Date.now() >= smoothUntilRef.current) scrollToBottom(false);
+        });
+        observer.observe(list);
+        return () => observer.disconnect();
+    }, [scrollToBottom, virtualize, hasItems]);
 
     useLayoutEffect(() => {
         const element = scrollRef.current;
@@ -176,9 +222,16 @@ export function MessageStream({
     const handleScroll = useCallback(() => {
         const element = scrollRef.current;
         if (!element) return;
-        const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-        setFollow(distance < 80);
-        if (element.scrollTop < 120 && hasMore && !loadingOlder && !loadRequested.current) {
+        const top = element.scrollTop;
+        const previous = lastTopRef.current;
+        lastTopRef.current = top;
+        const distance = element.scrollHeight - top - element.clientHeight;
+        // Re-arm at the bottom. Only explicit input that actually moved the view
+        // *up* may stop following — growth-driven scroll positions (virtualizer
+        // measurements, streamed text, late images) must never freeze the pin.
+        if (distance < 80) setFollow(true);
+        else if (userInputRef.current && (previous === null || top < previous - 2)) setFollow(false);
+        if (top < 120 && hasMore && !loadingOlder && !loadRequested.current) {
             loadRequested.current = true;
             pendingPrepend.current = element.scrollHeight;
             onLoadOlder();
@@ -268,6 +321,7 @@ export function MessageStream({
             {items.length ? (
                 virtualize ? (
                     <div
+                        ref={listRef}
                         className="stream-list stream-inner stream-list--virtual"
                         style={{ height: `${virtualizer.getTotalSize()}px` }}
                     >
@@ -290,7 +344,7 @@ export function MessageStream({
                         })}
                     </div>
                 ) : (
-                    <div className="stream-list stream-inner">
+                    <div ref={listRef} className="stream-list stream-inner">
                         {items.map((item) => (
                             <div className={itemClassName(item)} key={item.key}>
                                 {renderItem(item)}
@@ -329,6 +383,10 @@ export function MessageStream({
                 aria-live="polite"
                 aria-label={t("chat.streamAria")}
                 onScroll={handleScroll}
+                onWheel={markScrollInput}
+                onTouchMove={markScrollInput}
+                onKeyDown={markScrollInput}
+                onPointerDown={markScrollInput}
             >
                 {status}
                 {body}
@@ -342,6 +400,7 @@ export function MessageStream({
                     title={t("chat.backToLatest")}
                     onClick={() => {
                         setFollow(true);
+                        smoothUntilRef.current = Date.now() + 700;
                         scrollToBottom(true);
                     }}
                 >

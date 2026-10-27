@@ -311,7 +311,8 @@
     height: 11px;
 }
 
-/* 行：单行 = 折叠箭头 + 主按钮（点 + 名称 + !N）+ 行操作「…」 */
+/* 行：单行 = 折叠箭头 + 主按钮（点 + 名称 + !N）+ 行操作「…」
+   pi2.nvim 的 :PiSessions 不做淡入淡出：hover / 选中态瞬时切换。 */
 .tree-row {
     display: flex;
     align-items: center;
@@ -319,7 +320,6 @@
     min-height: 32px;
     padding: 0;
     border-radius: var(--radius-sm);
-    transition: background var(--dur-fast) var(--ease-out);
 }
 .tree-row:hover {
     background: var(--surface-1);
@@ -355,6 +355,21 @@
     flex: 1 1 auto;
     min-width: 0;
 }
+/* 没有名字的会话：pi2.nvim 的占位样式（comment 色 + 斜体），静止不动。 */
+.tree-row .t-name.is-unnamed,
+.tree-row .t-name.is-generating {
+    color: var(--faint);
+    font-style: italic;
+}
+/* 自动命名中的 120ms 盲文 spinner：前缀占位，由 JS 驱动帧，CSS 不参与动画。 */
+.tree-row .t-spinner {
+    flex: none;
+    width: 1ch;
+    color: var(--faint);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1;
+}
 .tree-row .t-attn {
     flex: none;
     font-size: var(--fs-2xs);
@@ -389,7 +404,6 @@
 }
 .tree-toggle.open svg {
     transform: rotate(90deg);
-    transition: transform var(--dur-fast) var(--ease-out);
 }
 .tree-toggle.leaf {
     visibility: hidden;
@@ -400,7 +414,6 @@
     width: 22px;
     height: 22px;
     opacity: 0;
-    transition: opacity var(--dur-fast) var(--ease-out);
 }
 .tree-row:hover .t-more,
 .tree-row:focus-within .t-more,
@@ -430,6 +443,40 @@
 }
 .tree-pop .menu__item.is-danger:hover {
     background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+/* 状态圆点：pi2.nvim 是离散二值闪烁（busy/error 500ms、compacting 1000ms），
+   不是 app.css 里那种平滑 ease 的 pulse；attention / idle / ok / exited 常亮。
+   只作用于会话树，其他页面的圆点保持不变。 */
+@keyframes tree-dot-blink {
+    0%,
+    49% {
+        opacity: 1;
+    }
+    50%,
+    100% {
+        opacity: 0.35;
+    }
+}
+.tree-row .dot--busy,
+.tree-row .dot--err {
+    animation: tree-dot-blink 1s steps(1, end) infinite;
+}
+.tree-row .dot--compacting {
+    animation: tree-dot-blink 2s steps(1, end) infinite;
+}
+.tree-row .dot--attention,
+.tree-row .dot--idle,
+.tree-row .dot--ok,
+.tree-row .dot--exited {
+    animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+    .tree-row .dot--busy,
+    .tree-row .dot--err,
+    .tree-row .dot--compacting {
+        animation: none;
+    }
 }
 
 /* 子会话 / 子代理行：更矮、更小、灰一档；状态只由圆点表达。 */

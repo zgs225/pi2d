@@ -12,6 +12,7 @@ import { EntryBlock } from "./blocks";
 import { Composer } from "./composer";
 import type { ModelGroup } from "./data";
 import { HeadChips } from "./head-chips";
+import { subagentTitle } from "./session-title";
 import type { TrayTab } from "./store";
 
 import "@/styles/pages/chat-telemetry.css";
@@ -185,7 +186,10 @@ export function SubagentView({
     className,
 }: SubagentViewProps) {
     const { t } = useTranslation();
-    const name = subagent.name?.trim() || subagent.id;
+    const name = subagentTitle(subagent, {
+        unnamed: t("chat.sessionUnnamed"),
+        subagentUnnamed: t("chat.subagentUnnamed"),
+    }).text;
     const task = subagent.task?.trim() || "";
     // `live` is authoritative when present; the status is the fallback.
     const isLive = subagent.live === true || subagent.status === "active";

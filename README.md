@@ -114,6 +114,11 @@ pnpm dev            # daemon on 127.0.0.1:7676 (tsx watch)
 pnpm --dir web dev  # vite dev server on :5173, proxying /api and /ws to the daemon
 ```
 
+The dev proxy presents the daemon's own `Origin`, so the :5173 server needs no `PI2_ORIGINS`
+(the daemon's allowlist is derived from its port). Sign in to :5173 once by opening
+`http://localhost:5173/#t=<token>` with the fragment from `pnpm exec tsx src/cli/pi2.ts open --print`;
+`localStorage` is per origin, so the :7676 session does not carry over.
+
 `pnpm build` → `dist/`, `pnpm build:web` → `web/dist/`. The published tarball ships both, so
 `pi2 daemon` serves the web console from its own package with no extra step.
 

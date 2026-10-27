@@ -124,13 +124,27 @@ export class CommandRouter {
         return this.relay(workspaceId, undefined, "workspace.query", { ...params, kind });
     }
 
-    /** Relayed read used by `GET /sessions/:sid/entries`. */
+    /**
+     * Relayed read used by `GET /sessions/:sid/entries`.
+     *
+     * The sid travels on the envelope even when `workspaceIdHint` routes the read
+     * to an instance that does not own the session (a disk-only row): the plugin
+     * resolves the file from its registry, so `params.sessionFile` is a fallback,
+     * never a requirement. Dropping the sid here forced every workspace-scoped
+     * read to carry a session file, which a session does not have before its
+     * first entry is persisted.
+     */
     async relaySessionQuery(
         sessionId: string,
         method: string,
         params: Record<string, unknown> = {},
+        workspaceIdHint?: string,
     ): Promise<Record<string, unknown>> {
-        const workspaceId = this.resolveWorkspace(sessionId, params);
+        const hint =
+            typeof workspaceIdHint === "string" && workspaceIdHint !== ""
+                ? { workspaceId: workspaceIdHint }
+                : {};
+        const workspaceId = this.resolveWorkspace(sessionId, { ...params, ...hint });
         return this.relay(workspaceId, sessionId, method, params);
     }
 
