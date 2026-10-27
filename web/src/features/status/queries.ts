@@ -20,7 +20,6 @@ export interface DeviceEntry {
     deviceId?: string;
     name: string;
     kind: string;
-    scopes: string[];
     /** `lastSeenAt` is the daemon field; `lastActiveAt` came from older builds. */
     lastActiveAt?: number | null;
     lastSeenAt?: number | null;
@@ -52,9 +51,10 @@ export async function fetchModels(workspaceId: string, signal?: AbortSignal): Pr
 }
 
 /**
- * `/api/v1/pair` is public for redemption (`{code,…}`) and *authenticated* for
- * minting: an authenticated `POST` with no `code` returns
- * `{accepted,code,url,expiresAt,nonce}` (docs/protocol.md §3.2).
+ * `POST /api/v1/pair` is authenticated and mints a code:
+ * `{accepted,code,url,expiresAt,nonce,qr,bases}`, where `qr` carries the opaque
+ * matrix (version 1–10, EC level M, no quiet zone) and is absent when the URL
+ * is too long to encode (docs/protocol.md §3.2).
  */
 export interface PairCodeResponse {
     accepted?: boolean;
@@ -62,6 +62,8 @@ export interface PairCodeResponse {
     url?: string;
     expiresAt?: number;
     nonce?: string;
+    qr?: { version: number; ecc: string; mask: number; size: number; rows: string[] };
+    bases?: { kind: string; name: string; address: string; url: string }[];
 }
 
 /** Pairing codes are short-lived; 10 minutes matches `auth.pairCreate`'s default. */

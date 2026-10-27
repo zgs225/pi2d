@@ -31,11 +31,11 @@ function routes() {
     ];
 }
 
-/** `POST <origin>/api/v1/pair` → `{token, device}` (the public redeem contract). */
+/** `POST <origin>/api/v1/pair/redeem` → `{token, device}` (the public redeem contract). */
 function pairRoute(reply: { status?: number; body?: unknown } = {}): MockRoute {
     return {
         method: "POST",
-        path: "/api/v1/pair",
+        path: "/api/v1/pair/redeem",
         handler: () => ({
             status: reply.status ?? 200,
             body: reply.body ?? {
@@ -44,7 +44,6 @@ function pairRoute(reply: { status?: number; body?: unknown } = {}): MockRoute {
                     id: "dev-7c1",
                     name: "My browser",
                     kind: "laptop",
-                    scopes: ["read", "steer"],
                     lastSeenAt: 1_700_000_000_000,
                 },
             },
@@ -54,31 +53,35 @@ function pairRoute(reply: { status?: number; body?: unknown } = {}): MockRoute {
 
 interface PairCall {
     origin: string;
+    path: string;
     body: Record<string, unknown>;
 }
 
+/** Every recorded `POST` to the pairing surface (mint or redeem). */
 function pairCalls(fetchMock: ReturnType<typeof mockApi>): PairCall[] {
     return fetchMock.mock.calls
         .filter(([input, init]) => {
             const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-            return new URL(raw, "http://localhost").pathname === "/api/v1/pair" && (init?.method ?? "GET") === "POST";
+            const path = new URL(raw, "http://localhost").pathname;
+            return path.startsWith("/api/v1/pair") && (init?.method ?? "GET") === "POST";
         })
         .map(([input, init]) => {
             const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
             const url = new URL(raw, "http://localhost");
-            return { origin: url.origin, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> };
+            return {
+                origin: url.origin,
+                path: url.pathname,
+                body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
+            };
         });
 }
 
-/** Expand the collapsed manual form (both states use the same toggle labels). */
-function expandManual() {
-    const toggle = document.querySelector<HTMLButtonElement>('.cn-toggle[aria-expanded="false"]');
-    if (!toggle) throw new Error("manual toggle not found");
-    fireEvent.click(toggle);
-    return toggle;
+function redeemCalls(fetchMock: ReturnType<typeof mockApi>): PairCall[] {
+    return pairCalls(fetchMock).filter((call) => call.path === "/api/v1/pair/redeem");
 }
 
-function fillManualForm(values: { host?: string; port?: string; code?: string; device?: string }) {
+function fillManualForm(values: { host?: string; port?: string; code?: string; device?: string; link?: string }) {
+    if (values.link !== undefined) fireEvent.change(screen.getByTestId("connect-link"), { target: { value: values.link } });
     if (values.host !== undefined) fireEvent.change(screen.getByTestId("connect-host"), { target: { value: values.host } });
     if (values.port !== undefined) fireEvent.change(screen.getByTestId("connect-port"), { target: { value: values.port } });
     if (values.code !== undefined) {
@@ -117,37 +120,22 @@ describe("ConnectPage", () => {
         expect(document.querySelector(".cn-col .cn-card.card--quiet")).not.toBeNull();
     });
 
-    it("keeps a single primary (scan) and the manual form collapsed by default", async () => {
+    it("keeps the manual form expanded as the single primary action", async () => {
         mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
 
-        const scan = screen.getByTestId("connect-scan");
-        expect(scan).toHaveClass("btn--primary");
-        expect(primaries()).toHaveLength(1);
-
+        // The camera scanner is gone: the form is the only path and it is open.
+        expect(screen.queryByTestId("connect-scan")).toBeNull();
         const panel = screen.getByTestId("connect-manual-panel");
-        expect(panel).toHaveAttribute("hidden");
-
-        // Expanding moves the primary onto the form submit and focuses the host field.
-        expandManual();
         expect(panel).not.toHaveAttribute("hidden");
         expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
-        expect(screen.getByTestId("connect-scan")).not.toHaveClass("btn--primary");
         expect(primaries()).toHaveLength(1);
         expect(screen.getByTestId("connect-host")).toHaveFocus();
-
-        // Collapsing hands the primary back to the scan button.
-        const toggle = document.querySelector<HTMLButtonElement>('.cn-toggle[aria-expanded="true"]');
-        fireEvent.click(toggle as HTMLButtonElement);
-        expect(panel).toHaveAttribute("hidden");
-        expect(screen.getByTestId("connect-scan")).toHaveClass("btn--primary");
-        expect(primaries()).toHaveLength(1);
     });
 
     it("defaults the port to the port this console was served from, never a literal", async () => {
         mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
-        expandManual();
 
         const port = screen.getByTestId("connect-port");
         const servedPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
@@ -167,14 +155,12 @@ describe("ConnectPage", () => {
 
         await waitFor(() => expect(screen.getByTestId("connect-repair")).toBeInTheDocument());
         fireEvent.click(screen.getByTestId("connect-repair"));
-        expandManual();
         await waitFor(() => expect(screen.getByTestId("connect-port")).toHaveValue("7676"));
     });
 
     it("validates host, port and the 8-character pairing code inline without calling the daemon", async () => {
         const fetchMock = mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
-        expandManual();
 
         const submit = screen.getByTestId("connect-submit");
         fireEvent.click(submit);
@@ -198,17 +184,41 @@ describe("ConnectPage", () => {
     it("labels the third field as a pairing code and uppercases input", async () => {
         mockApi([pairRoute()]);
         await renderPage(routes(), "/connect", { paired: false });
-        expandManual();
 
         expect(screen.getByLabelText("Pairing code")).toBe(screen.getByTestId("connect-pair-code"));
         fillManualForm({ code: "ab-cd12 34" });
         expect(screen.getByTestId("connect-pair-code")).toHaveValue("ABCD1234");
     });
 
-    it("redeems a manual pairing against /api/v1/pair, stores token + scopes and redirects", async () => {
+    it("prefills host, port and code from a pasted pi2:// pairing link", async () => {
+        mockApi([pairRoute()]);
+        await renderPage(routes(), "/connect", { paired: false });
+
+        fillManualForm({ link: "pi2://pair?host=192.168.2.10&port=4321&code=AB-CD-12-34" });
+        expect(screen.getByTestId("connect-host")).toHaveValue("192.168.2.10");
+        expect(screen.getByTestId("connect-port")).toHaveValue("4321");
+        expect(screen.getByTestId("connect-pair-code")).toHaveValue("ABCD1234");
+    });
+
+    it("prefills from a pasted /pair/CODE link and reports an unparseable one", async () => {
+        mockApi([pairRoute()]);
+        await renderPage(routes(), "/connect", { paired: false });
+
+        fillManualForm({ link: "/pair/ABCD1234" });
+        expect(screen.getByTestId("connect-host")).toHaveValue(window.location.hostname);
+        expect(screen.getByTestId("connect-port")).toHaveValue(window.location.port);
+        expect(screen.getByTestId("connect-pair-code")).toHaveValue("ABCD1234");
+
+        fillManualForm({ link: "https://example.invalid/nothing-here" });
+        fireEvent.click(screen.getByTestId("connect-submit"));
+        expect(
+            await screen.findByText("Could not parse it. Paste the full pi2://pair link."),
+        ).toBeInTheDocument();
+    });
+
+    it("redeems a manual pairing against /api/v1/pair/redeem, stores the token and redirects", async () => {
         const fetchMock = mockApi([pairRoute()]);
         const { router } = await renderPage(routes(), "/connect", { paired: false });
-        expandManual();
 
         fillManualForm({ host: "192.168.2.10", port: "4321", code: "abcd1234", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
@@ -216,12 +226,13 @@ describe("ConnectPage", () => {
         await waitFor(() => expect(localStorage.getItem("pi2-device-token")).toBe("Bearer pkt_test"));
         expect(localStorage.getItem("pi2-endpoint")).toBe("http://192.168.2.10:4321");
         expect(localStorage.getItem("pi2-connection")).toBe("paired");
-        expect(JSON.parse(localStorage.getItem("pi2-device-scopes") ?? "[]")).toEqual(["read", "steer"]);
 
-        const calls = pairCalls(fetchMock);
+        const calls = redeemCalls(fetchMock);
         expect(calls).toHaveLength(1);
         expect(calls[0]?.origin).toBe("http://192.168.2.10:4321");
         expect(calls[0]?.body).toEqual({ code: "ABCD1234", kind: "laptop", deviceName: "My browser" });
+        // The mint path is not the redeem path anymore.
+        expect(pairCalls(fetchMock).filter((call) => call.path === "/api/v1/pair")).toHaveLength(0);
 
         await waitFor(() => expect(router.state.location.pathname).toBe("/workspaces"));
         expect(await screen.findByText("Workspaces destination")).toBeInTheDocument();
@@ -239,14 +250,15 @@ describe("ConnectPage", () => {
         await waitFor(() => expect(localStorage.getItem("pi2-connection")).toBe("paired"));
         expect(localStorage.getItem("pi2-device-token")).toBe("Bearer pkt_test");
         expect(localStorage.getItem("pi2-endpoint")).toBe(origin);
-        expect(JSON.parse(localStorage.getItem("pi2-device-scopes") ?? "[]")).toEqual(["read", "steer"]);
 
-        const calls = pairCalls(fetchMock);
+        const calls = redeemCalls(fetchMock);
         expect(calls).toHaveLength(1);
         expect(calls[0]?.origin).toBe(origin);
         expect(calls[0]?.body).toEqual({ code: "ABCD1234", kind: "laptop", deviceName: "Web console" });
 
         await waitFor(() => expect(router.state.location.pathname).toBe("/workspaces"));
+        // `code` and `auto` are consumed, not kept in the URL.
+        expect(router.state.location.searchStr).toBe("");
         expect(await screen.findByText("Workspaces destination")).toBeInTheDocument();
     });
 
@@ -278,14 +290,13 @@ describe("ConnectPage", () => {
         const { router } = await renderPage(routes(), "/connect?next=%2Fchat%2F01a15368%3Fworkspace%3Dws-1", {
             paired: false,
         });
-        expandManual();
 
         fillManualForm({ host: "192.168.2.10", port: "4321", code: "ABCD1234", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
 
         await waitFor(() => expect(router.state.location.pathname).toBe("/chat/01a15368"));
         expect(router.state.location.search).toMatchObject({ workspace: "ws-1" });
-        expect(pairCalls(fetchMock)).toHaveLength(1);
+        expect(redeemCalls(fetchMock)).toHaveLength(1);
     });
 
     it("shows a localized inline error for a wrong or expired code and stays unpaired", async () => {
@@ -296,7 +307,6 @@ describe("ConnectPage", () => {
             }),
         ]);
         const { router } = await renderPage(routes(), "/connect", { paired: false });
-        expandManual();
 
         fillManualForm({ host: "192.168.2.10", port: "4321", code: "ZZZZ9999", device: "My browser" });
         fireEvent.click(screen.getByTestId("connect-submit"));
@@ -310,53 +320,13 @@ describe("ConnectPage", () => {
         expect(screen.getByTestId("connect-submit")).toBeEnabled();
     });
 
-    it("warns then pairs from a pasted pi2 pair link through the confirmation dialog", async () => {
-        const fetchMock = mockApi([pairRoute()]);
-        const { router } = await renderPage(routes(), "/connect", { paired: false });
-
-        fireEvent.click(screen.getByTestId("connect-scan"));
-        const link = await screen.findByLabelText("Pairing link");
-        fireEvent.change(link, {
-            target: { value: "pi2://pair?host=192.168.2.10&port=4321&code=ABCD1234" },
-        });
-        fireEvent.click(screen.getByRole("button", { name: "Identify" }));
-
-        // Confirmation dialog: host:port + masked code, and its buttons must be clickable.
-        const dialog = await screen.findByRole("dialog");
-        expect(within(dialog).getByText("192.168.2.10:4321")).toBeInTheDocument();
-        expect(within(dialog).getByText("…234")).toBeInTheDocument();
-
-        fireEvent.click(screen.getByTestId("connect-confirm-connect"));
-        await waitFor(() => expect(localStorage.getItem("pi2-connection")).toBe("paired"));
-        expect(pairCalls(fetchMock)[0]?.body).toMatchObject({ code: "ABCD1234" });
-        await waitFor(() => expect(router.state.location.pathname).toBe("/workspaces"));
-    });
-
-    it("cancel on the confirmation dialog leaves the connection untouched", async () => {
-        const fetchMock = mockApi([pairRoute()]);
-        const { router } = await renderPage(routes(), "/connect", { paired: false });
-
-        fireEvent.click(screen.getByTestId("connect-scan"));
-        const link = await screen.findByLabelText("Pairing link");
-        fireEvent.change(link, { target: { value: "pi2://pair?host=192.168.2.10&code=ABCD1234" } });
-        fireEvent.click(screen.getByRole("button", { name: "Identify" }));
-        await screen.findByRole("dialog");
-
-        fireEvent.click(screen.getByTestId("connect-confirm-cancel"));
-        await waitFor(() => expect(screen.queryByTestId("connect-confirm-cancel")).not.toBeInTheDocument());
-        expect(pairCalls(fetchMock)).toHaveLength(0);
-        expect(localStorage.getItem("pi2-connection")).toBeNull();
-        expect(router.state.location.pathname).toBe("/connect");
-    });
-
-    it("shows the connected summary with server identity, device scopes and one primary", async () => {
+    it("shows the connected summary with server identity and one primary", async () => {
         mockApi([{ path: "/api/v1/info", handler: () => ({ body: infoBody }) }]);
         await renderPage(routes(), "/connect", {
             paired: true,
             storage: {
                 "pi2-device": "Test browser",
                 "pi2-endpoint": "http://192.168.2.10:4321",
-                "pi2-device-scopes": JSON.stringify(["read", "steer"]),
             },
         });
 
@@ -366,9 +336,9 @@ describe("ConnectPage", () => {
         expect(screen.getByText("http://192.168.2.10:4321")).toBeInTheDocument();
         expect(screen.getByText("0.4.2")).toBeInTheDocument();
         expect(screen.getByText("Test browser")).toBeInTheDocument();
-        expect(screen.getByText("Read")).toBeInTheDocument();
-        expect(screen.getByText("Steer")).toBeInTheDocument();
-        expect(screen.queryByText("Apply")).not.toBeInTheDocument();
+        // Scopes are gone from the console entirely.
+        expect(screen.queryByText("Scopes")).not.toBeInTheDocument();
+        expect(screen.queryByText("Read")).not.toBeInTheDocument();
 
         // Back to workspaces is the single primary while the re-pair panel is closed.
         expect(screen.getByTestId("connect-back")).toHaveClass("btn--primary");
@@ -378,7 +348,7 @@ describe("ConnectPage", () => {
         expect(document.querySelector(".cn-details__body")?.textContent).toContain("…");
     });
 
-    it("re-pairs in place and hands the single primary to the scan button, then to the form", async () => {
+    it("re-pairs in place and hands the single primary to the form, then back", async () => {
         mockApi([{ path: "/api/v1/info", handler: () => ({ body: infoBody }) }]);
         await renderPage(routes(), "/connect", {
             paired: true,
@@ -389,19 +359,13 @@ describe("ConnectPage", () => {
         fireEvent.click(repair);
         const panel = screen.getByTestId("connect-repair-panel");
         expect(panel).not.toHaveAttribute("hidden");
-        expect(screen.getByTestId("connect-repair-scan")).toHaveClass("btn--primary");
+        expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
         expect(screen.getByTestId("connect-back")).not.toHaveClass("btn--primary");
         expect(primaries()).toHaveLength(1);
 
-        expandManual();
-        expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
-        expect(screen.getByTestId("connect-repair-scan")).not.toHaveClass("btn--primary");
-        expect(primaries()).toHaveLength(1);
-
-        // Collapsing the panel also collapses the form and returns to one primary.
+        // Collapsing the panel returns the primary to "back to workspaces".
         fireEvent.click(repair);
         expect(panel).toHaveAttribute("hidden");
-        expect(screen.getByTestId("connect-manual-panel")).toHaveAttribute("hidden");
         expect(screen.getByTestId("connect-back")).toHaveClass("btn--primary");
         expect(primaries()).toHaveLength(1);
     });
@@ -421,9 +385,9 @@ describe("ConnectPage", () => {
 
         await waitFor(() => expect(localStorage.getItem("pi2-device-token")).toBeNull());
         expect(localStorage.getItem("pi2-connection")).toBe("unpaired");
-        expect(await screen.findByRole("button", { name: "Scan to pair" })).toBeInTheDocument();
+        expect(await screen.findByRole("heading", { name: "Connect your pi2 server" })).toBeInTheDocument();
         expect(screen.queryByText("Current connection")).not.toBeInTheDocument();
-        expect(screen.getByTestId("connect-scan")).toHaveClass("btn--primary");
+        expect(screen.getByTestId("connect-submit")).toHaveClass("btn--primary");
         expect(primaries()).toHaveLength(1);
     });
 });
@@ -444,6 +408,16 @@ describe("parsePairLink", () => {
         });
         expect(parsePairLink("pi2://pair?host=192.168.2.10:9000&code=ABCD1234")).toMatchObject({
             endpoint: "http://192.168.2.10:9000",
+        });
+    });
+
+    it("falls back to the served port (never a literal) when a link omits one", () => {
+        const servedPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+        expect(parsePairLink("pi2://pair?host=pi2.local&code=ABCD1234")).toMatchObject({
+            endpoint: `http://pi2.local:${servedPort}`,
+        });
+        expect(parsePairLink("pi2://pair?host=pi2.local&proto=https&code=ABCD1234")).toMatchObject({
+            endpoint: `https://pi2.local:${servedPort}`,
         });
     });
 

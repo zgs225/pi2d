@@ -7,7 +7,7 @@ import { Field, Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { ApiError, errorI18nKey } from "@/lib/api";
 
-import { PAIR_CODE_LENGTH, isPairCode, normalizePairCode, parseEndpoint } from "./pairing";
+import { PAIR_CODE_LENGTH, isPairCode, normalizePairCode, parseEndpoint, parsePairLink } from "./pairing";
 
 export interface ManualConnectInput {
     endpoint: string;
@@ -61,6 +61,8 @@ export function ManualConnectForm({
 }: ManualConnectFormProps) {
     const { t } = useTranslation();
     const id = useId();
+    const [link, setLink] = useState("");
+    const [linkError, setLinkError] = useState<string | null>(null);
     const [host, setHost] = useState(() => initialHost ?? "");
     const [port, setPort] = useState(() => initialPort ?? defaultPort);
     const [code, setCode] = useState(() => normalizePairCode(initialCode ?? ""));
@@ -93,7 +95,24 @@ export function ManualConnectForm({
         setCodeError(null);
         setFormError(null);
 
-        const parsed = parseEndpoint(host, port);
+        // 整段粘贴的配对链接（`pi2://pair?…` / `…/pair/CODE`）先拆成地址 + 端口 + 配对码，
+        // 拆不出内容时留在链接输入框上报错。
+        const pastedLink = parsePairLink(link) ?? parsePairLink(host);
+        if (link.trim() && !parsePairLink(link)) {
+            setLinkError(t("connect.invalidLink"));
+            return;
+        }
+        setLinkError(null);
+        const hostValue = pastedLink ? pastedLink.hostname : host;
+        const portValue = pastedLink ? String(pastedLink.port) : port;
+        const codeValue = pastedLink ? pastedLink.code : code;
+        if (pastedLink) {
+            setHost(pastedLink.hostname);
+            setPort(String(pastedLink.port));
+            setCode(pastedLink.code);
+        }
+
+        const parsed = parseEndpoint(hostValue, portValue);
         if ("error" in parsed) {
             if (parsed.error === "host") {
                 setHostError(t("connect.hostRequired"));
@@ -110,7 +129,7 @@ export function ManualConnectForm({
             return;
         }
 
-        const normalized = normalizePairCode(code);
+        const normalized = normalizePairCode(codeValue);
         if (!normalized) {
             setCodeError(t("connect.pairCodeRequired"));
             return;
@@ -141,6 +160,40 @@ export function ManualConnectForm({
     return (
         <div className="cn-manual" id={formId} hidden={!expanded} data-testid="connect-manual-panel">
             <form className="cn-form" noValidate onSubmit={(event) => void submit(event)}>
+                <Field
+                    label={t("connect.pairingLink")}
+                    htmlFor={`${id}-link`}
+                    hint={t("connect.pasteHint", { defaultValue: "Paste the link from the QR code" })}
+                    error={linkError}
+                >
+                    <Input
+                        id={`${id}-link`}
+                        data-testid="connect-link"
+                        type="text"
+                        inputMode="url"
+                        autoCapitalize="off"
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder={t("connect.pastePlaceholder")}
+                        value={link}
+                        onChange={(event) => {
+                            const text = event.target.value;
+                            setLink(text);
+                            setLinkError(null);
+                            // 能解析就立即回填，用户只需再按一次连接。
+                            const target = parsePairLink(text);
+                            if (!target) return;
+                            setHost(target.hostname);
+                            setPort(String(target.port));
+                            setCode(target.code);
+                            portEdited.current = true;
+                            setHostError(null);
+                            setPortError(null);
+                            setCodeError(null);
+                        }}
+                    />
+                </Field>
+
                 <div className="cn-row">
                     <Field label={t("connect.host")} htmlFor={`${id}-host`} error={hostError}>
                         <Input

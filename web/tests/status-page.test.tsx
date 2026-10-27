@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commandCalls, mockApi, type MockRoute } from "./helpers/api-mock";
 import { renderPage } from "./helpers/render-page";
 
+import { drawQr } from "@/features/status/qr";
 import { setLanguage } from "@/lib/i18n";
 import { StatusPage } from "@/pages/status";
 import { useConnectionStore } from "@/stores/connection";
@@ -74,12 +75,19 @@ const modelsBody = {
     ],
 };
 
+/** A 21×21 byte-mode matrix (`rows` are `"0"`/`"1"`, no quiet zone). */
+const qrRows = Array.from({ length: 21 }, (_, y) =>
+    Array.from({ length: 21 }, (_, x) => ((x * 7 + y * 3 + (x ^ y)) % 5 < 2 ? "1" : "0")).join(""),
+);
+
 const pairBody = {
     accepted: true,
     code: "ABCD1234",
     url: "http://127.0.0.1:4321/pair/ABCD1234",
     expiresAt: Date.now() + 9 * 60_000,
     nonce: "nonce-1",
+    qr: { version: 1, ecc: "M", mask: 3, size: 21, rows: qrRows },
+    bases: [{ kind: "lan", name: "eth0", address: "192.168.2.10:4321", url: "http://192.168.2.10:4321" }],
 };
 
 const tasksBody = {
@@ -107,7 +115,6 @@ const devicesBody = [
         id: "dev-1",
         name: "Pixel",
         kind: "phone",
-        scopes: ["read", "steer"],
         createdAt: Date.now() - 90_000,
         lastSeenAt: Date.now() - 60_000,
         revokedAt: null,
@@ -175,6 +182,48 @@ beforeEach(async () => {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe("drawQr", () => {
+    function fakeCanvas(width: number) {
+        const fills: number[][] = [];
+        const context = {
+            fillStyle: "",
+            fillRect: (...args: number[]) => fills.push(args),
+            clearRect: () => undefined,
+        };
+        const canvas = {
+            width: 0,
+            height: 0,
+            clientWidth: width,
+            parentElement: null,
+            getContext: () => context,
+        };
+        return { canvas, fills };
+    }
+
+    it("paints one square per dark module, capped at 200px and scaled by dpr", () => {
+        const { canvas, fills } = fakeCanvas(480);
+        drawQr(canvas as unknown as HTMLCanvasElement, qrRows);
+
+        const dpr = window.devicePixelRatio || 1;
+        expect(canvas.width).toBe(200 * dpr);
+        expect(canvas.height).toBe(200 * dpr);
+        // background + one fillRect per `1` module (no fake pattern).
+        const dark = qrRows.reduce((total, row) => total + [...row].filter((cell) => cell === "1").length, 0);
+        expect(fills).toHaveLength(dark + 1);
+    });
+
+    it("clears the canvas for an empty or ragged matrix", () => {
+        const { canvas, fills } = fakeCanvas(200);
+        drawQr(canvas as unknown as HTMLCanvasElement, []);
+        expect(fills).toHaveLength(0);
+        expect(canvas.width).toBe(0);
+
+        drawQr(canvas as unknown as HTMLCanvasElement, ["101", "10"]);
+        expect(fills).toHaveLength(0);
+        expect(canvas.width).toBe(0);
+    });
 });
 
 describe("StatusPage", () => {
@@ -275,12 +324,15 @@ describe("StatusPage", () => {
         await waitFor(() => expect(screen.getByTestId("ws-status")).toHaveTextContent("Connected"));
     });
 
-    it("mints a pairing code and shows it with a square QR and the expiry hint", async () => {
+    it("mints a pairing code and renders the daemon's QR matrix with the expiry hint", async () => {
         const fetchMock = mockApi(apiRoutes());
         await renderPage(routes(), "/status", { paired: true });
 
         expect(await screen.findByTestId("pairing-code")).toHaveTextContent("ABCD1234");
-        expect(screen.getByRole("img", { name: "Pairing QR code" })).toHaveClass("qr-canvas");
+        const canvas = screen.getByRole("img", { name: "Pairing QR code" });
+        expect(canvas).toHaveClass("qr-canvas");
+        // 真矩阵：模块数就是 daemon 下发的 `qr.size` / `rows.length`，不是种子图案。
+        expect(canvas).toHaveAttribute("data-qr-size", String(qrRows.length));
         expect(screen.getByText("Expires in 9 min")).toBeInTheDocument();
         expect(screen.getByText(/Pairing code expires in \d+ minutes/)).toBeInTheDocument();
 
@@ -291,6 +343,26 @@ describe("StatusPage", () => {
         const calls = requests(fetchMock, "POST", "/api/v1/pair");
         expect(calls).toHaveLength(1);
         expect(calls[0]?.body).toEqual({ ttlSec: 600 });
+    });
+
+    it("shows the pairing URL instead of a QR when the daemon omits the matrix", async () => {
+        mockApi(
+            apiRoutes([
+                {
+                    method: "POST",
+                    path: "/api/v1/pair",
+                    handler: () => {
+                        const { qr: _qr, ...withoutQr } = pairBody;
+                        return { body: withoutQr };
+                    },
+                },
+            ]),
+        );
+        await renderPage(routes(), "/status", { paired: true });
+
+        expect(await screen.findByTestId("pairing-code")).toHaveTextContent("ABCD1234");
+        expect(screen.queryByRole("img", { name: "Pairing QR code" })).toBeNull();
+        expect(screen.getByTestId("pair-url")).toHaveTextContent("http://127.0.0.1:4321/pair/ABCD1234");
     });
 
     it("offers a retry when minting a pairing code fails", async () => {

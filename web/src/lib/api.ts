@@ -280,7 +280,6 @@ export interface DeviceInfo {
     deviceId: string;
     name: string;
     kind: "phone" | "laptop" | "tablet";
-    scopes: string[];
     lastActiveAt: number | null;
 }
 
@@ -312,7 +311,6 @@ export interface PairRequest {
 export interface PairResponse {
     token?: string;
     deviceId?: string;
-    scopes?: string[];
     server?: Partial<InfoResponse>;
     [key: string]: unknown;
 }
@@ -351,7 +349,7 @@ export const api = {
         request<PairResponse>("/api/v1/pair", { method: "POST", body: {}, baseUrl, signal }),
     /** Public redeem endpoint (no bearer required): `{code,kind,deviceName}` → `{token,device}`. */
     pairRedeem: (body: PairRequest, baseUrl?: string, signal?: AbortSignal) =>
-        request<PairResponse>("/api/v1/pair", { method: "POST", body, baseUrl, signal, skipAuthReset: true }),
+        request<PairResponse>("/api/v1/pair/redeem", { method: "POST", body, baseUrl, signal, skipAuthReset: true }),
 };
 
 export { request as apiRequest };

@@ -11,7 +11,6 @@ import { toast } from "@/components/ui/toast";
 import {
     clearPairMeta,
     readPairMeta,
-    scopesForIdentity,
 } from "@/features/connect/pairing";
 import { ConnectionCard } from "@/features/status/connection-card";
 import { deviceKey, DevicesCard } from "@/features/status/devices-card";
@@ -84,7 +83,6 @@ export function StatusPage() {
     const models = useModelsQuery(modelsWorkspaceId);
 
     const meta = useMemo(() => readPairMeta(), []);
-    const scopes = scopesForIdentity(meta, info.data);
 
     const healthOk = health.data?.ok ?? (health.data ? health.data.items.every((item) => item.ok) : undefined);
     const server = deriveServerIdentity({
@@ -242,7 +240,6 @@ export function StatusPage() {
             <ConnectionCard
                 server={server}
                 deviceName={storedDeviceName || meta?.deviceName || ""}
-                scopes={scopes}
                 connectedAt={connectedAt || meta?.pairedAt || null}
                 loading={info.isPending}
                 error={info.isError ? translatedError(info.error, "status.infoError", t) : null}

@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { Icon, type IconName } from "@/components/icons";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { DeviceEntry } from "@/features/status/queries";
 
@@ -34,7 +33,7 @@ export interface DevicesCardProps {
     onRevoke: (device: DeviceEntry) => Promise<void>;
 }
 
-/** Card 6 — paired devices with kind icon, scopes, last active and confirm-revoke. */
+/** Card 6 — paired devices with kind icon, last active and confirm-revoke. */
 export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: DevicesCardProps) {
     const { t } = useTranslation();
     const [target, setTarget] = useState<DeviceEntry | null>(null);
@@ -61,7 +60,6 @@ export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: Devi
             ) : (
                 <div className="device-list">
                     {visible.map((device) => {
-                        const scopes = Array.isArray(device.scopes) ? device.scopes : [];
                         return (
                             <div className="device-row" key={deviceKey(device)} data-device-id={deviceKey(device)}>
                                 <span className="device-icon">
@@ -69,15 +67,7 @@ export function DevicesCard({ devices, loading, error, onRetry, onRevoke }: Devi
                                 </span>
                                 <div className="grow device-main">
                                     <div className="device-name truncate">{device.name}</div>
-                                    <div className="device-meta">
-                                        <span className="status-scopes">
-                                            {scopes.map((scope) => (
-                                                <Badge key={scope} className="badge--outline">
-                                                    {scope}
-                                                </Badge>
-                                            ))}
-                                        </span>
-                                    </div>
+                                    <div className="device-meta faint">{device.kind}</div>
                                 </div>
                                 <span className="device-time faint">
                                     <RelativeTime ts={deviceLastActive(device)} />

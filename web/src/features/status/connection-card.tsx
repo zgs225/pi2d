@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { Icon } from "@/components/icons";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { KV } from "@/components/ui/kv";
 import { toast } from "@/components/ui/toast";
@@ -54,28 +53,42 @@ function Address({ label, value }: { label: string; value: string }) {
     );
 }
 
-function QrCanvas({ seed, label }: { seed: string; label: string }) {
+/**
+ * 画 daemon 下发的真矩阵：`rows` 每行一串 `0`/`1`。主题切换和容器缩放时重绘。
+ */
+function QrCanvas({ rows, label }: { rows: string[]; label: string }) {
     const ref = useRef<HTMLCanvasElement | null>(null);
 
     useEffect(() => {
         const canvas = ref.current;
         if (!canvas) return;
-        const draw = () => drawQr(canvas, seed);
+        const draw = () => drawQr(canvas, rows);
         draw();
 
-        if (typeof MutationObserver === "undefined") return;
-        const observer = new MutationObserver(draw);
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-        return () => observer.disconnect();
-    }, [seed]);
+        window.addEventListener("resize", draw);
+        const observer =
+            typeof MutationObserver === "undefined" ? null : new MutationObserver(draw);
+        observer?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+        return () => {
+            window.removeEventListener("resize", draw);
+            observer?.disconnect();
+        };
+    }, [rows]);
 
-    return <canvas ref={ref} className="qr-canvas" role="img" aria-label={label} />;
+    return (
+        <canvas
+            ref={ref}
+            className="qr-canvas"
+            role="img"
+            aria-label={label}
+            data-qr-size={rows.length}
+        />
+    );
 }
 
 export interface ConnectionCardProps {
     server: ServerIdentity;
     deviceName: string;
-    scopes: string[];
     connectedAt: number | null;
     loading: boolean;
     error: string | null;
@@ -95,15 +108,14 @@ export function pairMinutesLeft(expiresAt: number | null | undefined, now = Date
 }
 
 /**
- * Card 7 — two internal columns: addresses / mDNS / endpoint / device / scopes
- * / pairing code / security notes on the left, the square QR with the pairing
- * hint and the expiry on the right. Both actions are non-primary (the status
- * page carries 0 primary buttons).
+ * Card 7 — two internal columns: addresses / mDNS / endpoint / device / pairing
+ * code / security notes on the left, the QR with the pairing hint and the expiry
+ * on the right. Both actions are non-primary (the status page carries 0 primary
+ * buttons).
  */
 export function ConnectionCard({
     server,
     deviceName,
-    scopes,
     connectedAt,
     loading,
     error,
@@ -117,7 +129,10 @@ export function ConnectionCard({
     const { t } = useTranslation();
     const [confirmOpen, setConfirmOpen] = useState(false);
     const code = String(pairCode?.code ?? "").trim();
-    const url = String(pairCode?.url ?? "").trim() || (code ? `${server.networkAddress}/#pair=${code}` : "");
+    // URL 由 daemon 决定（mint 时选好 base），客户端不再拼接。
+    const url = String(pairCode?.url ?? "").trim();
+    /** 真矩阵；URL 过长时 daemon 不下发 `qr`，此时只展示可点/可拷的链接。 */
+    const qrRows = Array.isArray(pairCode?.qr?.rows) ? pairCode.qr.rows : [];
     const minutes = pairMinutesLeft(pairCode?.expiresAt);
 
     return (
@@ -146,19 +161,6 @@ export function ConnectionCard({
                                     <CopyButton value={server.endpoint} label={t("connect.endpoint")} />
                                 </KV>
                                 <KV label={t("connect.device")}>{deviceName || "—"}</KV>
-                                <KV label={t("status.tokenScopes")} valueClassName="status-scopes__wrap">
-                                    {scopes.length ? (
-                                        <span className="status-scopes">
-                                            {scopes.map((scope) => (
-                                                <Badge key={scope} className="badge--outline">
-                                                    {scope}
-                                                </Badge>
-                                            ))}
-                                        </span>
-                                    ) : (
-                                        <span className="faint">—</span>
-                                    )}
-                                </KV>
                                 <KV label={t("status.lastConnected")}>
                                     <RelativeTime ts={connectedAt} />
                                 </KV>
@@ -192,7 +194,13 @@ export function ConnectionCard({
 
                         <div className="conn-right">
                             <div className="qr-wrap">
-                                {code ? <QrCanvas seed={url || code} label={t("status.qrAria")} /> : null}
+                                {qrRows.length ? (
+                                    <QrCanvas rows={qrRows} label={t("status.qrAria")} />
+                                ) : url ? (
+                                    <code className="qr-link mono" data-testid="pair-url">
+                                        {url}
+                                    </code>
+                                ) : null}
                                 <div className="pair-hint faint">
                                     <Icon name="phone" />
                                     <span>{t("status.pairHint")}</span>

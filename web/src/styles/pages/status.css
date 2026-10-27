@@ -276,9 +276,8 @@
 .device-icon svg { width: 16px; height: 16px; }
 .device-main { min-width: 0; }
 .device-name { font-size: var(--fs-sm); font-weight: var(--fw-medium); }
-.device-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.device-meta { margin-top: 2px; }
 .device-time { flex: none; font-size: var(--fs-xs); }
-.status-scopes { display: inline-flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .status-icon-btn { width: 28px; height: 28px; color: var(--faint); }
 .status-icon-btn:hover {
   color: var(--destructive);
@@ -356,10 +355,8 @@
   overflow-wrap: anywhere;
   word-break: break-all;
 }
-.conn-kv .status-scopes__wrap { justify-content: flex-start; }
 /* the endpoint address spans both columns so it is never folded in half */
 .conn-kv .status-kv--wide { grid-column: 1 / -1; }
-.status-scopes__wrap { display: flex; justify-content: flex-end; min-width: 0; }
 
 .pair-code-block { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .pair-code {
@@ -398,6 +395,20 @@
   background: var(--card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
+}
+/* no `qr` payload (URL too long): the link itself is the pairing surface */
+.qr-link {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px dashed var(--border-subtle);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 .pair-hint { display: flex; align-items: flex-start; gap: 5px; font-size: var(--fs-xs); line-height: 1.45; }
 .pair-hint svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }

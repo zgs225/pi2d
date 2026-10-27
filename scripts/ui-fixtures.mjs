@@ -26,6 +26,40 @@ export const MOCK_DAEMON_ID = "d-mock-0f3a9c";
 
 const MINUTE = 60_000;
 
+/**
+ * 21×21 module grid for the mock pairing code (`rows` are `"0"`/`"1"` strings,
+ * no quiet zone). This is **not** a real QR encoding — the daemon's encoder
+ * lives in `src/core/qr.ts`; the harness only needs a plausible grid with the
+ * three finder patterns so the status page renders a real matrix.
+ */
+function mockQrRows(text, size = 21) {
+    const grid = Array.from({ length: size }, () => Array.from({ length: size }, () => "0"));
+    const finder = (ox, oy) => {
+        for (let y = 0; y < 7; y += 1) {
+            for (let x = 0; x < 7; x += 1) {
+                const ring = x === 0 || y === 0 || x === 6 || y === 6;
+                const core = x >= 2 && x <= 4 && y >= 2 && y <= 4;
+                grid[oy + y][ox + x] = ring || core ? "1" : "0";
+            }
+        }
+    };
+    finder(0, 0);
+    finder(size - 7, 0);
+    finder(0, size - 7);
+
+    let state = 2166136261;
+    for (const char of text) state = (state * 31 + char.charCodeAt(0)) >>> 0;
+    for (let y = 0; y < size; y += 1) {
+        for (let x = 0; x < size; x += 1) {
+            const inFinder = (x < 8 && y < 8) || (x > size - 9 && y < 8) || (x < 8 && y > size - 9);
+            if (inFinder) continue;
+            state = (state * 1103515245 + 12345) >>> 0;
+            grid[y][x] = state % 100 < 48 ? "1" : "0";
+        }
+    }
+    return grid.map((row) => row.join(""));
+}
+
 /** Fixed "now" for the running instance; callers may override. */
 export function buildFixtures(now = Date.now()) {
     const iso = (ts) => new Date(ts).toISOString();
@@ -785,7 +819,6 @@ export function buildFixtures(now = Date.now()) {
             deviceId: "dev-local",
             name: "local browser",
             kind: "laptop",
-            scopes: ["read", "steer", "apply"],
             lastSeenAt: now - 15_000,
             lastActiveAt: now - 15_000,
             createdAt: now - 26 * 3_600_000,
@@ -796,7 +829,6 @@ export function buildFixtures(now = Date.now()) {
             deviceId: "dev-phone",
             name: "Pixel 8 · pi2",
             kind: "phone",
-            scopes: ["read", "steer"],
             lastSeenAt: now - 47 * MINUTE,
             lastActiveAt: now - 47 * MINUTE,
             createdAt: now - 9 * 86_400_000,
@@ -807,7 +839,6 @@ export function buildFixtures(now = Date.now()) {
             deviceId: "dev-tablet",
             name: "iPad Air",
             kind: "tablet",
-            scopes: ["read"],
             lastSeenAt: now - 6 * 86_400_000,
             lastActiveAt: now - 6 * 86_400_000,
             createdAt: now - 40 * 86_400_000,
@@ -885,6 +916,21 @@ export function buildFixtures(now = Date.now()) {
 
     const sessionById = new Map(sessions.map((session) => [session.sessionId, session]));
 
+    // `POST /api/v1/pair` mint payload: the daemon picks the URL and encodes it
+    // server-side, so the client never re-derives either (docs/protocol.md §3.2).
+    const pairCode = {
+        accepted: true,
+        code: "QK7M-2XPD",
+        url: "http://192.168.2.10:4321/pair/QK7M2XPD",
+        expiresAt: now + 10 * MINUTE,
+        nonce: "n-9f2c1a",
+        qr: { version: 1, ecc: "M", mask: 3, size: 21, rows: mockQrRows("http://192.168.2.10:4321/pair/QK7M2XPD") },
+        bases: [
+            { kind: "loopback", name: "lo", address: "127.0.0.1:4321", url: "http://127.0.0.1:4321" },
+            { kind: "lan", name: "eth0", address: "192.168.2.10:4321", url: "http://192.168.2.10:4321" },
+        ],
+    };
+
     return {
         info: { ...info, port: undefined },
         health,
@@ -896,14 +942,8 @@ export function buildFixtures(now = Date.now()) {
         modelProviders,
         resources,
         diagnostics,
-        /** `GET /api/v1/pair` mint response (no code in the body). */
-        pairCode: {
-            accepted: true,
-            code: "QK7M-2XPD",
-            url: "http://127.0.0.1:4321/pair/QK7M-2XPD",
-            expiresAt: now + 10 * MINUTE,
-            nonce: "n-9f2c1a",
-        },
+        /** `POST /api/v1/pair` mint response (code + QR matrix + reachable bases). */
+        pairCode,
         /** `attention` flattened per workspace for `GET /api/v1/attention`. */
         attentionByWorkspace: (workspaceId) =>
             sessions

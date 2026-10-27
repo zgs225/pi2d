@@ -196,7 +196,6 @@ const DEVICE_PUBLIC = {
     id: "dev-local",
     name: "local browser",
     kind: "laptop",
-    scopes: ["read", "steer", "apply"],
 };
 
 /* ------------------------------------------------------------------ */
@@ -314,17 +313,20 @@ async function handleApi(req, res, url) {
             url: `http://127.0.0.1:${SERVER_PORT}/#t=${encodeURIComponent(MOCK_DEVICE_TOKEN)}`,
         });
     }
+    // Mint: authenticated, returns the code + QR matrix + reachable bases.
     if (pathname === "/api/v1/pair" && method === "POST") {
-        const body = await readBody(req).catch(() => ({}));
-        if (typeof body.code === "string") {
-            // Public redeem: the fixture code pairs the browser as a laptop.
-            if (body.code.replace(/[\s-]/g, "").toUpperCase() !== FIXTURES.pairCode.code.replace(/-/g, "")) {
-                return unauthorized(res, "pairing code is invalid or expired");
-            }
-            return sendJson(res, 200, { token: MOCK_DEVICE_TOKEN, device: DEVICE_PUBLIC });
-        }
+        await readBody(req).catch(() => ({}));
         if (OPTIONS.pairOnly) return unauthorized(res);
         return sendJson(res, 200, { accepted: true, ...FIXTURES.pairCode });
+    }
+    // Public redeem: the code *is* the capability, no bearer required. It answers
+    // `{token,device}` and stays available under `--pair-only`.
+    if (pathname === "/api/v1/pair/redeem" && method === "POST") {
+        const body = await readBody(req).catch(() => ({}));
+        if (String(body.code ?? "").replace(/[\s-]/g, "").toUpperCase() !== FIXTURES.pairCode.code.replace(/-/g, "")) {
+            return unauthorized(res, "pairing code is invalid or expired");
+        }
+        return sendJson(res, 200, { token: MOCK_DEVICE_TOKEN, device: DEVICE_PUBLIC });
     }
 
     /* Everything below needs a device token (and is refused in --pair-only). */

@@ -2,21 +2,16 @@ import { ApiError, apiRequest, type InfoResponse } from "@/lib/api";
 import { NEXT_FALLBACK, safeNext } from "@/lib/routing";
 
 export const PAIR_META_KEY = "pi2-pair-meta";
-export const PAIR_SCOPES = ["read", "steer", "apply"] as const;
 
 /** Public redeem endpoint: no bearer token required (docs/protocol.md §3.2). */
-export const PAIR_REDEEM_PATH = "/api/v1/pair";
+export const PAIR_REDEEM_PATH = "/api/v1/pair/redeem";
 /** The daemon mints 8-character uppercase alphanumeric pairing codes. */
 export const PAIR_CODE_LENGTH = 8;
 export const PAIR_CODE_PATTERN = /^[A-Z0-9]{8}$/;
-export const DEFAULT_PAIR_PORT = 4321;
-/** Scope assumed when a paired device did not report any (older daemons). */
-export const DEFAULT_DEVICE_SCOPES = ["read"] as const;
 
 export type DeviceKind = "phone" | "laptop" | "tablet";
 
 export interface PairMeta {
-    scopes: string[];
     deviceName?: string;
     kind?: DeviceKind;
     server?: Partial<InfoResponse> & { name?: string; hostname?: string; version?: string; pluginVersion?: string };
@@ -33,12 +28,9 @@ export interface PairTarget {
 
 export interface RedeemResult {
     token: string;
-    scopes: string[];
     deviceId?: string;
     deviceName?: string;
     kind?: DeviceKind;
-    server?: PairMeta["server"];
-    raw: unknown;
 }
 
 export interface ParsedEndpoint {
@@ -59,9 +51,6 @@ function firstString(...values: unknown[]): string | undefined {
     return undefined;
 }
 
-function stringList(value: unknown): string[] {
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
 
 /**
  * Uppercase and drop everything that is not `[A-Z0-9]` — pairing codes are
@@ -180,7 +169,9 @@ function parsePi2PairLink(text: string, fallbackEndpoint?: string | null): PairT
 
     const hostParam = firstString(params.get("host"), params.get("hostname"), params.get("endpoint"));
     const proto = firstString(params.get("proto"), params.get("protocol"))?.toLowerCase();
-    const portParam = firstString(params.get("port")) ?? String(DEFAULT_PAIR_PORT);
+    // A link without a port resolves against the port this console was served
+    // from, falling back to the scheme default — never a literal.
+    const portParam = firstString(params.get("port")) ?? defaultPairPort(proto === "https" ? "https" : "http");
 
     let target: ParsedEndpoint | null = null;
     if (hostParam) {
@@ -190,7 +181,7 @@ function parsePi2PairLink(text: string, fallbackEndpoint?: string | null): PairT
         target = "error" in parsed ? null : parsed;
     }
     // A pi2:// link without a host only makes sense against a known endpoint
-    // (the scan dialog passes the stored one); never guess from the browser origin.
+    // (the caller passes the stored one); never guess from the browser origin.
     target ??= endpointFrom(fallbackEndpoint);
     if (!target) return null;
 
@@ -257,13 +248,14 @@ export function pairingOrigin(endpoint: string): string {
         .replace(/\/+$/, "");
 }
 
-function normalizeScopes(values: string[]): string[] {
-    const unique = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
-    return unique.length ? unique : [...DEFAULT_DEVICE_SCOPES];
+/** Port this console was served from, else the scheme default (`443`/`80`). */
+function defaultPairPort(protocol: "http" | "https"): string {
+    if (typeof window !== "undefined" && window.location.port) return window.location.port;
+    return protocol === "https" ? "443" : "80";
 }
 
 /**
- * Redeem a pairing code against the public `POST <origin>/api/v1/pair`
+ * Redeem a pairing code against the public `POST <origin>/api/v1/pair/redeem`
  * endpoint: `{code,kind,deviceName}` → `{token,device}`.
  */
 export async function redeemPairing(input: {
@@ -286,13 +278,10 @@ export async function redeemPairing(input: {
         signal: input.signal,
     });
 
-    const payload = asRecord(response.payload);
-    const result = asRecord(response.result);
+    // 文档契约只有 `{token,device:{id,name,kind}}`，不再兜底历史别名。
     const body = asRecord(response) ?? {};
-    const device =
-        asRecord(body.device) ?? asRecord(result?.device) ?? asRecord(payload?.device) ?? asRecord(payload);
-    // `{token,device}` is the documented shape; keep the older aliases as a fallback.
-    const token = firstString(body.token, body.deviceToken, device?.token, result?.token, payload?.token);
+    const device = asRecord(body.device);
+    const token = firstString(body.token);
     if (!token) {
         throw new ApiError({
             code: "E_UNAUTHORIZED",
@@ -301,22 +290,11 @@ export async function redeemPairing(input: {
         });
     }
 
-    const scopes = normalizeScopes([
-        ...stringList(body.scopes),
-        ...stringList(device?.scopes),
-        ...stringList(result?.scopes),
-    ]);
-
     return {
         token,
-        scopes,
-        deviceId: firstString(device?.id, body.deviceId, device?.deviceId, result?.deviceId),
-        deviceName: firstString(device?.name, deviceName),
+        deviceId: firstString(device?.id),
+        deviceName: firstString(device?.name) ?? deviceName,
         kind: (firstString(device?.kind) as DeviceKind | undefined) ?? kind,
-        server:
-            (asRecord(body.server) as PairMeta["server"] | undefined) ??
-            (asRecord(result?.server) as PairMeta["server"] | undefined),
-        raw: response,
     };
 }
 
@@ -328,7 +306,6 @@ export function readPairMeta(): PairMeta | null {
         const record = asRecord(parsed);
         if (!record) return null;
         return {
-            scopes: stringList(record.scopes),
             deviceName: typeof record.deviceName === "string" ? record.deviceName : undefined,
             kind: record.kind === "phone" || record.kind === "laptop" || record.kind === "tablet" ? record.kind : undefined,
             server: asRecord(record.server) as PairMeta["server"] | undefined,
@@ -361,17 +338,4 @@ export function clearPairMeta(): void {
  */
 export function safePairNext(raw: string | null | undefined): string {
     return safeNext(raw, NEXT_FALLBACK);
-}
-
-/** Ordered scope list for the paired summary: stored device scopes win over /info capabilities. */
-export function scopesForIdentity(
-    meta: PairMeta | null,
-    info: InfoResponse | null | undefined,
-    storedScopes?: string[] | null,
-): string[] {
-    if (storedScopes?.length) return storedScopes;
-    if (meta?.scopes.length) return meta.scopes;
-    const capabilities = Array.isArray(info?.capabilities) ? info.capabilities : [];
-    const derived = capabilities.filter((capability) => (PAIR_SCOPES as readonly string[]).includes(capability));
-    return derived.length ? derived : [...DEFAULT_DEVICE_SCOPES];
 }

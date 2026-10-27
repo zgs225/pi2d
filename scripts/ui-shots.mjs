@@ -274,7 +274,6 @@ function storageState(origin, { paired, theme }) {
         { name: "pi2-connection", value: "paired" },
         { name: "pi2-endpoint", value: origin },
         { name: "pi2-device-token", value: "mock-device-token-0000000000000000000000" },
-        { name: "pi2-device-scopes", value: JSON.stringify(["read", "steer", "apply"]) },
         { name: "pi2-device", value: "visual harness" },
         { name: "pi2-connected-at", value: String(Date.now()) },
         { name: "pi2-theme", value: theme },
