@@ -1,5 +1,6 @@
 import type { SessionState, Subagent } from "@protocol/types";
 
+import { compareSiblings, effectiveParentOf, orderSessions } from "./session-order";
 import { sessionTitle, subagentTitle } from "./session-title";
 
 /**
@@ -169,33 +170,12 @@ function matches(label: string, model: string | undefined, needle: string): bool
 }
 
 /**
- * The parent a row is grouped under, or `null` when it is a root.
- *
- * A `parentId` that is not in the list is promoted to a root (a filtered-out
- * parent must never lose its children), and a cycle is cut by rendering every
- * member of the cycle as a root.
- */
-function effectiveParent(session: SessionState, index: Map<string, SessionState>): string | null {
-    const parentId = session.parentId ?? null;
-    if (!parentId || parentId === session.sessionId || !index.has(parentId)) return null;
-    const seen = new Set<string>([session.sessionId]);
-    let cursor: string | null = parentId;
-    while (cursor) {
-        if (seen.has(cursor)) return null;
-        seen.add(cursor);
-        const next: string | null = index.get(cursor)?.parentId ?? null;
-        if (!next || next === cursor) break;
-        cursor = next;
-    }
-    return parentId;
-}
-
-/**
  * Build the render tree for one workspace.
  *
- * Input order is preserved (never sorted): root sessions and siblings keep the
- * order the list delivered; a session's synthetic subagent rows follow its real
- * child sessions, in manifest order.
+ * Input is put into canonical order first (roots by tab rank asc, siblings by
+ * createdAt desc then id asc, per pi2.nvim `:PiSessions`), and only then grouped:
+ * a session's real child sessions and synthetic manifest subagent rows are merged
+ * into one sorted sibling list (real child sessions win over same-id subagents).
  */
 export function buildSessionTreeView(
     sessions: SessionState[],
@@ -206,19 +186,18 @@ export function buildSessionTreeView(
     const selectedId = options.selectedId ?? null;
     const needle = (options.filter ?? "").trim().toLowerCase();
 
+    const ordered = orderSessions(sessions);
     const index = new Map<string, SessionState>();
-    for (const session of sessions) {
-        // Duplicate ids (a list/payload race) must not render twice or key twice.
-        if (!index.has(session.sessionId)) index.set(session.sessionId, session);
+    for (const session of ordered) {
+        index.set(session.sessionId, session);
     }
 
     let hiddenByPolicy = 0;
 
-    // Children grouped by their effective parent, in list order.
+    // Children grouped by their effective parent, in canonical order.
     const childSessions = new Map<string | null, SessionState[]>();
-    for (const session of sessions) {
-        if (index.get(session.sessionId) !== session) continue;
-        const parentId = effectiveParent(session, index);
+    for (const session of ordered) {
+        const parentId = effectiveParentOf(session, index);
         const siblings = childSessions.get(parentId);
         if (siblings) siblings.push(session);
         else childSessions.set(parentId, [session]);
@@ -252,16 +231,42 @@ export function buildSessionTreeView(
         const nextPath = new Set(path).add(session.sessionId);
         const children: TreeNode[] = [];
         let hiddenCount = 0;
-        for (const child of childSessions.get(session.sessionId) ?? []) {
-            const node = buildSessionNode(child, depth + 1, nextPath);
-            if (node) children.push(node);
-            else if (activeOnly && needle === "" && child.visible !== false) hiddenCount += 1;
-        }
-        for (const subagent of session.subagents ?? []) {
-            const node = buildSubagentNode(session, subagent, depth + 1, nextPath);
-            if (node) children.push(node);
-            else if (activeOnly && needle === "" && !isSubagentActive(subagent) && subagent.visible !== false) {
-                hiddenCount += 1;
+
+        type SiblingCandidate =
+            | { kind: "session"; session: SessionState; id: string; createdAt?: number | null }
+            | { kind: "subagent"; subagent: Subagent; id: string; createdAt?: number | null };
+
+        const manifestById = new Map((session.subagents ?? []).map((s) => [s.id, s]));
+
+        const candidates: SiblingCandidate[] = [
+            ...(childSessions.get(session.sessionId) ?? []).map((child) => ({
+                kind: "session" as const,
+                session: child,
+                id: child.sessionId,
+                createdAt: manifestById.get(child.sessionId)?.createdAt ?? child.createdAt,
+            })),
+            ...(session.subagents ?? [])
+                .filter((subagent) => !index.has(subagent.id))
+                .map((subagent) => ({
+                    kind: "subagent" as const,
+                    subagent,
+                    id: subagent.id,
+                    createdAt: subagent.createdAt,
+                })),
+        ];
+        candidates.sort(compareSiblings);
+
+        for (const candidate of candidates) {
+            if (candidate.kind === "session") {
+                const node = buildSessionNode(candidate.session, depth + 1, nextPath);
+                if (node) children.push(node);
+                else if (activeOnly && needle === "" && candidate.session.visible !== false) hiddenCount += 1;
+            } else {
+                const node = buildSubagentNode(session, candidate.subagent, depth + 1, nextPath);
+                if (node) children.push(node);
+                else if (activeOnly && needle === "" && !isSubagentActive(candidate.subagent) && candidate.subagent.visible !== false) {
+                    hiddenCount += 1;
+                }
             }
         }
         if (!keepSession(session, children.length)) {
@@ -299,7 +304,8 @@ export function buildSessionTreeView(
         const nextPath = new Set(path).add(subagent.id);
         const children: TreeNode[] = [];
         let hiddenCount = 0;
-        for (const child of subagent.children ?? []) {
+        const subChildren = [...(subagent.children ?? [])].sort(compareSiblings);
+        for (const child of subChildren) {
             const node = buildSubagentNode(session, child, depth + 1, nextPath);
             if (node) children.push(node);
             else if (activeOnly && needle === "" && !isSubagentActive(child) && child.visible !== false) {

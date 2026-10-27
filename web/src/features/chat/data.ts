@@ -16,6 +16,7 @@ import {
     normalizeSnapshotState,
     tabSessionRows,
 } from "./session-state";
+import { firstRootSession } from "./session-order";
 import { setSessionMeta } from "./history";
 import { migrateSessionId } from "./migration";
 import { useChatStore } from "./store";
@@ -330,7 +331,7 @@ export interface SessionLookup {
  * A non-empty `sessionId` that the loaded list does not contain resolves to
  * `undefined` — falling back to `sessions[0]` would silently show a different
  * session for an unknown deep link. The first-session fallback stays for the
- * `/chat` index (no id), which means "the workspace's most recent root session"
+ * `/chat` index (no id), which means "the sidebar's top row: the root in canonical order"
  * (a sub-session row is never the index default).
  *
  * @param sessionId Route session id (`undefined` on `/chat`).
@@ -343,7 +344,7 @@ export function useSessionLookup(
     loaded: boolean,
 ): SessionLookup {
     return useMemo(() => {
-        if (!sessionId) return { session: sessions.find((session) => !session.parentId) ?? sessions[0], missing: false };
+        if (!sessionId) return { session: firstRootSession(sessions), missing: false };
         const match = sessions.find((session) => session.sessionId === sessionId);
         if (match) return { session: match, missing: false };
         return { session: undefined, missing: loaded };
