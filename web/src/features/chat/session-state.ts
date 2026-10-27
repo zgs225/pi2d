@@ -466,7 +466,9 @@ export interface DotView {
 function withCurrent(view: DotView, state: SessionState, viewed: boolean): DotView {
     if (!viewed) return view;
     if (state.flags.error || state.flags.done || attentionPending(state)) return view;
-    if (state.status === "exited" || state.status === "interrupted") return view;
+    // The plugin's `markable` is a positive list: only a live session carries the
+    // marker, and a `compacting` one blinks at the busy rate under it.
+    if (state.status !== "idle" && state.status !== "busy" && state.status !== "compacting") return view;
     return { current: true, status: state.status === "compacting" ? "busy" : view.status };
 }
 

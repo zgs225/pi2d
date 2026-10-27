@@ -60,9 +60,46 @@ describe("StatusDot", () => {
         ["err", "dot--err"],
         ["attention", "dot--attention"],
         ["exited", "dot--exited"],
+        ["dead", "dot--dead"],
     ] as const)("maps %s to %s", (status, expected) => {
         const { container } = render(<StatusDot status={status} />);
         expect(container.firstElementChild).toHaveClass("dot", expected);
+    });
+
+    it("applies dot--steady modifier when steady is true", () => {
+        const { container } = render(<StatusDot status="err" steady={true} />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--err", "dot--steady");
+    });
+
+    it("does not apply dot--steady when steady is false or omitted", () => {
+        const { container: c1 } = render(<StatusDot status="err" steady={false} />);
+        expect(c1.firstElementChild).not.toHaveClass("dot--steady");
+
+        const { container: c2 } = render(<StatusDot status="err" />);
+        expect(c2.firstElementChild).not.toHaveClass("dot--steady");
+    });
+
+    it("applies dot--current modifier when current is true", () => {
+        const { container } = render(<StatusDot status="busy" current={true} />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--busy", "dot--current");
+    });
+
+    it("does not apply dot--current when current is false or omitted", () => {
+        const { container: c1 } = render(<StatusDot status="busy" current={false} />);
+        expect(c1.firstElementChild).not.toHaveClass("dot--current");
+
+        const { container: c2 } = render(<StatusDot status="busy" />);
+        expect(c2.firstElementChild).not.toHaveClass("dot--current");
+    });
+
+    it("supports steady and current modifiers together", () => {
+        const { container } = render(<StatusDot status="busy" steady current />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--busy", "dot--steady", "dot--current");
+    });
+
+    it("preserves custom className alongside modifiers", () => {
+        const { container } = render(<StatusDot status="idle" steady current className="custom-dot" />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--idle", "dot--steady", "dot--current", "custom-dot");
     });
 
     it("exposes the state label when a title is provided", () => {

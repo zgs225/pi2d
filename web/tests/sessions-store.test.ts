@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptySessionState, normalizeSnapshotState } from "@/features/chat/session-state";
 import { useSessionsStore } from "@/stores/sessions";
@@ -134,5 +134,177 @@ describe("sessions store — tree metadata", () => {
         state().upsertSession(emptySessionState({ sessionId: "c1", workspaceId: "w1" }));
         expect(state().getSession("c1")?.parentId).toBe("s1");
         expect(state().getSession("c1")?.visible).toBe(false);
+    });
+});
+
+function fixture(
+    overrides: Omit<Partial<ReturnType<typeof sessionFixture>>, "flags"> & {
+        flags?: Partial<ReturnType<typeof sessionFixture>["flags"]>;
+    },
+) {
+    return sessionFixture({
+        ...overrides,
+        flags: {
+            attention: false,
+            done: false,
+            error: false,
+            ...(overrides.flags ?? {}),
+        },
+    });
+}
+
+describe("sessions store — markSeen", () => {
+    it("clears flags.done when seen", () => {
+        state().setSessions("w1", [fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true } })]);
+        expect(state().getSession("s1")?.flags.done).toBe(true);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: false,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("clears flags.error when seen", () => {
+        state().setSessions("w1", [fixture({ sessionId: "s1", workspaceId: "w1", flags: { error: true } })]);
+        expect(state().getSession("s1")?.flags.error).toBe(true);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: false,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("clears both flags.done and flags.error simultaneously", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true, error: true } }),
+        ]);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: false,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("keeps flags.attention when attention array is non-empty", () => {
+        state().setSessions("w1", [
+            fixture({
+                sessionId: "s1",
+                workspaceId: "w1",
+                flags: { done: true, attention: true },
+                attention: [{ id: "q1" } as any],
+            }),
+        ]);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: true,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("sets flags.attention to true if attention array has items even when flag was false", () => {
+        state().setSessions("w1", [
+            fixture({
+                sessionId: "s1",
+                workspaceId: "w1",
+                flags: { done: true, attention: false },
+                attention: [{ id: "q1" } as any],
+            }),
+        ]);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: true,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("clears stale flags.attention when attention array is empty", () => {
+        state().setSessions("w1", [
+            fixture({
+                sessionId: "s1",
+                workspaceId: "w1",
+                flags: { attention: true, done: false, error: false },
+                attention: [],
+            }),
+        ]);
+
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags).toEqual({
+            attention: false,
+            done: false,
+            error: false,
+        });
+    });
+
+    it("leaves other rows untouched in the same and other workspaces", () => {
+        const s1 = fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true } });
+        const s2 = fixture({ sessionId: "s2", workspaceId: "w1", flags: { done: true } });
+        const s3 = fixture({ sessionId: "s3", workspaceId: "w2", flags: { error: true } });
+
+        state().setSessions("w1", [s1, s2]);
+        state().setSessions("w2", [s3]);
+
+        const s2Before = state().getSession("s2");
+        const s3Before = state().getSession("s3");
+
+        state().markSeen("s1");
+
+        expect(state().getSession("s1")?.flags.done).toBe(false);
+        // Untouched rows preserve flags and object identity
+        expect(state().getSession("s2")).toBe(s2Before);
+        expect(state().getSession("s2")?.flags.done).toBe(true);
+        expect(state().getSession("s3")).toBe(s3Before);
+        expect(state().getSession("s3")?.flags.error).toBe(true);
+    });
+
+    it("returns the same state object (identity) and does not notify subscribers when there is nothing to consume", () => {
+        state().setSessions("w1", [
+            fixture({
+                sessionId: "s1",
+                workspaceId: "w1",
+                flags: { done: false, error: false, attention: false },
+                attention: [],
+            }),
+        ]);
+
+        const before = useSessionsStore.getState();
+        const listener = vi.fn();
+        const unsub = useSessionsStore.subscribe(listener);
+
+        state().markSeen("s1");
+
+        const after = useSessionsStore.getState();
+        expect(after).toBe(before);
+        expect(listener).not.toHaveBeenCalled();
+
+        unsub();
+    });
+
+    it("is a no-op for an unknown id, returning the same state object without notifying subscribers", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true } }),
+        ]);
+
+        const before = useSessionsStore.getState();
+        const listener = vi.fn();
+        const unsub = useSessionsStore.subscribe(listener);
+
+        state().markSeen("unknown-id");
+
+        const after = useSessionsStore.getState();
+        expect(after).toBe(before);
+        expect(listener).not.toHaveBeenCalled();
+        expect(state().getSession("s1")?.flags.done).toBe(true);
+
+        unsub();
     });
 });

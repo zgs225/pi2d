@@ -122,25 +122,45 @@ function menuItems(): HTMLElement[] {
 
 describe("session tree rows", () => {
     it("renders every session row as a single line: dot + name + attention", () => {
-        renderTree({
-            sessions: [
-                sessionFixture({
-                    sessionId: "s1",
-                    name: "Alpha",
-                    subagents: [],
-                    attention: [
-                        { requestId: "r1", method: "ask", createdAt: 1, receivedAt: 2 },
-                        { requestId: "r2", method: "ask", createdAt: 3, receivedAt: 4 },
-                    ],
-                }),
-                sessionFixture({ sessionId: "s2", name: "Beta", subagents: [] }),
-            ],
+        const sessions = [
+            sessionFixture({
+                sessionId: "s1",
+                name: "Alpha",
+                subagents: [],
+                attention: [
+                    { requestId: "r1", method: "ask", createdAt: 1, receivedAt: 2 },
+                    { requestId: "r2", method: "ask", createdAt: 3, receivedAt: 4 },
+                ],
+            }),
+            sessionFixture({ sessionId: "s2", name: "Beta", status: "idle", subagents: [] }),
+            sessionFixture({
+                sessionId: "s3",
+                name: "Gamma",
+                status: "idle",
+                flags: { attention: false, done: true, error: false },
+                subagents: [],
+            }),
+            sessionFixture({ sessionId: "s4", name: "Delta", status: "busy", subagents: [] }),
+            childSession({ sessionId: "c1", name: "Child exited", parentId: "s1", status: "exited" }),
+            childSession({
+                sessionId: "c2",
+                name: "Child error",
+                parentId: "s1",
+                flags: { attention: false, done: false, error: true },
+            }),
+        ];
+        const { rerender } = renderTree({
+            sessions,
             selectedId: "s1",
         });
 
         const main = rowMain("s1");
         // Single line: dot + name + `!N` only.
-        expect(main.querySelector(".dot")).not.toBeNull();
+        const s1Dot = main.querySelector(".dot");
+        expect(s1Dot).not.toBeNull();
+        expect(s1Dot).toHaveClass("dot", "dot--attention");
+        expect(s1Dot).not.toHaveClass("dot--current");
+
         expect(main.querySelector(".t-name")).toHaveTextContent("Alpha");
         expect(main.querySelector(".t-attn")).toHaveTextContent("!2");
         // No second line, no child count, no inline row actions.
@@ -161,6 +181,41 @@ describe("session tree rows", () => {
 
         // A row without attention keeps no badge at all.
         expect(rowMain("s2").querySelector(".t-attn")).toBeNull();
+
+        // Status dot modifiers and classes:
+        // 1. Unselected done row renders dot--ok.
+        const s3Dot = rowMain("s3").querySelector(".dot");
+        expect(s3Dot).toHaveClass("dot", "dot--ok");
+        expect(s3Dot).not.toHaveClass("dot--current");
+
+        // 2. Child exited row renders hollow dot--exited (never dead red).
+        const c1Dot = rowMain("c1").querySelector(".dot");
+        expect(c1Dot).toHaveClass("dot", "dot--exited");
+        expect(c1Dot).not.toHaveClass("dot--dead");
+        expect(c1Dot).not.toHaveClass("dot--current");
+
+        // 3. Child error row unselected renders dot--err without steady modifier.
+        const c2DotUnselected = rowMain("c2").querySelector(".dot");
+        expect(c2DotUnselected).toHaveClass("dot", "dot--err");
+        expect(c2DotUnselected).not.toHaveClass("dot--steady");
+
+        // 4. Selected idle row renders dot--current (and dot--idle when done flag consumed).
+        rerender(treeElement({ sessions, selectedId: "s2" }));
+        const s2DotSelected = rowMain("s2").querySelector(".dot");
+        expect(s2DotSelected).toHaveClass("dot", "dot--idle", "dot--current");
+        expect(s2DotSelected).not.toHaveClass("dot--steady");
+
+        // 5. Selected busy row renders dot--busy + dot--current.
+        rerender(treeElement({ sessions, selectedId: "s4" }));
+        const s4DotSelected = rowMain("s4").querySelector(".dot");
+        expect(s4DotSelected).toHaveClass("dot", "dot--busy", "dot--current");
+        expect(s4DotSelected).not.toHaveClass("dot--steady");
+
+        // 6. Selected child with error renders dot--err + dot--steady.
+        rerender(treeElement({ sessions, selectedId: "c2" }));
+        const c2DotSelected = rowMain("c2").querySelector(".dot");
+        expect(c2DotSelected).toHaveClass("dot", "dot--err", "dot--steady");
+        expect(c2DotSelected).not.toHaveClass("dot--current");
     });
 
     it("draws child rows as a single line without a child-count badge", () => {
