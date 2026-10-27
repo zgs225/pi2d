@@ -9,7 +9,7 @@ import { entryFixture, sessionFixture } from "./chat-fixtures";
 
 beforeEach(() => {
     useSessionsStore.getState().reset();
-    useChatStore.setState({ history: {}, sending: null, preview: null });
+    useChatStore.setState({ history: {}, sending: null });
     window.history.replaceState(null, "", "/chat");
 });
 
@@ -21,7 +21,6 @@ describe("session id migration (`tmp-N` → real id)", () => {
             hasMore: true,
         });
         useChatStore.getState().setSending({ sessionId: "tmp-1", text: "hello" });
-        useChatStore.getState().setPreview({ sessionId: "tmp-1", subagentId: "sa1" });
         window.history.replaceState(null, "", "/chat/tmp-1?workspace=w1");
 
         const seen: string[] = [];
@@ -41,7 +40,6 @@ describe("session id migration (`tmp-N` → real id)", () => {
         expect(useChatStore.getState().history["01a1-real"]?.entries).toHaveLength(1);
         expect(useChatStore.getState().history["01a1-real"]?.cursor).toEqual({ before: "u1", hasMore: true });
         expect(useChatStore.getState().sending).toEqual({ sessionId: "01a1-real", text: "hello" });
-        expect(useChatStore.getState().preview).toEqual({ sessionId: "01a1-real", subagentId: "sa1" });
 
         expect(replaceChatUrl("tmp-1", "01a1-real", "w1")).toBe(true);
         expect(window.location.pathname + window.location.search).toBe("/chat/01a1-real?workspace=w1");

@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { SubagentModal, TaskOutputModal } from "@/features/chat/modals";
+import { TaskOutputModal } from "@/features/chat/modals";
 import { setLanguage } from "@/lib/i18n";
 
-import { sessionFixture, subagentFixture, taskFixture, taskOutputFixture } from "./chat-fixtures";
+import { sessionFixture, taskFixture, taskOutputFixture } from "./chat-fixtures";
 import { mockApi } from "./helpers/api-mock";
 
 beforeAll(async () => {
@@ -76,59 +76,5 @@ describe("task output modal", () => {
 
         expect(await screen.findByText(/Unsupported operation/)).toBeInTheDocument();
         expect(screen.queryByText("(no output)")).not.toBeInTheDocument();
-    });
-});
-
-describe("subagent preview modal", () => {
-    it("renders the raw pi entries from subagent.read (sessionFile + lines)", async () => {
-        mockCommands({
-            "subagent.read": {
-                status: 202,
-                body: {
-                    sessionFile: "/tmp/pi2-subsessions/researcher.jsonl",
-                    lines: ["[1] user: fix the auth flow", "[2] assistant: looking at it now", "[3] tool result: ok"],
-                },
-            },
-        });
-
-        render(
-            <SubagentModal
-                open
-                session={sessionFixture()}
-                subagent={subagentFixture()}
-                onClose={vi.fn()}
-                onBack={vi.fn()}
-                onSteer={vi.fn()}
-            />,
-        );
-
-        expect(await screen.findByText("fix the auth flow")).toBeInTheDocument();
-        expect(screen.getByText("looking at it now")).toBeInTheDocument();
-        expect(screen.getByText("/tmp/pi2-subsessions/researcher.jsonl")).toBeInTheDocument();
-        expect(screen.getByText("fix the auth flow").closest("article")).toHaveAttribute("data-role", "user");
-        expect(screen.getByText("looking at it now").closest("article")).toHaveAttribute("data-role", "assistant");
-        // No synthetic "preview" copy.
-        expect(screen.queryByText(/Got it\. I'll run with/)).not.toBeInTheDocument();
-    });
-
-    it("shows an error state when the sub-session cannot be read", async () => {
-        mockCommands({
-            "subagent.read": {
-                status: 404,
-                body: { error: { code: "E_NOT_FOUND", message: "unknown sub-agent session file", retryable: false } },
-            },
-        });
-        render(
-            <SubagentModal
-                open
-                session={sessionFixture()}
-                subagent={subagentFixture()}
-                onClose={vi.fn()}
-                onBack={vi.fn()}
-                onSteer={vi.fn()}
-            />,
-        );
-
-        expect(await screen.findByRole("alert")).toHaveTextContent("Not found");
     });
 });

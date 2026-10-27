@@ -11,12 +11,6 @@ import { prependUnique } from "@/lib/entry-projection";
  */
 export type TrayTab = "todo" | "tasks";
 
-/**
- * @deprecated v0.1.1 IA: the right panel is gone. Kept as an alias so callers
- * written against the panel still typecheck while they migrate to `TrayTab`.
- */
-export type PanelTab = TrayTab;
-
 /** localStorage key for the IA "active only" filter (default on). */
 export const ACTIVE_ONLY_KEY = "pi2-active-only";
 
@@ -69,16 +63,6 @@ export const EMPTY_HISTORY: HistoryState = {
     resyncToken: 0,
 };
 
-/**
- * @deprecated v0.1.1 replaced the "subagent preview modal" with the in-place
- * child view (`?sub=<id>` + `activeSubagentId`). The field is kept because the
- * session-id migration still re-keys it; the UI no longer reads it.
- */
-export interface PreviewTarget {
-    sessionId: string;
-    subagentId: string;
-}
-
 export interface ChatStore {
     history: Record<string, HistoryState>;
     /** Active tray tab (`todo` / `tasks`). */
@@ -103,8 +87,6 @@ export interface ChatStore {
     wsMenuOpen: boolean;
     sending: { sessionId: string; text: string } | null;
     attachments: Attachment[];
-    /** @deprecated see `PreviewTarget`. */
-    preview: PreviewTarget | null;
     taskOutput: TaskItem | null;
     dispatchOpen: boolean;
 
@@ -129,8 +111,6 @@ export interface ChatStore {
     addAttachment: (attachment: Attachment) => void;
     removeAttachment: (id: string) => void;
     clearAttachments: () => void;
-    /** @deprecated see `PreviewTarget`. */
-    setPreview: (preview: PreviewTarget | null) => void;
     setTaskOutput: (task: TaskItem | null) => void;
     setDispatchOpen: (open: boolean) => void;
 
@@ -144,7 +124,7 @@ export interface ChatStore {
     /**
      * Re-key every per-session slice after the plugin migrates `tmp-N` → the
      * real id: history (so an in-flight prompt and its page are not lost),
-     * the optimistic `sending` chip and the (deprecated) preview target.
+     * and the optimistic `sending` chip.
      */
     migrateSession: (from: string, to: string) => void;
 }
@@ -172,7 +152,6 @@ export const useChatStore = create<ChatStore>((set) => ({
     wsMenuOpen: false,
     sending: null,
     attachments: [],
-    preview: null,
     taskOutput: null,
     dispatchOpen: false,
 
@@ -211,7 +190,6 @@ export const useChatStore = create<ChatStore>((set) => ({
     addAttachment: (attachment) => set((state) => ({ attachments: [...state.attachments, attachment] })),
     removeAttachment: (id) => set((state) => ({ attachments: state.attachments.filter((item) => item.id !== id) })),
     clearAttachments: () => set({ attachments: [] }),
-    setPreview: (preview) => set({ preview }),
     setTaskOutput: (taskOutput) => set({ taskOutput }),
     setDispatchOpen: (dispatchOpen) => set({ dispatchOpen }),
 
@@ -281,7 +259,6 @@ export const useChatStore = create<ChatStore>((set) => ({
             return {
                 history,
                 sending: state.sending?.sessionId === from ? { ...state.sending, sessionId: to } : state.sending,
-                preview: state.preview?.sessionId === from ? { ...state.preview, sessionId: to } : state.preview,
             };
         }),
 }));

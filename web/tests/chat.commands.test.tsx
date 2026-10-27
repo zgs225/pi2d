@@ -121,11 +121,7 @@ describe("chat command payloads", () => {
         });
     });
 
-    it("reads sub-sessions and task output by id", () => {
-        expect(chatCommands.readSubagent("s1", "researcher")).toMatchObject({
-            method: "subagent.read",
-            params: { target: "researcher" },
-        });
+    it("reads task output by id", () => {
         expect(chatCommands.stopTask("s1", "t1")).toMatchObject({
             method: "task.stop",
             params: { taskId: "t1" },

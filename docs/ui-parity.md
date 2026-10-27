@@ -253,4 +253,7 @@ Chat：`≥1100` 树 280px + 流，`1000–1099` 树 240px，`<1000` 单栏 + �
 - `chat.css` 已清理 v0.1.0 残留（`.tool` 卡片、`.diff` review、队列 chips、stream 固定 68rem/16px 间距、
   连接 chip/右 panel 按钮等），样式所有权现在唯一：`tool-*.css` 管工具、`chat-msg.css` 管消息块、
   `chat-stream.css` 管阅读列与间距、`chat-composer.css` 管状态条、`chat-tray.css` 管 tray/chips、
-  `chat-telemetry.css` 管状态行。旧代码仍留 `side-panel.tsx`（未被引用，可单独删除）。
+  `chat-telemetry.css` 管状态行。
+- v0.1.1 前夜的 dead code 已删：`side-panel.tsx`（右 panel）、`SubagentModal`（宽浮层子代理预览，
+  由 `?sub=` child view 取代）、store 的 `preview`/`PreviewTarget` 切片、`chatCommands.readSubagent`，
+  以及它们独占的 `.sub-item*`/`.sub-preview*`/`.sub-steer` 样式和 6 个孤儿词条。

@@ -571,7 +571,7 @@ function requestedUrls(fetchMock: ReturnType<typeof mockApi>): string[] {
 describe("chat session deep link", () => {
     beforeEach(() => {
         useSessionsStore.getState().reset();
-        useChatStore.setState({ history: {}, sending: null, preview: null });
+        useChatStore.setState({ history: {}, sending: null });
         silentSocket();
     });
 

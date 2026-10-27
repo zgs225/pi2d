@@ -111,8 +111,6 @@ export const chatCommands = {
     steerSubagent: (sessionId: string, target: string, message: string): ChatCommand =>
         command("subagent.steer", sessionId, { target, message }),
 
-    readSubagent: (sessionId: string, target: string): ChatCommand =>
-        command("subagent.read", sessionId, { target }),
 
     stopTask: (sessionId: string, taskId: string): ChatCommand => command("task.stop", sessionId, { taskId }),
 
