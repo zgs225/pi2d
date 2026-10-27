@@ -32,10 +32,11 @@ export function PageSheet({ open, onOpenChange, page, onSearch, returnFocusTo }:
     const workspaces = useWorkspacesStore((state) => state.items);
     const byWorkspace = useSessionsStore((state) => state.byWorkspace);
     const server = useConnectionStore((state) => state.server);
+    const serverStatus = useConnectionStore((s) => s.serverStatus);
 
     const sessionCount = Object.values(byWorkspace).reduce((total, list) => total + list.length, 0);
-    const status = server?.status ?? "unknown";
-    const version = server?.pluginVersion ?? server?.version ?? "";
+    const status = serverStatus;
+    const version = server?.pluginVersion || server?.version || "";
 
     function fact(key: NavKey): string {
         if (key === "workspaces") return t("shell.pageFactWorkspaces", { n: workspaces.length });
