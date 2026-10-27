@@ -136,13 +136,16 @@ Session row (`GET /api/v1/workspaces/:id/sessions`) — a subset of `SessionStat
 |---|---|
 | `sessionId`, `sessionFile?`, `name?`, `cwd?`, `timestamp?`, `modified?`, `firstMessage?` | identity + disk projection |
 | `tab?` | live projection of `Session.attached_tab`; present ⇒ this row is an nvim tab |
+| `tabRank?` | live projection: 1-based visual position of `tab` in `nvim_list_tabpages()`; absent on plugins that predate it |
 | `live?` | live projection: the session's `pi --mode rpc` process runs (a detached sub-session is live without a `tab`) |
 | `status?` | live status when `live` (`busy`, `compacting`, `idle`, `exited`); otherwise the child's manifest status (`dormant`, `done`, `error`, `interrupted`, `exited`). Absent on a non-live root. |
 | `model?`, `thinking?` | per-session model pin; the child's manifest thinking level |
 | `visible: boolean` | always present; the plugin's `:PiSessions` visibility decision |
 | `parentId?: string` | sub-session rows only: the parent session id (normally present in the same list) |
 | `task?`, `agentSpawned?`, `reported?` | sub-session rows only, carried through from the spawn request |
-| `createdAt?`, `lastActiveAt?` | epoch ms; ordering/aging hints, never required |
+| `createdAt?`, `lastActiveAt?` | epoch ms; optional ordering/aging hints — the console degrades gracefully when they are absent |
+
+The console mirrors `:PiSessions` ordering: roots are ranked by `tabRank` (1-based visual position) and fall back to the `tab` handle (where handle order diverges after `:tabmove` or mid-tabline insertions), with a lineage placed at the earliest tab slot of the root and all its descendants. Tab-less roots are placed last (rank `+Infinity`); note that `:PiSessions` never renders a tab-less root at all, and the console retains one only when it serves as the parent row of a live child-view tab (or an orphan). Ties among roots are broken deterministically by `createdAt` desc, `lastActiveAt` desc, `sessionId` asc — this tie-break chain is a console-side determinism rule rather than `:PiSessions` behaviour. Siblings are ordered by `createdAt` desc then id asc (matching `manifest.lua`'s `created_at` desc + `_id` asc), with child session rows inheriting the same-id manifest entry's `createdAt`.
 
 The list is a union of every session JSONL the workspace has on disk and its live
 sessions, so a client must not assume every row is an nvim tab. A row carrying
@@ -150,9 +153,12 @@ sessions, so a client must not assume every row is an nvim tab. A row carrying
 command routed to it answers `E_SESSION_NOT_FOUND`. A client that mirrors the
 nvim session list renders the tab-backed component: the rows with a `tab` plus
 every row linked to them through `parentId` in either direction (their
-sub-sessions, and the parent row when a tab is in a child view). That is exactly
+sub-sessions, and the parent row when a tab is in a child view). That approximates
 `:PiSessions` (`Sessions.list()` plus children); pi2 web applies this filter in
-`web/src/features/chat/session-state.ts` (`tabSessionRows`). A history row is a
+`web/src/features/chat/session-state.ts` (`tabSessionRows`). Known gaps from nvim:
+a history parent row with no live owner is kept; manifest-entry existence is not
+consulted; and child ownership across a lineage with two live roots is decided by
+`parentId` alone (nvim also uses `conversation_epoch`). A history row is a
 `session.resume` target, never a prompt target.
 
 Sub-session rows sit in the same flat list as their parent: build the tree from `parentId`
