@@ -275,6 +275,21 @@ The daemon is dispatched *inside* `pi2` (`src/cli/pi2.ts` → `src/cli/daemon.ts
 it is not a separate executable, nothing is re-exec'd, and there is no detaching
 mode. Flags, stdout contract and startup order: [§3](#3-running-the-daemon).
 
+### 8.0b `pi2 stop` / `pi2 daemon stop`
+
+```bash
+pi2 stop                    # stop a running daemon (SIGTERM, waits up to 5s)
+pi2 daemon stop             # alias for `pi2 stop`
+pi2 stop --force            # escalate to SIGKILL if SIGTERM times out
+pi2 stop -t 10              # wait up to 10 seconds before failing / escalating
+```
+
+Locates the running daemon via `<runtime>/daemon.json` (or `daemon.lock`), verifies
+that the PID belongs to this boot, sends `SIGTERM`, and waits for the process to exit.
+If the daemon was already dead (stale lock/json), it cleans up the stale files and reports
+that no daemon is running. With `--force`, it escalates to `SIGKILL` if the daemon does not
+exit within the timeout.
+
 ### 8.1 `pi2 attach [path]`
 
 ```bash

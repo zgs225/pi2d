@@ -26,6 +26,7 @@ import { readDaemonJson, type DaemonLock } from "./lock.js";
 import { cliTokenPath, readCliToken } from "./token.js";
 import {
     boolFlag,
+    CliError,
     errorMessage,
     formatBytes,
     formatTable,
@@ -44,11 +45,17 @@ import {
     type ServicePlatform,
 } from "./service.js";
 import { diagnose, formatReport, reportToJson, type DoctorReport } from "./doctor.js";
+import { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
+
+export { CliError } from "./util.js";
+export { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
 
 export const USAGE = `pi2 — pi2 client
 
 Usage:
   pi2 daemon [start] [options]       run the web-console daemon (foreground)
+  pi2 daemon stop [options]          stop the running daemon
+  pi2 stop [options]                 stop the running daemon (alias for daemon stop)
   pi2 attach [path]                  attach nvim to the workspace instance, else open nvim
   pi2 status [--json]                daemon info, instances, resources, health
   pi2 open [--print] [--no-browser]  open the web console signed in (local only)
@@ -58,6 +65,8 @@ Usage:
   pi2 uninstall-service [--dry-run|--write]  remove the unit
   pi2 --version | --help
 
+\`pi2 stop\` / \`pi2 daemon stop\` flags: -f, --force sends SIGKILL if the daemon
+does not exit in time; -t, --timeout <sec> configures the wait timeout (default 5s).
 \`pi2 open\` flags: --print prints the URL only; --no-browser prints it instead
 of launching a browser (--print implies --no-browser).
 \`pi2 pairing\` flags: --base <url> pins the link to one of the addresses the
@@ -68,17 +77,6 @@ configured, the primary LAN address, and loopback otherwise.
 The daemon endpoint comes from $PI2_RUNTIME_DIR/daemon.json (port) and
 $PI2_RUNTIME_DIR/cli.token (local admin token). Start it with \`pi2 daemon\`.
 See docs/deployment.md.`;
-
-/** A user-facing failure: printed as-is, exits with `code`. */
-export class CliError extends Error {
-    readonly code: number;
-
-    constructor(message: string, code = 1) {
-        super(message);
-        this.name = "CliError";
-        this.code = code;
-    }
-}
 
 export interface Endpoint {
     baseUrl: string;
@@ -635,6 +633,44 @@ export function runUninstallService(options: ServiceCommandOptions): number {
     return 0;
 }
 
+async function handleStop(argv: readonly string[], options: Pi2Options, out: (line: string) => void): Promise<number> {
+    const parsed = parseArgs(argv, {
+        values: ["--timeout", "-t"],
+        booleans: ["--force", "--help"],
+        aliases: { "-h": "--help", "-f": "--force", "-t": "--timeout" },
+    });
+    if (boolFlag(parsed.flags, "--help")) {
+        out(STOP_USAGE);
+        return 0;
+    }
+    if (parsed.positionals.length > 0) {
+        throw new UsageError(`unexpected argument "${parsed.positionals[0]}"`, STOP_USAGE);
+    }
+    let timeoutSec: number | undefined;
+    const timeout = stringFlag(parsed.flags, "--timeout");
+    if (timeout !== undefined) {
+        if (!/^\d+$/.test(timeout.trim())) {
+            throw new UsageError(`--timeout must be a positive integer, got "${timeout}"`, STOP_USAGE);
+        }
+        const val = Number(timeout);
+        if (!Number.isSafeInteger(val) || val <= 0) {
+            throw new UsageError(`--timeout must be a positive integer, got "${timeout}"`, STOP_USAGE);
+        }
+        timeoutSec = val;
+    }
+    const runner = options.stopRunner ?? runStop;
+    return await runner({
+        runtime: options.runtime,
+        force: boolFlag(parsed.flags, "--force"),
+        ...(timeoutSec === undefined ? {} : { timeoutSec }),
+        print: out,
+        ...(options.isPidAlive === undefined ? {} : { isPidAlive: options.isPidAlive }),
+        ...(options.kill === undefined ? {} : { kill: options.kill }),
+        ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+        ...(options.removeFile === undefined ? {} : { unlink: options.removeFile }),
+    });
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -654,6 +690,10 @@ export interface Pi2Options {
     runtime?: string;
     /** Injected `pi2 daemon` runner (defaults to `src/cli/daemon.ts:main`). */
     daemonMain?: (argv: readonly string[], io: { out: (line: string) => void; err: (line: string) => void }) => Promise<number>;
+    stopRunner?: (options: StopOptions) => Promise<number>;
+    isPidAlive?: (pid: number) => boolean;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    sleep?: (ms: number) => Promise<void>;
 }
 
 export async function main(argv: readonly string[], options: Pi2Options = {}): Promise<number> {
@@ -673,11 +713,17 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
     try {
         switch (command) {
             case "daemon": {
+                if (rest[0] === "stop") {
+                    return await handleStop(rest.slice(1), options, out);
+                }
                 // `pi2 daemon` and `pi2 daemon start` are the same thing; the
                 // optional `start` word is consumed here so the daemon parser
                 // only ever sees flags.
                 const argv = rest[0] === "start" ? rest.slice(1) : rest;
                 return await (options.daemonMain ?? runDaemonMain)(argv, { out, err });
+            }
+            case "stop": {
+                return await handleStop(rest, options, out);
             }
             case "attach": {
                 const parsed = parseArgs(rest, { booleans: ["--help"], aliases: { "-h": "--help" } });

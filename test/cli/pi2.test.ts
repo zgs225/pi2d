@@ -658,4 +658,63 @@ describe("pi2 main", () => {
             checks: [{ name: "node", status: "fail", detail: "v18.0.0" }],
         });
     });
+
+    it("prints stop usage for `stop --help` and `daemon stop --help`", async () => {
+        const out1: string[] = [];
+        const code1 = await main(["stop", "--help"], { out: (line) => out1.push(line) });
+        expect(code1).toBe(0);
+        expect(out1.join("\n")).toContain("pi2 stop [options]");
+        expect(out1.join("\n")).toContain("-f, --force");
+
+        const out2: string[] = [];
+        const code2 = await main(["daemon", "stop", "--help"], { out: (line) => out2.push(line) });
+        expect(code2).toBe(0);
+        expect(out2.join("\n")).toContain("pi2 stop [options]");
+    });
+
+    it("routes `stop` and `daemon stop` to stopRunner with parsed flags", async () => {
+        const calls: unknown[] = [];
+        const code1 = await main(["stop", "--force", "-t", "10"], {
+            stopRunner: async (opts) => {
+                calls.push(opts);
+                return 0;
+            },
+        });
+        expect(code1).toBe(0);
+        expect(calls[0]).toMatchObject({ force: true, timeoutSec: 10 });
+
+        calls.length = 0;
+        const code2 = await main(["daemon", "stop", "-f"], {
+            stopRunner: async (opts) => {
+                calls.push(opts);
+                return 0;
+            },
+        });
+        expect(code2).toBe(0);
+        expect(calls[0]).toMatchObject({ force: true });
+    });
+
+    it("rejects invalid arguments for `stop` with exit 2", async () => {
+        const err: string[] = [];
+        const code1 = await main(["stop", "extra"], { err: (line) => err.push(line) });
+        expect(code1).toBe(2);
+        expect(err[0]).toContain('unexpected argument "extra"');
+
+        err.length = 0;
+        const code2 = await main(["stop", "--timeout", "nope"], { err: (line) => err.push(line) });
+        expect(code2).toBe(2);
+        expect(err[0]).toContain("--timeout must be a positive integer");
+    });
+
+    it("reports missing daemon on `stop` with exit 1", async () => {
+        const err: string[] = [];
+        const code = await main(["stop"], {
+            err: (line) => err.push(line),
+            stopRunner: async () => {
+                throw new CliError("no running pi2 daemon");
+            },
+        });
+        expect(code).toBe(1);
+        expect(err[0]).toBe("pi2: no running pi2 daemon");
+    });
 });

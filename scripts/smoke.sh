@@ -174,20 +174,16 @@ pass "GET /api/v1/workspaces without a token -> 401"
 expect_status 401 GET /api/v1/workspaces -H "authorization: Bearer deadbeef"
 pass "GET /api/v1/workspaces with a bogus token -> 401"
 
-printf '==> stopping pi2 daemon (SIGTERM)\n'
-kill -TERM "$DAEMON_PID"
-for _ in $(seq 1 100); do
-    kill -0 "$DAEMON_PID" 2>/dev/null || break
-    sleep 0.05
-done
-kill -0 "$DAEMON_PID" 2>/dev/null && fail "pi2 daemon did not exit within 5s of SIGTERM"
+printf '==> stopping pi2 daemon (pi2 stop)\n'
+PI2_RUNTIME_DIR="$TMP/run" node "$ROOT/dist/cli/pi2.js" stop
+pass "pi2 stop executed cleanly"
 
 set +e
 wait "$DAEMON_PID"
 EXIT_CODE=$?
 set -e
 [[ "$EXIT_CODE" -eq 0 ]] || fail "pi2 daemon exited with code $EXIT_CODE"
-pass "SIGTERM -> clean exit (code 0)"
+pass "daemon process -> clean exit (code 0)"
 
 [[ ! -f "$LOCK" ]] || fail "daemon.lock was not removed on shutdown"
 pass "daemon.lock removed"

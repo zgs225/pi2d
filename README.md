@@ -44,6 +44,7 @@ Then:
 
 ```bash
 pi2 daemon                 # foreground; the plugin/browser needs this running
+pi2 stop                   # stop a running daemon (or: pi2 daemon stop)
 pi2 install-service --write   # or run it at login: systemd --user / launchd
 pi2 status                 # daemon + instances + health
 pi2 doctor                 # node/nvim/pi/curl/plugin/runtime/web-dist/protocol checks

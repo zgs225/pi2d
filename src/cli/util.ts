@@ -13,6 +13,17 @@ export class UsageError extends Error {
     }
 }
 
+/** A user-facing failure: printed as-is, exits with `code`. */
+export class CliError extends Error {
+    readonly code: number;
+
+    constructor(message: string, code = 1) {
+        super(message);
+        this.name = "CliError";
+        this.code = code;
+    }
+}
+
 export type FlagValue = string | boolean;
 
 export interface FlagSpec {
