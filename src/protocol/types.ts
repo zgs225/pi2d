@@ -206,6 +206,24 @@ export interface SessionState {
      * `first_message` fallback). Never emitted by the reducer.
      */
     firstMessage?: string | null;
+    /**
+     * List metadata only: the live projection of `Session.attached_tab`; positive
+     * finite number marks an nvim tab handle. Never emitted by the reducer.
+     */
+    tab?: number | null;
+    /**
+     * List metadata only: the 1-based visual tabline position of `tab` in
+     * `nvim_list_tabpages()`. Absent on older plugins. Never emitted by the reducer.
+     */
+    tabRank?: number | null;
+    /**
+     * List metadata only: creation timestamp in epoch ms. Never emitted by the reducer.
+     */
+    createdAt?: number | null;
+    /**
+     * List metadata only: last active timestamp in epoch ms. Never emitted by the reducer.
+     */
+    lastActiveAt?: number | null;
 }
 
 /* ------------------------------------------------------------------ */

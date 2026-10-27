@@ -35,6 +35,10 @@ export interface EmptySessionInput {
     parentId?: string | null;
     visible?: boolean;
     task?: string;
+    tab?: number | null;
+    tabRank?: number | null;
+    createdAt?: number | null;
+    lastActiveAt?: number | null;
 }
 
 export function emptySessionState(input: EmptySessionInput): SessionState {
@@ -62,6 +66,10 @@ export function emptySessionState(input: EmptySessionInput): SessionState {
         ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
         ...(input.visible !== undefined ? { visible: input.visible } : {}),
         ...(input.task !== undefined ? { task: input.task } : {}),
+        ...(input.tab !== undefined ? { tab: input.tab } : {}),
+        ...(input.tabRank !== undefined ? { tabRank: input.tabRank } : {}),
+        ...(input.createdAt !== undefined ? { createdAt: input.createdAt } : {}),
+        ...(input.lastActiveAt !== undefined ? { lastActiveAt: input.lastActiveAt } : {}),
     };
 }
 
@@ -235,6 +243,48 @@ export function applySessionEvent(state: SessionState, event: SessionEvent): Ses
     return next;
 }
 
+function positiveNum(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function epochMs(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+}
+
+function summaryTab(record: Record<string, unknown>, base?: SessionState): number | null {
+    if (!("tab" in record) && !("attached_tab" in record)) return base?.tab ?? null;
+    const raw = record.tab !== undefined ? record.tab : record.attached_tab;
+    if (raw === undefined) return base?.tab ?? null;
+    if (raw === null) return null;
+    return positiveNum(raw) ?? null;
+}
+
+function summaryTabRank(record: Record<string, unknown>, base?: SessionState): number | null {
+    if (!("tabRank" in record) && !("tab_rank" in record)) return base?.tabRank ?? null;
+    const raw = record.tabRank !== undefined ? record.tabRank : record.tab_rank;
+    if (raw === undefined) return base?.tabRank ?? null;
+    if (raw === null) return null;
+    return positiveNum(raw) ?? null;
+}
+
+function summaryEpoch(
+    record: Record<string, unknown>,
+    camelKey: string,
+    snakeKey: string,
+    fallback?: number | null,
+): number | null {
+    if (!(camelKey in record) && !(snakeKey in record)) return fallback ?? null;
+    const raw = record[camelKey] !== undefined ? record[camelKey] : record[snakeKey];
+    if (raw === undefined) return fallback ?? null;
+    if (raw === null) return null;
+    return epochMs(raw) ?? null;
+}
+
 /** `parentId` as carried by a list row: string → value, explicit null → `null`. */
 function summaryParentId(record: Record<string, unknown>, base: SessionState): string | null {
     if (!("parentId" in record) && !("parent_id" in record)) return base.parentId ?? null;
@@ -260,6 +310,10 @@ export function normalizeSnapshotState(
     const parentId = str(candidate.parentId ?? candidate.parent_id) ?? existing?.parentId ?? null;
     const visible = typeof candidate.visible === "boolean" ? candidate.visible : (existing?.visible ?? true);
     const task = str(candidate.task) ?? existing?.task;
+    const tab = summaryTab(candidate, existing);
+    const tabRank = summaryTabRank(candidate, existing);
+    const createdAt = summaryEpoch(candidate, "createdAt", "created_at", existing?.createdAt ?? null);
+    const lastActiveAt = summaryEpoch(candidate, "lastActiveAt", "last_active_at", existing?.lastActiveAt ?? null);
     const state: SessionState = {
         ...base,
         ...candidate,
@@ -268,6 +322,10 @@ export function normalizeSnapshotState(
         parentId,
         visible,
         ...(task !== undefined ? { task } : {}),
+        tab,
+        tabRank,
+        createdAt,
+        lastActiveAt,
         flags: {
             attention: candidate.flags ? rec(candidate.flags)?.attention === true : false,
             done: rec(candidate.flags)?.done === true,
@@ -351,6 +409,10 @@ export function normalizeSessionSummary(raw: unknown, workspaceId: string, exist
         visible: typeof record.visible === "boolean" ? record.visible : base.visible,
         ...(task !== undefined ? { task } : {}),
         ...(firstMessage !== undefined ? { firstMessage } : {}),
+        tab: summaryTab(record, base),
+        tabRank: summaryTabRank(record, base),
+        createdAt: summaryEpoch(record, "createdAt", "created_at", base.createdAt),
+        lastActiveAt: summaryEpoch(record, "lastActiveAt", "last_active_at", base.lastActiveAt),
     };
 }
 

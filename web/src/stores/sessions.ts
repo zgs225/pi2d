@@ -55,7 +55,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
             }
             // Tree metadata is list metadata: a live update (`pi2:session`,
             // reducer events, a rename) carries no `parentId`/`visible`/`task`/
-            // `tab`/`createdAt`/`lastActiveAt` and must not orphan the row.
+            // `tab`/`tabRank`/`createdAt`/`lastActiveAt` and must not orphan the row.
             // Explicit `undefined` is the only "not carried" marker — an explicit
             // `parentId: null` means root and wins, which `??` would invert.
             const previous = list[index] as SessionState;
@@ -65,6 +65,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
                 visible: session.visible !== undefined ? session.visible : previous.visible,
                 task: session.task !== undefined ? session.task : previous.task,
                 tab: session.tab !== undefined ? session.tab : previous.tab,
+                tabRank: session.tabRank !== undefined ? session.tabRank : previous.tabRank,
                 createdAt: session.createdAt !== undefined ? session.createdAt : previous.createdAt,
                 lastActiveAt: session.lastActiveAt !== undefined ? session.lastActiveAt : previous.lastActiveAt,
             };
