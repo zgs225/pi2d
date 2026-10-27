@@ -53,10 +53,6 @@
     flex: none;
 }
 
-.icon-btn--danger:hover {
-    color: var(--err);
-}
-
 /* ---------- left: session tree（单 workspace + 仅缩进的嵌套） ---------- */
 .tree-pane {
     display: flex;
@@ -454,12 +450,6 @@
     font-size: var(--fs-2xs);
     color: var(--faint);
 }
-.tree-row--sub.sub-d2 .tree-row__main {
-    padding-left: 16px;
-}
-.tree-row--sub.sub-d3 .tree-row__main {
-    padding-left: 28px;
-}
 /* 正在查看的子代理：文字回到 foreground + 字重；父会话行仍是 selected。 */
 .tree-row--sub.is-viewing {
     background: var(--surface-1);
@@ -499,59 +489,15 @@
     flex: 1 1 auto;
     min-width: 0;
 }
+@media (max-width: 839px) {
+    /* the head keeps identity + chips; the status word is redundant there */
+    .stream-head .stream-status {
+        display: none;
+    }
+}
 .stream-name {
     font-weight: 620;
     font-size: 0.9375rem;
-}
-.stream-meta {
-    font-size: 0.75rem;
-    flex: 0 1 auto;
-    min-width: 0;
-}
-.chat-conn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 0.75rem;
-    color: var(--muted-foreground);
-    white-space: nowrap;
-    flex: none;
-}
-.chat-conn.is-on {
-    color: var(--ok);
-}
-.chat-conn.is-off {
-    color: var(--muted-foreground);
-}
-.chat-btn--tree,
-.chat-btn--collapse,
-.chat-btn--panel {
-    display: none;
-}
-@media (max-width: 839px) {
-    .chat-btn--panel {
-        display: inline-flex;
-    }
-    .stream-meta,
-    .stream-status {
-        display: none;
-    }
-}
-@media (min-width: 600px) and (max-width: 839px) {
-    .chat-btn--collapse {
-        display: inline-flex;
-    }
-}
-@media (max-width: 599px) {
-    .chat-btn--tree {
-        display: inline-flex;
-    }
-    .chat-btn--collapse {
-        display: none;
-    }
-    .chat-conn span:last-child {
-        display: none;
-    }
 }
 
 .stream-body {
@@ -574,36 +520,6 @@
     min-width: 0;
     padding: var(--space-4) var(--space-4) 0;
     scrollbar-gutter: stable;
-}
-.stream-list {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    max-width: 68rem;
-    margin: 0 auto;
-    flex: 1 0 auto;
-}
-.stream-list--virtual {
-    display: block;
-    position: relative;
-    flex: none;
-}
-.stream-list:not(.stream-list--virtual) > .stream-item {
-    position: relative;
-}
-.stream-list:not(.stream-list--virtual) > .stream-item + .stream-item {
-    margin-top: var(--space-4);
-}
-.stream-list:not(.stream-list--virtual) > .stream-item.turn-start {
-    margin-top: calc(var(--space-4) * 2);
-}
-.stream-list--virtual > .stream-item {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    padding-bottom: var(--space-4);
-    will-change: transform;
 }
 .stream-list > .empty {
     margin: auto 0;
@@ -640,6 +556,29 @@
 .stream-end {
     height: var(--space-6);
     flex: none;
+}
+
+.stream-list {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    margin: 0 auto;
+    flex: 1 0 auto;
+}
+.stream-list--virtual {
+    display: block;
+    position: relative;
+    flex: none;
+}
+.stream-list:not(.stream-list--virtual) > .stream-item {
+    position: relative;
+}
+.stream-list--virtual > .stream-item {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    will-change: transform;
 }
 
 /* messages */
@@ -752,175 +691,6 @@
     white-space: pre-wrap;
     overflow: visible;
     text-overflow: clip;
-}
-
-/* tool card */
-.tool {
-    padding: 0;
-    overflow: hidden;
-    margin-top: var(--space-2);
-}
-.tool__head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-    padding: var(--space-2) var(--space-3);
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.15s ease, opacity 0.15s ease;
-}
-.tool__head:hover {
-    background: var(--accent);
-}
-.tool--done .tool__head {
-    opacity: 0.55;
-}
-.tool--done .tool__head:hover {
-    opacity: 1;
-}
-.tool__ico {
-    display: inline-flex;
-    color: var(--muted-foreground);
-    flex: none;
-}
-.tool__ico .spinner {
-    width: 0.875rem;
-    height: 0.875rem;
-}
-.tool--done .tool__ico {
-    color: var(--ok);
-}
-.tool--error .tool__ico {
-    color: var(--err);
-}
-.tool__name {
-    font-weight: 600;
-    flex: none;
-}
-.tool__sum {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.8125rem;
-}
-.tool__dur {
-    flex: none;
-    font-size: 0.75rem;
-}
-.tool__caret {
-    display: inline-flex;
-    color: var(--muted-foreground);
-    flex: none;
-    transition: transform 0.18s ease;
-}
-.tool.open .tool__caret {
-    transform: rotate(180deg);
-}
-.tool__body {
-    padding: 0 var(--space-3) var(--space-3);
-}
-.tool__section + .tool__section {
-    margin-top: var(--space-2);
-}
-.tool__label {
-    font-size: 0.6875rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 2px;
-}
-.tool__pre {
-    margin: 0;
-    padding: var(--space-3);
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    color: var(--muted-foreground);
-    max-height: 24rem;
-    overflow: auto;
-}
-
-/* diff review */
-.diff {
-    margin-top: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-}
-.diff__file {
-    border-top: 1px solid var(--border);
-}
-.diff__file:first-child {
-    border-top: 0;
-}
-.diff__head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-    padding: var(--space-2) var(--space-3);
-    text-align: left;
-    font-size: 0.8125rem;
-    cursor: pointer;
-}
-.diff__head:hover {
-    background: var(--accent);
-}
-.diff__caret {
-    color: var(--muted-foreground);
-    display: inline-flex;
-    transition: transform 0.18s ease;
-}
-.diff__file.open .diff__caret {
-    transform: rotate(90deg);
-}
-.diff__stat {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--muted-foreground);
-    flex: none;
-}
-.diff__hunk {
-    border-top: 1px solid var(--border);
-}
-.diff__hunkhead {
-    padding: var(--space-1) var(--space-3);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--info);
-    background: var(--muted);
-}
-.diff__line {
-    display: block;
-    padding: 0 var(--space-3);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-.diff__line--add {
-    color: var(--ok);
-    background: color-mix(in oklch, var(--ok) 10%, transparent);
-}
-.diff__line--del {
-    color: var(--err);
-    background: color-mix(in oklch, var(--err) 10%, transparent);
-}
-.diff__empty {
-    padding: var(--space-2) var(--space-3);
-    font-size: 0.8125rem;
-}
-.diff__foot {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    border-top: 1px solid var(--border);
-    flex-wrap: wrap;
-}
-.diff__foot--all {
-    background: var(--muted);
 }
 
 /* todo block */
@@ -1088,38 +858,6 @@
     border-top: 1px solid var(--border);
     min-width: 0;
 }
-.composer__queue {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    margin-bottom: var(--space-2);
-}
-.chip--queue {
-    background: color-mix(in oklch, var(--warn) 14%, transparent);
-    color: color-mix(in oklch, var(--warn) 62%, var(--foreground));
-    gap: var(--space-1);
-}
-.chip--queue .truncate {
-    max-width: 14rem;
-}
-.chip--sending {
-    background: color-mix(in oklch, var(--info) 12%, transparent);
-    color: var(--info);
-}
-.q-steer-wrap {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.75rem;
-    color: var(--muted-foreground);
-    cursor: pointer;
-}
-.q-steer {
-    width: 0.875rem;
-    height: 0.875rem;
-    accent-color: var(--warn);
-    cursor: pointer;
-}
 .composer__box {
     border: 1px solid var(--input);
     border-radius: var(--radius-lg);
@@ -1195,9 +933,6 @@
     margin-top: var(--space-2);
     font-size: 0.75rem;
     color: var(--warn);
-}
-.composer__note {
-    font-size: 0.6875rem;
 }
 
 /* ---------- right panel: removed in v0.1.1（tray 取代；仅保留子代理条目样式） ---------- */
@@ -1334,9 +1069,6 @@
     .composer__send {
         margin-left: auto;
     }
-    .chat-conn {
-        display: none;
-    }
 }
 
 /* touch targets */
@@ -1347,7 +1079,6 @@
     }
     .tool__head,
     .batch__row,
-    .q-steer-wrap,
     .composer__sel,
     .fab {
         min-height: 2.5rem;

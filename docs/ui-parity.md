@@ -250,4 +250,7 @@ Chat：`≥1100` 树 280px + 流，`1000–1099` 树 240px，`<1000` 单栏 + �
 
 - `scripts/e2e/ui-e2e.mjs` 需要真 `pi` + nvim 才能跑；本轮只做了选择器适配，未在该环境回归。
 - 对比度抽样与 `prefers-reduced-motion` 扫描仍未自动化（§8）。
-- `chat.css` 中 v0.1.0 的 `.tool`/`.diff` 卡片规则仍保留：新样式通过 `[data-kind]` 提高优先级覆盖，后续可清理。
+- `chat.css` 已清理 v0.1.0 残留（`.tool` 卡片、`.diff` review、队列 chips、stream 固定 68rem/16px 间距、
+  连接 chip/右 panel 按钮等），样式所有权现在唯一：`tool-*.css` 管工具、`chat-msg.css` 管消息块、
+  `chat-stream.css` 管阅读列与间距、`chat-composer.css` 管状态条、`chat-tray.css` 管 tray/chips、
+  `chat-telemetry.css` 管状态行。旧代码仍留 `side-panel.tsx`（未被引用，可单独删除）。
