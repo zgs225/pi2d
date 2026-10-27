@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { Empty } from "@/components/ui/empty";
-import { StatusDot, subagentDotClass } from "@/components/ui/status-dot";
+import { StatusDot } from "@/components/ui/status-dot";
 import { cn } from "@/lib/utils";
 import { SessionRowMenu } from "./session-row-menu";
-import { flattenSubagents, sessionDot } from "./session-state";
+import { childSessionDot, flattenSubagents, sessionDot, subagentDot } from "./session-state";
 import { sessionTitle, subagentTitle } from "./session-title";
 import { SessionTitleSpinner } from "./session-title-spinner";
 import {
@@ -178,6 +178,10 @@ export function SessionTree({
     function renderSessionRow(node: SessionTreeNode) {
         const session = node.session;
         const selected = session.sessionId === selectedId;
+        const dot =
+            node.depth > 0
+                ? childSessionDot(session, { viewed: selected })
+                : sessionDot(session, { viewed: selected });
         const menuOpen = rowMenu?.session.sessionId === session.sessionId;
         // A row is never labelled with its id (pi2.nvim shows `(unnamed)`).
         const title = sessionTitle(session, titlePhrases);
@@ -209,7 +213,7 @@ export function SessionTree({
                     aria-current={selected ? "true" : undefined}
                     onClick={() => onSelectSession(session.sessionId)}
                 >
-                    <StatusDot status={sessionDot(session)} />
+                    <StatusDot status={dot.status} steady={dot.steady} current={dot.current} />
                     {title.spinner ? <SessionTitleSpinner /> : null}
                     <span
                         className={cn(
@@ -244,6 +248,7 @@ export function SessionTree({
     function renderSubagentRow(node: SubagentTreeNode) {
         const { session, subagent } = node;
         const viewing = subagent.id === activeSubagentId;
+        const dot = subagentDot(subagent, { viewed: viewing });
         // Sub-session rows resolve name → task prompt (40 chars) → `sub-session`;
         // the id stays an identity, never a label.
         const title = subagentTitle(subagent, titlePhrases);
@@ -275,7 +280,7 @@ export function SessionTree({
                     data-sub-id={subagent.id}
                     onClick={() => onSelectSubagent(session.sessionId, subagent.id)}
                 >
-                    <span className={cn("dot", subagentDotClass(subagent.status))} aria-hidden="true" />
+                    <StatusDot status={dot.status} steady={dot.steady} />
                     <span
                         className={cn(
                             "t-name truncate",

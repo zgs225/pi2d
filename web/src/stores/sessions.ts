@@ -15,6 +15,14 @@ export interface SessionsStore {
     renameSessionId: (from: string, to: string) => void;
     removeSession: (sessionId: string) => void;
     selectSession: (sessionId: string | null) => void;
+    /**
+     * `:PiSessions` TabEnter: the user is now looking at this session, so its
+     * unread notifications (`done` / `error` / a stale `attention` flag) are
+     * consumed. `:PiSessions` clears both on TabEnter and only sets `done` when
+     * the session is not the current tab; the browser has no tabs, so owning a
+     * row's notifications means opening it.
+     */
+    markSeen: (sessionId: string) => void;
     listFor: (workspaceId: string) => SessionState[];
     getSession: (sessionId: string) => SessionState | undefined;
     setStatus: (status: "idle" | "loading" | "error", error?: string | null) => void;
@@ -46,16 +54,19 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
                 return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: [...list, session] } };
             }
             // Tree metadata is list metadata: a live update (`pi2:session`,
-            // reducer events, a rename) carries no `parentId`/`visible`/`task` and
-            // must not orphan the row. Explicit `undefined` is the only
-            // "not carried" marker — an explicit `parentId: null` means root and
-            // wins, which `??` would invert.
+            // reducer events, a rename) carries no `parentId`/`visible`/`task`/
+            // `tab`/`createdAt`/`lastActiveAt` and must not orphan the row.
+            // Explicit `undefined` is the only "not carried" marker — an explicit
+            // `parentId: null` means root and wins, which `??` would invert.
             const previous = list[index] as SessionState;
             const merged: SessionState = {
                 ...session,
                 parentId: session.parentId !== undefined ? session.parentId : previous.parentId,
                 visible: session.visible !== undefined ? session.visible : previous.visible,
                 task: session.task !== undefined ? session.task : previous.task,
+                tab: session.tab !== undefined ? session.tab : previous.tab,
+                createdAt: session.createdAt !== undefined ? session.createdAt : previous.createdAt,
+                lastActiveAt: session.lastActiveAt !== undefined ? session.lastActiveAt : previous.lastActiveAt,
             };
             const next = list.map((s, i) => (i === index ? merged : s));
             return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: next } };
@@ -116,6 +127,26 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
         }),
 
     selectSession: (selectedSessionId) => set({ selectedSessionId }),
+
+    markSeen: (sessionId) =>
+        set((state) => {
+            let changed = false;
+            const byWorkspace: Record<string, SessionState[]> = {};
+            for (const [workspaceId, list] of Object.entries(state.byWorkspace)) {
+                const next = list.map((session) => {
+                    if (session.sessionId !== sessionId) return session;
+                    const attention = session.attention.length > 0;
+                    if (!session.flags.done && !session.flags.error && session.flags.attention === attention) {
+                        return session;
+                    }
+                    changed = true;
+                    return { ...session, flags: { attention, done: false, error: false } };
+                });
+                byWorkspace[workspaceId] = next;
+            }
+            // Nothing to consume: keep the state object so zustand skips the render.
+            return changed ? { byWorkspace } : state;
+        }),
 
     listFor: (workspaceId) => get().byWorkspace[workspaceId] ?? [],
 

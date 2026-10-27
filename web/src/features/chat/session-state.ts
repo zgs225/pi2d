@@ -446,16 +446,96 @@ function attentionPending(state: SessionState): boolean {
     return state.flags.attention || state.attention.length > 0;
 }
 
-/** `:PiSessions` status matrix → base.css dot class. */
-export function sessionDot(state: SessionState): DotStatus {
-    if (attentionPending(state)) return "attention";
-    if (state.status === "busy" || state.status === "starting") return "busy";
-    if (state.status === "compacting") return "compacting";
-    if (state.status === "interrupted") return "attention";
-    if (state.status === "exited") return "exited";
-    if (state.flags.error) return "err";
-    if (state.flags.done) return "ok";
-    return "idle";
+/**
+ * A dot render decision: the base status plus the two overlay modifiers.
+ * `steady` pins the dot solid, `current` paints the "you are here" overlay.
+ */
+export interface DotView {
+    status: DotStatus;
+    steady?: boolean;
+    current?: boolean;
+}
+
+/**
+ * The current-tab marker: `:PiSessions` paints the dot of the session its tab is
+ * showing in agent blue, steady while idle and blinking while busy, and never on
+ * top of a notification colour (`dot_hl` outranks it — see
+ * `refresh_current_markers`). The browser's analogue is the row the user has
+ * open. A focused `compacting` session blinks at the busy rate, not half speed.
+ */
+function withCurrent(view: DotView, state: SessionState, viewed: boolean): DotView {
+    if (!viewed) return view;
+    if (state.flags.error || state.flags.done || attentionPending(state)) return view;
+    if (state.status === "exited" || state.status === "interrupted") return view;
+    return { current: true, status: state.status === "compacting" ? "busy" : view.status };
+}
+
+/**
+ * `:PiSessions` parent row matrix (`dot_hl`, priority order): exited > error >
+ * attention > done > busy > compacting > idle. `interrupted` is the wire's
+ * "the process died badly" — it shares the exited red with `exited`, never the
+ * attention amber (`sessionStatusKey` still labels it "interrupted").
+ */
+function parentDot(state: SessionState): DotView {
+    if (state.status === "exited") return { status: "dead" };
+    if (state.flags.error) return { status: "err" };
+    if (attentionPending(state)) return { status: "attention" };
+    if (state.flags.done) return { status: "ok" };
+    if (state.status === "busy") return { status: "busy" };
+    if (state.status === "compacting") return { status: "compacting" };
+    if (state.status === "interrupted") return { status: "dead" };
+    return { status: "idle" };
+}
+
+/** `:PiSessions` → dot for a parent (depth 0) session row. */
+export function sessionDot(state: SessionState, opts: { viewed?: boolean } = {}): DotView {
+    return withCurrent(parentDot(state), state, opts.viewed === true);
+}
+
+/**
+ * `:PiSessions` sub-session matrix (`child_dot_hl`) — deliberately not the
+ * parent's: an exited/dormant child is the hollow `◌` (never the exited red), a
+ * failed child is steady red while you are looking at it and blinking red while
+ * you are not, and `busy`/`compacting` share the busy amber at the busy rate.
+ * A child never shows `ok` or `attention`: the plugin forces `done = false` and
+ * `attention = 0` there, surfacing both in the parent chat instead.
+ */
+function childDot(state: SessionState, viewed: boolean): DotView {
+    if (state.status === "exited") return { status: "exited" };
+    if (state.status === "interrupted") return { status: "dead" };
+    if (state.flags.error) return { status: "err", steady: viewed };
+    if (state.status === "busy" || state.status === "compacting") return { status: "busy" };
+    return { status: "idle" };
+}
+
+/** `:PiSessions` → dot for a sub-session (depth > 0) row. */
+export function childSessionDot(state: SessionState, opts: { viewed?: boolean } = {}): DotView {
+    const viewed = opts.viewed === true;
+    return withCurrent(childDot(state, viewed), state, viewed);
+}
+
+/**
+ * `:PiSessions` → dot for a manifest-only subagent row. A `completed` subagent is
+ * the hollow dot, not a green one: the plugin shows a finished child as dormant
+ * `◌` and keeps green for "a turn finished while you were elsewhere" on parents.
+ */
+export function subagentDot(
+    subagent: SessionState["subagents"][number],
+    opts: { viewed?: boolean } = {},
+): DotView {
+    switch (subagent.status) {
+        case "active":
+            return { status: "busy" };
+        case "completed":
+        case "dormant":
+            return { status: "exited" };
+        case "failed":
+            return { status: "err", steady: opts.viewed === true };
+        case "interrupted":
+            return { status: "dead" };
+        default:
+            return { status: "idle" };
+    }
 }
 
 /** i18n key under `state.*` for the current session status. */

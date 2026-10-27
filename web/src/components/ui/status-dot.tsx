@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 
 /** Status-dot vocabulary from the design's `:PiSessions` state matrix. */
-export type DotStatus = "busy" | "compacting" | "idle" | "ok" | "err" | "attention" | "exited";
+export type DotStatus = "busy" | "compacting" | "idle" | "ok" | "err" | "attention" | "exited" | "dead";
 
 export const DOT_CLASS: Record<DotStatus, string> = {
     busy: "dot--busy",
@@ -11,6 +11,7 @@ export const DOT_CLASS: Record<DotStatus, string> = {
     err: "dot--err",
     attention: "dot--attention",
     exited: "dot--exited",
+    dead: "dot--dead",
 };
 
 export type ServerStatus = "online" | "degraded" | "offline";
@@ -24,62 +25,22 @@ export function serverDotClass(status: ServerStatus | string | null | undefined)
     return DOT_CLASS.idle;
 }
 
-export type SubagentStatus = "active" | "completed" | "failed" | "interrupted" | "dormant";
-
-export function subagentDotClass(status: SubagentStatus | string): string {
-    switch (status) {
-        case "active":
-            return DOT_CLASS.busy;
-        case "completed":
-            return DOT_CLASS.ok;
-        case "failed":
-            return DOT_CLASS.err;
-        case "interrupted":
-            return DOT_CLASS.attention;
-        case "dormant":
-            return DOT_CLASS.exited;
-        default:
-            return DOT_CLASS.idle;
-    }
-}
-
-export type SessionStatus = "starting" | "busy" | "compacting" | "idle" | "exited" | "interrupted" | "attention" | "done" | "error";
-
-export function sessionDotClass(status: SessionStatus | string): string {
-    switch (status) {
-        case "busy":
-        case "starting":
-            return DOT_CLASS.busy;
-        case "compacting":
-            return DOT_CLASS.compacting;
-        case "interrupted":
-        case "attention":
-            return DOT_CLASS.attention;
-        case "done":
-            return DOT_CLASS.ok;
-        case "error":
-            return DOT_CLASS.err;
-        case "exited":
-            return DOT_CLASS.exited;
-        case "idle":
-            return DOT_CLASS.idle;
-        default:
-            return DOT_CLASS.idle;
-    }
-}
-
 export interface StatusDotProps {
     status: DotStatus;
     title?: string;
     className?: string;
+    /** Pin the dot solid (no blink) — nvim's "focused child error is steady red". */
+    steady?: boolean;
+    /** "You are here" overlay (nvim `PiSessionsListCurrent`, agent blue). */
+    current?: boolean;
     /** Decorative by default; pass a title to expose the state to assistive tech. */
     "aria-hidden"?: boolean;
 }
 
-export function StatusDot({ status, title, className, ...rest }: StatusDotProps) {
+export function StatusDot({ status, title, className, steady, current, ...rest }: StatusDotProps) {
     return (
         <span
-            className={cn("dot", DOT_CLASS[status], className)}
+            className={cn("dot", DOT_CLASS[status], steady && "dot--steady", current && "dot--current", className)}
             title={title}
             aria-label={title}
             aria-hidden={title ? undefined : true}

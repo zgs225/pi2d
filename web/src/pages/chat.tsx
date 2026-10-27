@@ -116,6 +116,16 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         sessions,
         sessionsQuery.loaded,
     );
+    // `:PiSessions` TabEnter: the routed session is in view, so its unread
+    // notifications are consumed — the plugin clears `done`/`error` when the user
+    // enters the tab and only raises `done` for a session that is not current.
+    const viewedSessionId = active?.sessionId;
+    const viewedDone = active?.flags.done;
+    const viewedError = active?.flags.error;
+    useEffect(() => {
+        if (!viewedSessionId || (!viewedDone && !viewedError)) return;
+        useSessionsStore.getState().markSeen(viewedSessionId);
+    }, [viewedSessionId, viewedDone, viewedError]);
     const history = useSessionHistory(
         active?.sessionId,
         active?.entries ?? NO_ENTRIES,
@@ -535,7 +545,7 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
             ) : null}
             <div className="stream-title">
                 {active ? (
-                    <StatusDot status={sessionDot(active)} title={t(`state.${sessionStatusKey(active)}`)} />
+                    <StatusDot status={sessionDot(active).status} title={t(`state.${sessionStatusKey(active)}`)} />
                 ) : null}
                 <h2 className="stream-name truncate" tabIndex={-1} ref={streamNameRef}>
                     {active ? activeTitle?.text : (workspace?.name ?? t("nav.chat"))}
