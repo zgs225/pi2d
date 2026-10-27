@@ -67,6 +67,7 @@ owner/repo/workflow filename, not the npm name).
 | Doc | Contents |
 |---|---|
 | `docs/protocol.md` | the browser ↔ daemon ↔ plugin wire contract |
+| `docs/session-dot.md` | the session-list status dot: the `:PiSessions` matrix, the unread flags, the one blink clock |
 | `docs/deployment.md` | env vars, runtime files, ports, auth, services, troubleshooting |
 | `docs/e2e.md` | scenario ids, isolation, skip conditions, report paths |
 | `docs/testing.md` | test architecture, performance tuning, hybrid core CPU guidelines |
