@@ -28,6 +28,18 @@ export function stateDir(): string {
     return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi2");
 }
 
+/**
+ * `~` → `home`, `~/…` → `home/…`, `~user/…` → `undefined` (never expanded),
+ * anything else unchanged. Shared by the workspace allowlist and the plugin
+ * probe so both accept exactly the same shorthand.
+ */
+export function expandTilde(raw: string, home: string = homedir()): string | undefined {
+    if (raw === "~") return home;
+    if (raw.startsWith("~/")) return join(home, raw.slice(2));
+    if (raw.startsWith("~")) return undefined;
+    return raw;
+}
+
 export function ensureDir(path: string, mode = 0o700): string {
     if (!existsSync(path)) mkdirSync(path, { recursive: true, mode });
     return path;

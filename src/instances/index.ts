@@ -16,10 +16,12 @@ export type { PluginHello, SnapshotCacheEntry, PluginSocketConnectionOptions } f
 export {
     createInstanceManager,
     ManagedInstanceManager,
+    parseEnsureTimeoutMs,
     parseProcRss,
     parsePsRss,
     summarizeResources,
     DEFAULT_ENSURE_TIMEOUT_MS,
+    DEFAULT_LOG_TAIL_LINES,
     DEFAULT_MAX_INSTANCES,
     DEFAULT_RSS_FRACTION,
     DEFAULT_SHUTDOWN_GRACE_MS,
@@ -27,4 +29,5 @@ export {
     DEFAULT_MIN_SPAWN_INTERVAL_MS,
 } from "./supervisor.js";
 export type { InstanceManagerDeps, InstanceManagerHandle, SpawnFunction } from "./supervisor.js";
+export { HOST_INIT_FILENAME, luaString, renderHostInit, writeHostInit } from "./host-init.js";
 export { InstanceError, TIMEOUT_CODE, asInstanceError, errorMessage } from "./errors.js";

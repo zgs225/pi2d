@@ -31,7 +31,15 @@ export interface TempEnv {
     cleanup(): void;
 }
 
-const ENV_KEYS = ["PI2_RUNTIME_DIR", "PI2_DATA_DIR", "PI2_STATE_DIR", "PI2_NVIM_BIN", "PI2_NVIM_INIT"] as const;
+const ENV_KEYS = [
+    "PI2_RUNTIME_DIR",
+    "PI2_DATA_DIR",
+    "PI2_STATE_DIR",
+    "PI2_NVIM_BIN",
+    "PI2_NVIM_INIT",
+    "PI2_PLUGIN_DIR",
+    "PI2_ENSURE_TIMEOUT_MS",
+] as const;
 
 export function makeTempEnv(prefix = "pi2-daemon-instances-"): TempEnv {
     const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -42,6 +50,11 @@ export function makeTempEnv(prefix = "pi2-daemon-instances-"): TempEnv {
 
     const saved = new Map<string, string | undefined>();
     for (const key of ENV_KEYS) saved.set(key, process.env[key]);
+    // The developer's own spawn knobs must not decide which init a test spawns
+    // with: clear them so the default (generated host init) is what runs.
+    for (const key of ["PI2_NVIM_BIN", "PI2_NVIM_INIT", "PI2_PLUGIN_DIR", "PI2_ENSURE_TIMEOUT_MS"] as const) {
+        delete process.env[key];
+    }
     process.env.PI2_RUNTIME_DIR = runtime;
     process.env.PI2_DATA_DIR = data;
     process.env.PI2_STATE_DIR = state;

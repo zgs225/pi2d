@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { daemonSocketPath, daemonTokenPath, stateDir } from "../../src/core/paths.js";
 import {
     createInstanceManager,
+    parseEnsureTimeoutMs,
     parseProcRss,
     parsePsRss,
     summarizeResources,
@@ -49,12 +50,18 @@ describe("InstanceManager", () => {
     let env: TempEnv;
     let bus: FakeBus;
     let manager: InstanceManagerHandle | undefined;
+    /** Host-capable fake plugin checkout discovered by every spawn by default. */
+    let pluginRoot: string;
     const workspaces = new Map<string, string>();
 
     beforeEach(() => {
         env = makeTempEnv();
         bus = new FakeBus();
         workspaces.clear();
+        pluginRoot = join(env.dir, "pi2.nvim");
+        mkdirSync(join(pluginRoot, "lua", "pi", "web"), { recursive: true });
+        writeFileSync(join(pluginRoot, "lua", "pi", "host.lua"), "-- fake host\n");
+        writeFileSync(join(pluginRoot, "lua", "pi", "web", "bridge.lua"), "-- fake bridge\n");
     });
 
     afterEach(async () => {
@@ -70,18 +77,33 @@ describe("InstanceManager", () => {
         return cwd;
     }
 
-    async function create(options: {
-        bin?: string;
-        deps?: Partial<InstanceManagerDeps>;
-    } = {}): Promise<InstanceManagerHandle> {
+    async function create(
+        options: {
+            bin?: string;
+            /** `null` leaves the timeout to `PI2_ENSURE_TIMEOUT_MS`/the default. */
+            ensureTimeoutMs?: number | null;
+            deps?: Partial<InstanceManagerDeps>;
+        } = {},
+    ): Promise<InstanceManagerHandle> {
+        const ensureTimeoutMs = options.ensureTimeoutMs === undefined ? 4_000 : options.ensureTimeoutMs;
         const instance = await createInstanceManager({
             bus,
             resolveCwd: (workspaceId) => workspaces.get(workspaceId),
-            ensureTimeoutMs: 4_000,
+            ...(ensureTimeoutMs === null ? {} : { ensureTimeoutMs }),
             shutdownGraceMs: 300,
             sigtermGraceMs: 200,
             minSpawnIntervalMs: 300,
             maxSpawnIntervalMs: 1_000,
+            // Hermetic plugin discovery: the machine's own nvim install must never
+            // decide what these tests spawn with.
+            resolvePlugin: () => ({
+                plugin: {
+                    dir: pluginRoot,
+                    host: join(pluginRoot, "lua", "pi", "host.lua"),
+                    bridge: join(pluginRoot, "lua", "pi", "web", "bridge.lua"),
+                },
+            }),
+            hostInitDir: join(env.dir, "host-init"),
             ...(options.bin === undefined ? {} : { nvimBin: options.bin }),
             ...(options.deps ?? {}),
         });
@@ -112,7 +134,16 @@ describe("InstanceManager", () => {
         const argv = start.argv as string[];
         expect(argv.slice(0, 2)).toEqual(["--headless", "--listen"]);
         expect(argv[2]).toBe(state.listenAddr);
-        expect(argv.slice(3)).toEqual(["-c", 'lua require("pi.host").start()']);
+        // No plugin/config default any more: the daemon hands nvim its generated init.
+        expect(argv.slice(3)).toEqual([
+            "-u",
+            join(env.dir, "host-init", "host-init.lua"),
+            "-c",
+            'lua require("pi.host").start()',
+        ]);
+        expect(readFileSync(join(env.dir, "host-init", "host-init.lua"), "utf8")).toContain(
+            `vim.opt.runtimepath:prepend("${pluginRoot}")`,
+        );
         expect(start.cwd).toBe(cwd);
         const spawnedEnv = start.env as Record<string, string>;
         expect(spawnedEnv.PI2_WORKSPACE_ID).toBe("ws-1");
@@ -128,17 +159,30 @@ describe("InstanceManager", () => {
         expect(statuses).toContain("ready");
     });
 
-    it("passes PI2_NVIM_INIT as -u only when configured", async () => {
+    it("honours an explicit init path from PI2_NVIM_INIT", async () => {
         addWorkspace();
-        const init = join(env.dir, "init.lua");
+        process.env.PI2_NVIM_INIT = "/x/y.lua";
         const fake = writeFakeNvim(env.dir);
-        const mgr = await create({ bin: fake.bin, deps: { nvimInit: init } });
+        const mgr = await create({ bin: fake.bin });
 
         await mgr.ensure("ws-1");
 
         const argv = startRecords(fake.runLog)[0]?.argv as string[];
-        expect(argv.slice(3, 5)).toEqual(["-u", init]);
+        expect(argv.slice(3, 5)).toEqual(["-u", "/x/y.lua"]);
         expect(argv.slice(5)).toEqual(["-c", 'lua require("pi.host").start()']);
+    });
+
+    it("spawns the user's own config (no -u) for PI2_NVIM_INIT=user", async () => {
+        addWorkspace();
+        process.env.PI2_NVIM_INIT = "user";
+        const fake = writeFakeNvim(env.dir);
+        const mgr = await create({ bin: fake.bin });
+
+        await mgr.ensure("ws-1");
+
+        const argv = startRecords(fake.runLog)[0]?.argv as string[];
+        expect(argv.slice(3)).toEqual(["-c", 'lua require("pi.host").start()']);
+        expect(argv).not.toContain("-u");
     });
 
     it("is idempotent and reports state changes to handlers", async () => {
@@ -205,6 +249,103 @@ describe("InstanceManager", () => {
             code: "E_INSTANCE_UNAVAILABLE",
             message: expect.stringContaining("backing off"),
         });
+    });
+
+    it("refuses to spawn when no host-capable plugin is found", async () => {
+        addWorkspace();
+        const fake = writeFakeNvim(env.dir);
+        const lazy = join(env.dir, "lazy", "pi2.nvim");
+        const mgr = await create({
+            bin: fake.bin,
+            deps: {
+                resolvePlugin: () => ({
+                    plugin: undefined,
+                    configured: undefined,
+                    candidates: [
+                        { dir: lazy, reason: "missing-host" },
+                        { dir: join(env.dir, "pack", "pi2.nvim"), reason: "absent" },
+                    ],
+                }),
+            },
+        });
+
+        const error = await mgr.ensure("ws-1").catch((rejection: unknown) => rejection);
+        expect(error).toBeInstanceOf(Error);
+        const failure = error as Error & { code?: string };
+        expect(failure.code).toBe("E_INSTANCE_UNAVAILABLE");
+        expect(failure.message).toContain("has no lua/pi/host.lua");
+        expect(failure.message).toContain("set PI2_PLUGIN_DIR");
+        expect(failure.message).toContain("PI2_NVIM_INIT=user");
+        // Refusing beats spawning an nvim that can only time out.
+        expect(startRecords(fake.runLog)).toHaveLength(0);
+
+        const stopped = mgr.list().find((state) => state.workspaceId === "ws-1");
+        expect(stopped?.status).toBe("stopped");
+        expect(stopped?.reason).toContain("has no lua/pi/host.lua");
+        expect(stopped?.reason).toContain("PI2_NVIM_INIT=user");
+
+        // The refusal is booked like any other failed start: backoff, no stuck entry.
+        await expect(mgr.ensure("ws-1")).rejects.toMatchObject({
+            code: "E_INSTANCE_UNAVAILABLE",
+            message: expect.stringContaining("backing off"),
+        });
+        expect(startRecords(fake.runLog)).toHaveLength(0);
+    });
+
+    it("reports the log tail on hello timeout and puts a one-line reason on the state", async () => {
+        addWorkspace();
+        const fake = writeFakeNvim(env.dir, { mode: "no-hello" });
+        const tail = [
+            "Error detected while processing host-init.lua:",
+            'E5108: Error executing lua: module \'pi.host\' not found',
+            "",
+            "stack traceback:",
+            "  [C]: in function 'require'",
+        ];
+        const mgr = await create({
+            bin: fake.bin,
+            deps: { readLogTail: async () => [...tail] },
+        });
+
+        const error = await mgr
+            .ensure("ws-1", { timeoutMs: 800 })
+            .catch((rejection: unknown) => rejection);
+        expect(error).toBeInstanceOf(Error);
+        const failure = error as Error & { code?: string };
+        expect(failure.code).toBe("E_INSTANCE_STARTING");
+        expect(failure.message).toContain("did not say hello within 800ms");
+        expect(failure.message).toContain("module 'pi.host' not found");
+        expect(failure.message).toContain("stack traceback:");
+
+        const stopped = mgr.list().find((state) => state.workspaceId === "ws-1");
+        expect(stopped?.status).toBe("stopped");
+        expect(stopped?.reason).toContain("did not say hello within 800ms");
+        expect(stopped?.reason).toContain("stack traceback:");
+        // The reason travels to the browser: it must stay a single line.
+        expect(stopped?.reason).not.toContain("\n");
+
+        const logDir = join(stateDir(), "instances");
+        const logged = readdirSync(logDir)
+            .map((file) => readFileSync(join(logDir, file), "utf8"))
+            .join("\n");
+        expect(logged).toContain("hello timeout (-u ");
+        expect(logged).toContain(pluginRoot);
+    });
+
+    it("honours PI2_ENSURE_TIMEOUT_MS when no timeout is passed", async () => {
+        addWorkspace();
+        process.env.PI2_ENSURE_TIMEOUT_MS = "700";
+        const fake = writeFakeNvim(env.dir, { mode: "no-hello" });
+        const mgr = await create({ bin: fake.bin, ensureTimeoutMs: null });
+
+        const started = Date.now();
+        await expect(mgr.ensure("ws-1")).rejects.toMatchObject({
+            code: "E_INSTANCE_STARTING",
+            message: expect.stringContaining("did not say hello within 700ms"),
+        });
+        const elapsed = Date.now() - started;
+        expect(elapsed).toBeGreaterThanOrEqual(600);
+        expect(elapsed).toBeLessThan(3_000);
     });
 
     it("reports E_INSTANCE_UNAVAILABLE when the nvim binary cannot be spawned", async () => {
@@ -464,6 +605,18 @@ describe("InstanceManager", () => {
         await waitFor(() => !isRunning(pid), 3_000);
         await expect(mgr.ensure("ws-1")).rejects.toMatchObject({ code: "E_INSTANCE_UNAVAILABLE" });
         expect(existsSync(daemonSocketPath())).toBe(false);
+    });
+});
+
+describe("ensure timeout override", () => {
+    it("parses PI2_ENSURE_TIMEOUT_MS and ignores junk", () => {
+        expect(parseEnsureTimeoutMs(undefined)).toBeUndefined();
+        expect(parseEnsureTimeoutMs("  ")).toBeUndefined();
+        expect(parseEnsureTimeoutMs("1500")).toBe(1500);
+        expect(parseEnsureTimeoutMs("0")).toBeUndefined();
+        expect(parseEnsureTimeoutMs("-20")).toBeUndefined();
+        expect(parseEnsureTimeoutMs("1.5")).toBeUndefined();
+        expect(parseEnsureTimeoutMs("abc")).toBeUndefined();
     });
 });
 

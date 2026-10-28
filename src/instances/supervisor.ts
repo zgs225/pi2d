@@ -11,6 +11,7 @@
 
 import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { closeSync, openSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { dirname, join } from "node:path";
@@ -30,15 +31,27 @@ import {
     runtimeDir,
     stateDir,
 } from "../core/paths.js";
+import { describePluginFailure, resolvePluginDir, type PluginResolution } from "../core/plugin.js";
 import { ERROR_CODES } from "../protocol/errors.js";
 import { PROTOCOL_VERSION, type InstanceState } from "../protocol/types.js";
 import { PluginSocketConnection, type PluginHello } from "./connection.js";
 import { InstanceError, asInstanceError, errorMessage } from "./errors.js";
+import { writeHostInit } from "./host-init.js";
 import { PluginServer, type PluginServerOptions, type PluginServerRejection } from "./plugin-server.js";
 
 const execFileAsync = promisify(execFile);
 
-export const DEFAULT_ENSURE_TIMEOUT_MS = 5_000;
+/**
+ * How long `ensure()` waits for the plugin `hello` by default.
+ *
+ * 10 s, not 5 s: the generated host init starts a *config-less* headless nvim,
+ * but a cold disk cache plus a large plugin directory can still take a few
+ * seconds, and a false timeout looks exactly like a broken plugin from the
+ * browser's point of view. `PI2_ENSURE_TIMEOUT_MS` overrides it.
+ */
+export const DEFAULT_ENSURE_TIMEOUT_MS = 10_000;
+/** Lines of the instance log quoted back on a failed spawn/timeout. */
+export const DEFAULT_LOG_TAIL_LINES = 40;
 export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 export const DEFAULT_SIGTERM_GRACE_MS = 2_000;
 export const DEFAULT_MIN_SPAWN_INTERVAL_MS = 2_000;
@@ -66,6 +79,16 @@ export interface InstanceManagerDeps {
     logDir?: string;
     nvimBin?: string;
     nvimInit?: string;
+    /** Explicit plugin checkout; beats discovery (same effect as `PI2_PLUGIN_DIR`). */
+    pluginDir?: string;
+    /** Where the generated host init lives; defaults to `${stateDir()}/host-init`. */
+    hostInitDir?: string;
+    writeHostInit?: typeof writeHostInit;
+    /** Injectable plugin discovery (defaults to `resolvePluginDir`). */
+    resolvePlugin?: () => PluginResolution;
+    /** Lines of `<instance>.log` quoted on failure; defaults to 40. */
+    logTailLines?: number;
+    readLogTail?: (path: string, lines: number) => Promise<string[]>;
     env?: NodeJS.ProcessEnv;
     spawnFn?: SpawnFunction;
     instanceSocketPath?: (workspaceId: string, instanceId: string) => string;
@@ -95,13 +118,38 @@ interface SpawnWaiter {
     promise: Promise<PluginSocketConnection>;
     settle(connection: PluginSocketConnection): void;
     fail(error: InstanceError): void;
-    attach(child: ChildProcess, logPath: string): void;
+    attach(child: ChildProcess, logPath: string, init: SpawnInit | undefined): void;
     cancel(reason: string): void;
 }
 
 interface SpawnFailure {
     count: number;
     nextAllowedAt: number;
+}
+
+/** Which `-u` this spawn used, recorded so failures can name their inputs. */
+interface SpawnInit {
+    /** `undefined` means "no `-u`" (the user's own config, or none at all). */
+    path: string | undefined;
+    pluginDir: string | undefined;
+}
+
+/** A failed spawn reduced to what a browser can show and a log can keep. */
+interface SpawnDiagnostics {
+    /** Single line for `InstanceState.reason` (goes out through `instance_state`). */
+    reason: string;
+    /** Multi-line form (summary + log tail) for the thrown `InstanceError`. */
+    message: string;
+}
+
+/**
+ * Reads `PI2_ENSURE_TIMEOUT_MS`; `undefined` for unset or invalid values so the
+ * caller can warn instead of silently running with a nonsense timeout.
+ */
+export function parseEnsureTimeoutMs(raw: string | undefined): number | undefined {
+    if (raw === undefined || raw.trim() === "") return undefined;
+    const value = Number(raw.trim());
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 /** `VmRSS:   123456 kB` from `/proc/<pid>/status` → bytes. */
@@ -200,8 +248,16 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
     private readonly tokenPath: string;
     private readonly runtime: string;
     private readonly logDir: string;
+    private readonly hostInitDir: string;
     private readonly nvimBin: string;
     private readonly nvimInit: string | undefined;
+    /** `PI2_NVIM_INIT=user`: spawn with no `-u`, i.e. the user's own config. */
+    private readonly useUserConfig: boolean;
+    private readonly pluginDir: string | undefined;
+    private readonly writeHostInit: (options: { dir: string; pluginDir: string }) => Promise<string>;
+    private readonly resolvePlugin: () => PluginResolution;
+    private readonly logTailLines: number;
+    private readonly readLogTail: (path: string, lines: number) => Promise<string[]>;
     private readonly spawnFn: SpawnFunction;
     private readonly instanceSocketPath: (workspaceId: string, instanceId: string) => string;
     private readonly readRss: (pid: number) => Promise<number | null>;
@@ -233,14 +289,40 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
         this.tokenPath = deps.tokenPath ?? daemonTokenPath();
         this.runtime = deps.runtime ?? runtimeDir();
         this.logDir = deps.logDir ?? join(stateDir(), "instances");
+        this.hostInitDir = deps.hostInitDir ?? join(stateDir(), "host-init");
         this.nvimBin = deps.nvimBin ?? process.env.PI2_NVIM_BIN ?? "nvim";
-        const init = deps.nvimInit ?? process.env.PI2_NVIM_INIT;
-        this.nvimInit = init !== undefined && init !== "" ? init : undefined;
+        // Three-way init choice (see `resolveNvimInit`): an explicit path wins,
+        // the literal `user` opts back into today's "load my config" behaviour,
+        // and anything else (including unset) uses the generated host init.
+        const init = (deps.nvimInit ?? process.env.PI2_NVIM_INIT ?? "").trim();
+        this.useUserConfig = init === "user";
+        this.nvimInit = init === "" || this.useUserConfig ? undefined : init;
+        this.pluginDir = deps.pluginDir?.trim() || undefined;
+        this.writeHostInit = deps.writeHostInit ?? writeHostInit;
+        this.resolvePlugin =
+            deps.resolvePlugin ??
+            (() => {
+                const env: Record<string, string | undefined> = { ...process.env, ...(deps.env ?? {}) };
+                if (this.pluginDir !== undefined) env.PI2_PLUGIN_DIR = this.pluginDir;
+                return resolvePluginDir({ env });
+            });
+        this.logTailLines = deps.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
+        this.readLogTail = deps.readLogTail ?? defaultReadLogTail;
         this.spawnFn = deps.spawnFn ?? ((command, args, options) => spawn(command, args, options));
         this.instanceSocketPath = deps.instanceSocketPath ?? defaultInstanceSocketPath;
         this.readRss = deps.readRss ?? defaultReadRss;
         this.totalMemory = deps.totalMemory ?? totalmem;
-        this.ensureTimeoutMs = deps.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+        const envTimeout = parseEnsureTimeoutMs(process.env.PI2_ENSURE_TIMEOUT_MS);
+        if (
+            deps.ensureTimeoutMs === undefined &&
+            (process.env.PI2_ENSURE_TIMEOUT_MS ?? "").trim() !== "" &&
+            envTimeout === undefined
+        ) {
+            this.logger?.warn("ignoring invalid PI2_ENSURE_TIMEOUT_MS", {
+                value: process.env.PI2_ENSURE_TIMEOUT_MS,
+            });
+        }
+        this.ensureTimeoutMs = deps.ensureTimeoutMs ?? envTimeout ?? DEFAULT_ENSURE_TIMEOUT_MS;
         this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
         this.sigtermGraceMs = deps.sigtermGraceMs ?? DEFAULT_SIGTERM_GRACE_MS;
         this.minSpawnIntervalMs = deps.minSpawnIntervalMs ?? DEFAULT_MIN_SPAWN_INTERVAL_MS;
@@ -463,14 +545,15 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
         };
         this.setState(starting);
 
-        const waiter = this.createWaiter(workspaceId, timeoutMs);
+        const waiter = this.createWaiter(workspaceId, timeoutMs, starting);
         let child: ChildProcess | undefined;
         try {
+            const init = await this.resolveNvimInit();
             const args = [
                 "--headless",
                 "--listen",
                 socketPath,
-                ...(this.nvimInit === undefined ? [] : ["-u", this.nvimInit]),
+                ...(init.path === undefined ? [] : ["-u", init.path]),
                 "-c",
                 'lua require("pi.host").start()',
             ];
@@ -482,17 +565,53 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
                 PI2_DAEMON_TOKEN_PATH: this.tokenPath,
                 PI2_WORKSPACE_ID: workspaceId,
             };
-            this.logger?.info("spawning instance", { workspaceId, instanceId, cwd, command: this.nvimBin, logPath });
-            child = this.spawnFn(this.nvimBin, args, {
+            // One line, no secrets: the four knobs that change how this spawn
+            // behaves plus the argv we are about to hand nvim, because "which
+            // -u did it pick" is the first question every report asks.
+            this.logger?.info("spawning instance", {
+                workspaceId,
+                instanceId,
                 cwd,
-                env,
-                stdio: "ignore",
-                detached: true,
+                command: this.nvimBin,
+                args,
+                init: init.path ?? "none",
+                pluginDir: init.pluginDir ?? "none",
+                logPath,
+                env: {
+                    PI2_NVIM_BIN: process.env.PI2_NVIM_BIN ?? "",
+                    PI2_NVIM_INIT: process.env.PI2_NVIM_INIT ?? "",
+                    PI2_PLUGIN_DIR: process.env.PI2_PLUGIN_DIR ?? "",
+                    PI2_ENSURE_TIMEOUT_MS: String(this.ensureTimeoutMs),
+                },
             });
-            this.children.set(workspaceId, child);
-            if (child.pid !== undefined) this.setState({ ...starting, nvimPid: child.pid });
-            child.unref();
-            waiter.attach(child, logPath);
+            let logFd: number | undefined;
+            try {
+                ensureDir(this.logDir);
+                // nvim's stderr is the only place a config/plugin error will ever
+                // appear (`--headless` keeps it off the terminal), so route it into
+                // the per-instance log instead of /dev/null.
+                logFd = openSync(logPath, "a", 0o600);
+                child = this.spawnFn(this.nvimBin, args, {
+                    cwd,
+                    env,
+                    stdio: ["ignore", logFd, logFd],
+                    detached: true,
+                });
+                this.children.set(workspaceId, child);
+                if (child.pid !== undefined) this.setState({ ...starting, nvimPid: child.pid });
+                child.unref();
+            } finally {
+                // The child holds its own duplicate; keeping ours open would leak an
+                // fd per spawn. `detached: true` already keeps the child alive.
+                if (logFd !== undefined) {
+                    try {
+                        closeSync(logFd);
+                    } catch {
+                        // already closed: the spawn-error path may have closed it
+                    }
+                }
+            }
+            waiter.attach(child, logPath, init);
 
             const connection = await waiter.promise;
             this.failures.delete(workspaceId);
@@ -501,17 +620,24 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
             return this.readyState(connection, this.states.get(workspaceId));
         } catch (error) {
             const failure = asInstanceError(error);
+            // A refusal before spawn (e.g. no plugin found) leaves a waiter behind
+            // that nobody will ever settle; drop it so `waiters` stays honest.
+            waiter.cancel(failure.message);
             this.recordFailure(workspaceId);
             if (child !== undefined) {
                 tryKill(child, "SIGKILL");
                 if (this.children.get(workspaceId) === child) this.children.delete(workspaceId);
             }
+            // Timeout/early-exit errors carry the single-line log summary in
+            // `details.reason`; every other failure falls back to its message.
+            const reason =
+                typeof failure.details?.reason === "string" ? failure.details.reason : failure.message;
             this.setState({
                 ...(this.states.get(workspaceId) ?? starting),
                 status: "stopped",
                 nvimPid: null,
                 attachedClients: 0,
-                reason: failure.message,
+                reason,
             });
             this.logger?.warn("instance failed to start", {
                 workspaceId,
@@ -523,9 +649,34 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
         }
     }
 
-    private createWaiter(workspaceId: string, timeoutMs: number): SpawnWaiter {
+    /**
+     * Which `-u` this spawn gets.
+     *
+     * The default is the generated host init: spawning the *user's* config is
+     * what made "open a project from the web console" fail silently, because the
+     * plugin is only reachable if that config happens to load it. `-u` values and
+     * `PI2_NVIM_INIT=user` remain as escape hatches. With no host-capable plugin
+     * at all we refuse up front — a spawn with no plugin can only time out.
+     */
+    private async resolveNvimInit(): Promise<SpawnInit> {
+        if (this.nvimInit !== undefined) return { path: this.nvimInit, pluginDir: undefined };
+        if (this.useUserConfig) return { path: undefined, pluginDir: undefined };
+
+        const resolution = this.resolvePlugin();
+        if (resolution.plugin === undefined) {
+            throw InstanceError.unavailable(
+                `${describePluginFailure(resolution.candidates, { configured: resolution.configured })}; install/update pi2.nvim, ` +
+                    "set PI2_PLUGIN_DIR, or set PI2_NVIM_INIT=user to load your own config",
+            );
+        }
+        const path = await this.writeHostInit({ dir: this.hostInitDir, pluginDir: resolution.plugin.dir });
+        return { path, pluginDir: resolution.plugin.dir };
+    }
+
+    private createWaiter(workspaceId: string, timeoutMs: number, base: InstanceState): SpawnWaiter {
         const manager = this;
         let settled = false;
+        let diagnosing = false;
         let resolvePromise!: (connection: PluginSocketConnection) => void;
         let rejectPromise!: (error: Error) => void;
 
@@ -539,6 +690,10 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
 
         let timer: NodeJS.Timeout | undefined;
         let exited = false;
+        // Set by `attach()`; the timer can fire before any child event, so the
+        // diagnostics path needs to know which init this waiter belongs to.
+        let attachedLogPath: string | undefined;
+        let attachedInit: SpawnInit | undefined;
 
         const cleanup = (): void => {
             if (timer !== undefined) {
@@ -547,6 +702,44 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
             }
             if (this.waiters.get(workspaceId) === waiter) this.waiters.delete(workspaceId);
         };
+
+        /**
+         * Fails the waiter *after* reading the log tail, so the browser and the
+         * log get the actual nvim output instead of a bare timeout.
+         */
+        function failWithDiagnostics(options: {
+            marker: string;
+            summary: string;
+            logPath: string | undefined;
+            init: SpawnInit | undefined;
+            makeError: (diagnostics: SpawnDiagnostics) => InstanceError;
+        }): void {
+            if (settled || diagnosing) return;
+            diagnosing = true;
+            void manager
+                .describeSpawnFailure({
+                    logPath: options.logPath,
+                    marker: options.marker,
+                    summary: options.summary,
+                    init: options.init,
+                })
+                .then((diagnostics) => {
+                    if (settled) return;
+                    // `fail()` is not enough on its own: the reason must reach
+                    // `InstanceState` so the browser sees it through `instance_state`.
+                    manager.setState({
+                        ...(manager.states.get(workspaceId) ?? base),
+                        status: "stopped",
+                        nvimPid: null,
+                        attachedClients: 0,
+                        reason: diagnostics.reason,
+                    });
+                    waiter.fail(options.makeError(diagnostics));
+                })
+                .finally(() => {
+                    diagnosing = false;
+                });
+        }
 
         const waiter: SpawnWaiter = {
             promise,
@@ -562,18 +755,39 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
                 cleanup();
                 rejectPromise(error);
             },
-            attach(child, logPath) {
+            attach(child, logPath, init) {
+                attachedLogPath = logPath;
+                attachedInit = init;
                 child.once("exit", (code, signal) => {
                     exited = true;
                     if (manager.children.get(workspaceId) === child) manager.children.delete(workspaceId);
                     if (settled) return;
-                    const message = `nvim exited before hello (code ${String(code)}, signal ${String(signal)})`;
-                    void manager.appendLog(logPath, message);
-                    waiter.fail(InstanceError.unavailable(message, { workspaceId }));
+                    const summary = `nvim exited before hello (code ${String(code)}, signal ${String(signal)})`;
+                    failWithDiagnostics({
+                        marker: "exit before hello",
+                        summary,
+                        logPath,
+                        init,
+                        makeError: (diagnostics) =>
+                            InstanceError.unavailable(diagnostics.message, {
+                                workspaceId,
+                                reason: diagnostics.reason,
+                            }),
+                    });
                 });
                 child.once("error", (error) => {
-                    void manager.appendLog(logPath, `spawn error: ${error.message}`);
-                    waiter.fail(InstanceError.unavailable(`failed to spawn nvim: ${error.message}`, { workspaceId }));
+                    if (settled) return;
+                    failWithDiagnostics({
+                        marker: "spawn error",
+                        summary: `failed to spawn nvim: ${error.message}`,
+                        logPath,
+                        init,
+                        makeError: (diagnostics) =>
+                            InstanceError.unavailable(diagnostics.message, {
+                                workspaceId,
+                                reason: diagnostics.reason,
+                            }),
+                    });
                 });
             },
             cancel(reason) {
@@ -585,15 +799,74 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
         };
 
         timer = setTimeout(() => {
-            const message = exited
-                ? `instance for ${workspaceId} exited before hello`
-                : `instance for ${workspaceId} did not say hello within ${timeoutMs}ms`;
-            waiter.fail(exited ? InstanceError.unavailable(message) : InstanceError.starting(message));
+            if (settled) return;
+            if (exited) {
+                failWithDiagnostics({
+                    marker: "exit before hello",
+                    summary: `instance for ${workspaceId} exited before hello`,
+                    logPath: attachedLogPath,
+                    init: attachedInit,
+                    makeError: (diagnostics) =>
+                        InstanceError.unavailable(diagnostics.message, { reason: diagnostics.reason }),
+                });
+                return;
+            }
+            failWithDiagnostics({
+                marker: "hello timeout",
+                summary: `instance for ${workspaceId} did not say hello within ${timeoutMs}ms`,
+                logPath: attachedLogPath,
+                init: attachedInit,
+                makeError: (diagnostics) =>
+                    InstanceError.starting(diagnostics.message, { reason: diagnostics.reason }),
+            });
         }, timeoutMs);
         timer.unref?.();
 
         this.waiters.set(workspaceId, waiter);
         return waiter;
+    }
+
+    /**
+     * Turns "the spawn went quiet" into something a human can act on.
+     *
+     * Writes a marker into the instance log (so the file is self-describing), and
+     * returns both a one-line reason for `instance_state` and a summary + tail for
+     * the thrown error.
+     */
+    private async describeSpawnFailure(options: {
+        logPath: string | undefined;
+        marker: string;
+        summary: string;
+        init: SpawnInit | undefined;
+    }): Promise<SpawnDiagnostics> {
+        const tail = options.logPath === undefined ? [] : await this.readLogTailLines(options.logPath);
+        if (options.logPath !== undefined) {
+            await this.appendLog(
+                options.logPath,
+                `${options.marker} (-u ${options.init?.path ?? "none"}, plugin ${options.init?.pluginDir ?? "none"})`,
+            );
+        }
+        const nonEmpty = tail.filter((line) => line.trim() !== "");
+        const lastLines = nonEmpty.slice(-3).join(" | ");
+        const reason = truncate(lastLines === "" ? options.summary : `${options.summary}: ${lastLines}`, 500);
+        const detail = tail.slice(-10).join("\n");
+        return {
+            reason,
+            message: detail === "" ? options.summary : `${options.summary}\n${detail}`,
+        };
+    }
+
+    /** Reads the last `logTailLines` lines, capped per line so one long traceback cannot flood the error. */
+    private async readLogTailLines(logPath: string): Promise<string[]> {
+        let lines: string[];
+        try {
+            lines = await this.readLogTail(logPath, this.logTailLines);
+        } catch {
+            return [];
+        }
+        return lines
+            .slice(-this.logTailLines)
+            .map((line) => (line.length > 400 ? `${line.slice(0, 400)}…` : line));
     }
 
     private handleOpen(connection: PluginSocketConnection): void {
@@ -729,6 +1002,25 @@ export class ManagedInstanceManager implements InstanceManagerHandle {
             this.logger?.debug("could not write instance log", { logPath, error: errorMessage(error) });
         }
     }
+}
+
+/** Caps a single-line diagnostic so it stays readable in a state payload. */
+function truncate(value: string, max: number): string {
+    return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/**
+ * Last `lines` lines of a log file.
+ *
+ * Instance logs only hold a spawned nvim's stderr, so they stay small and a full
+ * read is cheaper (and safer) than a seek-from-the-end dance; a missing file is
+ * simply "no output yet".
+ */
+async function defaultReadLogTail(path: string, lines: number): Promise<string[]> {
+    const text = await readFile(path, "utf8");
+    const all = text.split("\n");
+    if (all.at(-1) === "") all.pop();
+    return all.slice(-Math.max(1, lines));
 }
 
 function sameState(a: InstanceState, b: InstanceState): boolean {
