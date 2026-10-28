@@ -1,6 +1,6 @@
 {
   "name": "@yuez/pi2d",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "license": "MIT",
   "description": "pi2 web console daemon (`pi2 daemon`): HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
