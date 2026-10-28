@@ -14,7 +14,7 @@ import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { InstanceManager, WorkspaceStore as WorkspaceStoreContract } from "../core/interfaces.js";
-import { dataDir, realpathSafe, workspaceIdForCwd } from "../core/paths.js";
+import { dataDir, expandTilde, realpathSafe, workspaceIdForCwd } from "../core/paths.js";
 import { ERROR_CODES } from "../protocol/errors.js";
 import type {
     InstanceState,
@@ -62,6 +62,11 @@ export interface WorkspaceStoreOptions {
     env?: WorkspaceEnv;
     /** Clock for the `PI2_WORKSPACE_STALE_DAYS` comparison; defaults to `Date.now`. */
     now?: () => number;
+    /**
+     * Home for `~`/`~/…` expansion in `add()` and the default allowlist root;
+     * injectable so tests never touch the real home directory.
+     */
+    home?: string;
 }
 
 export interface WorkspaceStoreHandle extends WorkspaceStoreContract {
@@ -83,11 +88,13 @@ class WorkspaceStore implements WorkspaceStoreHandle {
     private readonly roots: readonly string[] | undefined;
     private readonly env: WorkspaceEnv;
     private readonly now: () => number;
+    private readonly home: string;
 
     constructor(options: WorkspaceStoreOptions = {}) {
         this.logger = options.logger;
         this.env = options.env ?? process.env;
         this.now = options.now ?? Date.now;
+        this.home = options.home ?? homedir();
         this.discovery = options.discovery ?? createDiscovery({ ...(options.logger ? { logger: options.logger } : {}) });
         this.registry =
             options.registry ??
@@ -141,8 +148,18 @@ class WorkspaceStore implements WorkspaceStoreHandle {
         if (raw.includes("\0")) {
             throw new WorkspaceError(ERROR_CODES.BAD_REQUEST, "cwd contains a NUL byte");
         }
-        if (!isAbsolute(raw)) {
-            throw new WorkspaceError(ERROR_CODES.BAD_REQUEST, `cwd must be absolute: ${raw}`);
+        // `~` and `~/…` are shell shorthand the web dialog advertises; expand before
+        // the absolute-path check. `~user/…` is deliberately left alone: resolving
+        // another user's home is not something the daemon should guess at.
+        const expanded = expandTilde(raw, this.home);
+        if (expanded === undefined) {
+            throw new WorkspaceError(
+                ERROR_CODES.BAD_REQUEST,
+                `cwd must be an absolute path (or start with ~/): ~user is not expanded: ${raw}`,
+            );
+        }
+        if (!isAbsolute(expanded)) {
+            throw new WorkspaceError(ERROR_CODES.BAD_REQUEST, `cwd must be an absolute path (or start with ~/): ${raw}`);
         }
         if (input.alias !== undefined && typeof input.alias !== "string") {
             throw new WorkspaceError(ERROR_CODES.BAD_REQUEST, "alias must be a string");
@@ -154,9 +171,9 @@ class WorkspaceStore implements WorkspaceStoreHandle {
         const roots = this.allowlist();
         let real: string;
         try {
-            real = realpathSync(raw);
+            real = realpathSync(expanded);
         } catch (error) {
-            throw mapFsError(error, raw);
+            throw mapFsError(error, expanded);
         }
         // Check the canonical path: symlinks inside the allowlist must not escape it.
         this.assertAllowed(real, roots);
@@ -408,7 +425,7 @@ class WorkspaceStore implements WorkspaceStoreHandle {
         if (configured !== undefined) {
             return configured.map((root) => canonicalRoot(root)).filter((root): root is string => root.length > 0);
         }
-        return rootsFromEnv(this.env.PI2_WORKSPACE_ROOTS);
+        return rootsFromEnv(this.env.PI2_WORKSPACE_ROOTS, this.home);
     }
 
     private assertAllowed(candidate: string, roots: readonly string[]): void {

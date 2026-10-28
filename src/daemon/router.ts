@@ -261,11 +261,15 @@ export class CommandRouter {
                 const input: { cwd: string; alias?: string; trust?: boolean } = {
                     cwd: requireString(params, "cwd"),
                 };
-                const alias = optionalString(params, "alias");
+                // `name` is the web dialog's field; it is an alias when `alias` is absent.
+                // A whitespace-only value is dropped, exactly like an empty `alias`.
+                const alias = optionalString(params, "alias") ?? optionalString(params, "name");
                 if (alias !== undefined) input.alias = alias;
                 if (typeof params.trust === "boolean") input.trust = params.trust;
                 const workspace = await this.workspaces.add(input);
-                return { accepted: true, workspace };
+                // `workspace.workspaceId` is the documented location; the top-level
+                // copy saves the web client a round trip on its fallback path.
+                return { accepted: true, workspaceId: workspace.workspaceId, workspace };
             }
             case "workspace.update": {
                 const workspaceId = requireString(params, "workspaceId");

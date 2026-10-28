@@ -102,6 +102,26 @@ describe("CommandRouter", () => {
         expect(workspaces.refreshCalls).toEqual(["ws-1"]);
     });
 
+    it("accepts name as the alias when alias is absent", async () => {
+        const added = await router.dispatch({
+            method: "workspace.add",
+            params: { cwd: "/repo/named", name: "  Named  " },
+        });
+
+        expect(added.status).toBe(202);
+        expect(workspaces.addCalls).toEqual([{ cwd: "/repo/named", alias: "  Named  " }]);
+        // The response carries the id both where the protocol documents it and at
+        // the top level (the web client's shortcut).
+        expect(added.body).toMatchObject({ accepted: true, workspaceId: "ws-2", workspace: { workspaceId: "ws-2" } });
+    });
+
+    it("prefers alias over name and drops a whitespace-only name", async () => {
+        await router.dispatch({ method: "workspace.add", params: { cwd: "/repo/both", alias: "A", name: "N" } });
+        await router.dispatch({ method: "workspace.add", params: { cwd: "/repo/blank", name: "   " } });
+
+        expect(workspaces.addCalls).toEqual([{ cwd: "/repo/both", alias: "A" }, { cwd: "/repo/blank" }]);
+    });
+
     it("routes instance and system methods to the instance manager", async () => {
         const ensured = await router.dispatch({ method: "instance.ensure", params: { workspaceId: "ws-1" } });
         expect(ensured.status).toBe(202);

@@ -281,6 +281,37 @@ describe("workspace store", () => {
         }
     });
 
+    it("expands ~ and ~/… against the store's home before the allowlist check", async () => {
+        const home = join(allowRoot, "home");
+        const project = join(home, "project");
+        mkdirSync(project, { recursive: true });
+        const { store, registry } = setup({ env: { PI2_WORKSPACE_HIDE_TEMP: "0" }, home });
+
+        const root = await store.add({ cwd: "~" });
+        expect(root.workspaceId).toBe(workspaceIdForCwd(home));
+        expect(root.cwd).toBe(home);
+        expect(root.alias).toBeNull();
+
+        const child = await store.add({ cwd: "~/project", alias: "Project" });
+        expect(child.workspaceId).toBe(workspaceIdForCwd(project));
+        expect(child.cwd).toBe(project);
+        expect(child.alias).toBe("Project");
+        expect(registry.list()).toHaveLength(2);
+    });
+
+    it("rejects ~user/… and names the accepted forms in the message", async () => {
+        const { store } = setup({ home: allowRoot });
+
+        await expect(store.add({ cwd: "~alice/project" })).rejects.toMatchObject({
+            code: "E_BAD_REQUEST",
+            message: expect.stringContaining("cwd must be an absolute path (or start with ~/)"),
+        });
+        await expect(store.add({ cwd: "relative/project" })).rejects.toMatchObject({
+            code: "E_BAD_REQUEST",
+            message: expect.stringContaining("cwd must be an absolute path (or start with ~/)"),
+        });
+    });
+
     it("validates relative, missing and non-directory paths", async () => {
         const file = join(allowRoot, "file.txt");
         writeFileSync(file, "x");
