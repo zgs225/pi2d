@@ -174,12 +174,19 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | `PI2_WORKSPACE_HIDE_GHOSTS` | `1` | hide workspaces whose `cwd` no longer exists (session files are kept) |
 | `PI2_WORKSPACE_HIDE_OUTSIDE_ROOTS` | `0` | hide workspaces outside `PI2_WORKSPACE_ROOTS` (opt-in: hides real repos outside `$HOME`) |
 | `PI2_WORKSPACE_STALE_DAYS` | `0` (= off) | hide workspaces idle for more than `n` days (opt-in: hides real repos) |
-| `PI2_PLUGIN_DIR` | `~/.local/share/nvim/lazy/pi2.nvim` | plugin location for `pi2 doctor` |
-| `PI2_NVIM_BIN` | `nvim` | binary used for managed instances |
-| `PI2_NVIM_INIT` | – | extra `-u <init>` for managed instances |
+| `PI2_PLUGIN_DIR` | `~/.local/share/nvim/lazy/pi2.nvim` | pi2.nvim checkout: `pi2 doctor` probes it and spawned instances prepend it to `runtimepath`; a leading `~/` is expanded |
+| `PI2_NVIM_BIN` | `nvim` | nvim binary for managed instances, resolved on the **daemon's** `PATH` (read once, at daemon start) |
+| `PI2_NVIM_INIT` | – (daemon-generated init) | unset ⇒ a generated minimal init that prepends `PI2_PLUGIN_DIR`/the discovered plugin; `user` ⇒ load the user's own nvim config (no `-u`); any other value ⇒ that file via `-u` |
+| `PI2_ENSURE_TIMEOUT_MS` | `10000` | how long `instance.ensure` waits for a spawned nvim to say `hello`; expiry answers `E_INSTANCE_STARTING` |
 | `PI2_CODING_AGENT_DIR`, falling back to `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi session storage (discovery) |
 
 There is no config file: the environment *is* the configuration.
+
+A spawned instance inherits the **daemon's** environment, not your shell's, so `PATH` is the
+service's. Each spawn writes the child's stdout/stderr to
+`PI2_STATE_DIR/instances/<instanceId>.log` (`0600`, appended per start); the last lines of that
+file are folded into `instance_state.reason`, which is what the console and `pi2 status` show when
+a workspace fails to open.
 
 ### Service environment file (`~/.config/pi2/env`)
 
@@ -396,7 +403,7 @@ object `{daemon, instances, resources, health}`.
 | `nvim` | missing, or < 0.9 | version unparsable |
 | `pi` | – | not on `PATH` |
 | `curl` | – | missing → `not found on PATH (:PiWeb cannot sign the browser in automatically; pair instead)`; present but unparsable → `could not parse version of <path>` |
-| `plugin` | `lua/pi/web/bridge.lua` not found | – |
+| `plugin` | `lua/pi/web/bridge.lua` not found | bridge present but `lua/pi/host.lua` missing — the daemon cannot spawn a workspace from the console |
 | `runtime-dir` | missing | mode not `0700` |
 | `cli-token` | mode not `0600` | missing (daemon not started yet) |
 | `socket` | `d.sock` missing (and no daemon) | missing but daemon answers |
@@ -599,3 +606,17 @@ debugging.
 | `pi2 doctor` → `linger warn` | services stop at logout; `loginctl enable-linger $USER` |
 | unit points at a node path that no longer exists | mise/nvm/fnm or system Node upgrade changed the binary path; re-run `pi2 install-service --write && systemctl --user daemon-reload` |
 | Instances gone after a wifi/laptop sleep | daemon restarted: nvim reconnects automatically; check `pi2 status` |
+
+### Opening a project fails
+
+Opening a workspace from the web console spawns a headless nvim on demand, so a broken spawn is
+what a failed “open” looks like. Work the symptoms in this order:
+
+1. **`pi2 doctor` → `plugin warn`/`plugin fail`** (or a spawn error naming the plugin): install or
+   update pi2.nvim. The daemon needs `lua/pi/host.lua`; the bridge alone is not enough.
+2. **`E_INSTANCE_UNAVAILABLE … failed to spawn nvim`**: the binary is not on the daemon's `PATH`
+   (a service PATH is not your shell's). Point `PI2_NVIM_BIN` at an absolute nvim path and
+   restart the daemon.
+3. **`… did not say hello within 10000ms`** (`E_INSTANCE_STARTING`): nvim started but the plugin
+   never loaded. Read `$PI2_STATE_DIR/instances/<instanceId>.log` — `instance_state.reason`
+   quotes its tail.

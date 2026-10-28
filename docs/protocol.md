@@ -69,6 +69,10 @@ The plugin dials the daemon (`<runtime>/d.sock`), sends `hello` first.
 
 Plugin obligations:
 
+- **`hello` requires `lua/pi/host.lua`.** A daemon-spawned instance is started as
+  `nvim --headless … -u <init> -c 'lua require("pi.host").start()'`, so the host module is what
+  answers on a spawned workspace. Without it the daemon cannot start a workspace from the web
+  console (`pi2 doctor` reports `warn` when `bridgeFound` is true and `hostFound` is false).
 - **Subscribe before prompt**: the daemon calls `sub.subscribe` before forwarding a command; the plugin
   answers every new subscription with a `snapshot` (state + a tail of entries).
 - Throttle deltas: `text_delta`/`thinking_delta` coalesced to ≤30 fps (50 ms), `tool_execution_update` to 100 ms.
@@ -231,6 +235,34 @@ Routing:
 
 Idempotency: `clientRequestId` is deduplicated for 5 minutes; replays return the original `ack`.
 
+The daemon-owned write commands have fixed bodies:
+
+| Command | Params | Response |
+|---|---|---|
+| `workspace.add` | `{cwd, alias?, name?, trust?}` | `{accepted, workspaceId, workspace}` |
+| `instance.ensure` | `{workspaceId}` | `{accepted, instance}` (`InstanceState`) |
+| `instance.shutdown` | `{workspaceId, mode?}` | `{accepted, workspaceId, mode}` |
+
+`workspace.add` registers `cwd`, clears `hidden` and answers the same `WorkspaceInfo` row the list
+serves; `workspaceId` is `sha256(realpath(cwd)).slice(0,16)`. `name` is an alias for `alias` — when
+both are present `alias` wins, and a whitespace-only value of either is ignored, not stored. `cwd`
+must be an absolute path or begin with `~`/`~/`: the daemon expands exactly those two forms against
+its own home and never expands `~user/…`. Validation is ordered and each failure maps to one code:
+non-empty string, no NUL byte, absolute-or-`~` → `E_BAD_REQUEST`; `realpath` → `E_NOT_FOUND`;
+inside `PI2_WORKSPACE_ROOTS` → `E_FORBIDDEN`; a directory → `E_BAD_REQUEST`; readable, writable and
+executable → `E_FORBIDDEN`. The allowlist is applied to the canonical path, so a symlink inside the
+roots cannot escape them.
+
+`instance.ensure` is the only way the daemon starts an nvim: it **spawns on demand** and is
+idempotent per `workspaceId` (concurrent calls coalesce into one spawn). A spawn that cannot happen
+answers `E_INSTANCE_UNAVAILABLE`; one that stays silent past `PI2_ENSURE_TIMEOUT_MS` (default
+10000) answers `E_INSTANCE_STARTING`. Both are retryable and repeated failures back off, so a client
+retries rather than treating them as permanent, and `instance_state.reason` carries the failure text
+(the summary plus the tail of the instance log) to show the user.
+
+`instance.shutdown` stops the one managed instance for `workspaceId`; `mode` defaults to `drain`
+(`stop` is the abrupt form) and no session file is touched.
+
 ### 3.3 WS events
 
 Client → server: `{"type":"subscribe","payload":{"workspaceId":"ws-1"}}` (workspace scope) or
@@ -336,6 +368,11 @@ browser cmd(sessionId=s1)
 - Instances are never stopped automatically. Only `instance.shutdown` (user action, confirm in UI) stops one.
 - On disconnect the daemon marks the instance `degraded`; sessions become `interrupted` when the instance
   reports process exit, or when the instance is restarted (epoch change).
+
+Every relayed read also ensures: `workspace.query` (`sessions`, `entries`, `attention`, and
+`models` with a `workspaceId`) routes through the same `instance.ensure`, so a browser read can
+spawn nvim. `GET /api/v1/workspaces`, `GET /api/v1/sessions/recent` and the daemon-resolved
+`GET /api/v1/models` (no `workspaceId`) are the reads that never spawn.
 
 ## 6. Attention
 

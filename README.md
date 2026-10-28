@@ -129,6 +129,13 @@ pi2 --version              # print version
 
 Runtime files, ports, auth, services and troubleshooting: [docs/deployment.md](docs/deployment.md).
 
+### Open any project from the console
+
+A project can be opened straight from the web console: type any absolute path, or a `~/…` one, that
+lies inside the allowed roots (`PI2_WORKSPACE_ROOTS`, default `$HOME`) and the daemon starts a
+headless pi2.nvim host for it on demand — no `:PiWebStart` first. `:PiWeb` remains the way to hand
+the browser your *existing* nvim session.
+
 ### Neovim plugin
 
 ```lua
