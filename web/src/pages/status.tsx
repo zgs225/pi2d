@@ -73,14 +73,14 @@ export function StatusPage() {
     const pairCode = usePairCodeQuery(paired);
 
     const workspaces = workspacesQuery.data ?? [];
-    // Counters, the models probe and the task list only consider the rows the
-    // workspace-noise policy keeps in the default view: a ghost or a /tmp
-    // scratch dir must not become the "first workspace" used for `/models`.
+    // Counters and the task list only consider the rows the workspace-noise
+    // policy keeps in the default view.
     const { primary: visibleWorkspaces } = partitionWorkspaces(workspaces);
     const workspaceCount = visibleWorkspaces.length;
     const sessionCount = visibleWorkspaces.reduce((total, workspace) => total + (workspace.sessionCount || 0), 0);
-    const modelsWorkspaceId = visibleWorkspaces[0]?.workspaceId ?? null;
-    const models = useModelsQuery(modelsWorkspaceId);
+    // Models: use the bare /api/v1/models endpoint — the daemon scans ready
+    // instances without spawning, so we never get E_INSTANCE_STARTING here.
+    const models = useModelsQuery(visibleWorkspaces[0]?.workspaceId ?? null, paired);
 
     const meta = useMemo(() => readPairMeta(), []);
 
@@ -221,7 +221,9 @@ export function StatusPage() {
                 <div className="status-col">
                     <ModelsCard
                         providers={models.data?.providers ?? []}
-                        loading={Boolean(modelsWorkspaceId) && models.isPending}
+                        loading={models.isPending && models.data === undefined}
+                        pending={models.data?.pending === true}
+                        pendingReason={models.data?.pendingReason ?? null}
                         error={models.isError ? translatedError(models.error, "status.modelsError", t) : null}
                         onRetry={() => void models.refetch()}
                     />

@@ -62,6 +62,19 @@ const resourcesBody = {
     ],
     totalRssBytes: 512 * 1024 * 1024,
     physicalMemoryBytes: 2048 * 1024 * 1024,
+    system: {
+        sampledAt: Date.now(),
+        cpuPercent: 37,
+        cpuCores: 8,
+        loadAvg: [1.23, 0.98, 0.75],
+        memUsedBytes: 4 * 1024 * 1024 * 1024,
+        memTotalBytes: 16 * 1024 * 1024 * 1024,
+        memPercent: 61,
+        diskPath: "/var/lib/pi2",
+        diskUsedBytes: 82 * 1024 * 1024 * 1024,
+        diskTotalBytes: 100 * 1024 * 1024 * 1024,
+        diskPercent: 82,
+    },
     warn: true,
     reason: "rss > soft limit",
 };
@@ -242,10 +255,15 @@ describe("StatusPage", () => {
         }
         // cpu / mem / disk carry the 3px meter, uptime does not.
         expect(document.querySelectorAll(".meter")).toHaveLength(3);
-        // 512 MiB of 2 GiB RSS → the memory ratio the daemon does not send directly.
-        await waitFor(() =>
-            expect(document.querySelector('.status-tile[data-res="mem"] .tile__value')).toHaveTextContent("25%"),
-        );
+        await waitFor(() => {
+            expect(document.querySelector('.status-tile[data-res="cpu"] .tile__value')).toHaveTextContent("37%");
+            expect(document.querySelector('.status-tile[data-res="mem"] .tile__value')).toHaveTextContent("61%");
+            expect(document.querySelector('.status-tile[data-res="disk"] .tile__value')).toHaveTextContent("82%");
+        });
+        expect(document.querySelector('.status-tile[data-res="mem"] .tile__meta')).toHaveTextContent("4 GiB / 16 GiB");
+        expect(document.querySelector('.status-tile[data-res="disk"] .tile__meta')).toHaveTextContent("/var/lib/pi2");
+        expect(document.querySelector('.status-tile[data-res="cpu"] .tile__meta')).toHaveTextContent("8");
+        expect(document.querySelector('.status-tile[data-res="cpu"] .tile__meta')).toHaveTextContent("1.23");
         expect(document.querySelector('.status-tile[data-res="uptime"] .tile__value')).toHaveTextContent("2h 5m");
 
         const counts = document.querySelector(".status-counts");
@@ -255,6 +273,27 @@ describe("StatusPage", () => {
 
         // The design's "status page = 0 primary" rule.
         expect(primaries()).toHaveLength(0);
+    });
+
+    it("does not derive memory percent from RSS on old daemons", async () => {
+        mockApi(
+            apiRoutes([
+                {
+                    path: "/api/v1/resources",
+                    handler: () => ({
+                        body: {
+                            ...resourcesBody,
+                            system: undefined,
+                        },
+                    }),
+                },
+            ]),
+        );
+        await renderPage(routes(), "/status", { paired: true });
+        await screen.findByText("Server info");
+        await waitFor(() =>
+            expect(document.querySelector('.status-tile[data-res="mem"] .tile__value')).toHaveTextContent("—"),
+        );
     });
 
     it("puts info + health and models + tasks into two columns, with devices and connection full width", async () => {

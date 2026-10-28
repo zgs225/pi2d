@@ -6,9 +6,11 @@ import {
     type HealthResponse,
     type InfoResponse,
     type ModelInfo,
+    type ModelsResponse,
     type ResourcesResponse,
 } from "@/lib/api";
 import type { SessionState, TaskItem, WorkspaceInfo } from "@/lib/protocol";
+import { useConnectionStore } from "@/stores/connection";
 
 /**
  * `GET /api/v1/devices` answers a **bare array** (`auth.listDevices()`); older
@@ -31,9 +33,13 @@ export interface DevicesResponse {
     devices: DeviceEntry[];
 }
 
-export interface ModelsResponse {
-    providers: ModelInfo[];
-}
+/**
+ * `GET /api/v1/models` answer. The plugin answers `pending: true` on the first
+ * call (it kicks off `get_available_models`) and fills `providers` later, so a
+ * client must poll until `pending` is false. The BARE endpoint never spawns a
+ * Neovim — it scans ready instances only.
+ */
+export type { ModelsResponse } from "@/lib/api";
 
 /** Accept the daemon's bare device array and the legacy `{devices:[…]}` envelope. */
 export function normalizeDevices(payload: unknown): DeviceEntry[] {
@@ -46,8 +52,26 @@ export async function fetchDevices(signal?: AbortSignal): Promise<DevicesRespons
     return { devices: normalizeDevices(await apiRequest<unknown>("/api/v1/devices", { signal })) };
 }
 
-export async function fetchModels(workspaceId: string, signal?: AbortSignal): Promise<ModelsResponse> {
-    return apiRequest<ModelsResponse>(`/api/v1/models?workspaceId=${encodeURIComponent(workspaceId)}`, { signal });
+/**
+ * `GET /api/v1/models` — the BARE endpoint: no workspaceId, no spawn.
+ * Legacy tolerance: a bare array payload normalises to `{providers, pending:false}`.
+ */
+export async function fetchModels(legacyWorkspaceId?: string | null, signal?: AbortSignal): Promise<ModelsResponse> {
+    try {
+        const raw = await apiRequest<unknown>("/api/v1/models", { signal });
+        if (Array.isArray(raw)) return { providers: raw as ModelInfo[], pending: false };
+        return raw as ModelsResponse;
+    } catch (error) {
+        if (
+            legacyWorkspaceId &&
+            error instanceof Error &&
+            "code" in error &&
+            ["E_BAD_REQUEST", "E_NOT_FOUND", "E_METHOD_NOT_ALLOWED"].includes(String((error as { code?: unknown }).code))
+        ) {
+            return apiRequest<ModelsResponse>(`/api/v1/models?workspaceId=${encodeURIComponent(legacyWorkspaceId)}`, { signal });
+        }
+        throw error;
+    }
 }
 
 /**
@@ -154,6 +178,7 @@ export function useWorkspacesQuery() {
         queryKey: ["workspaces"],
         queryFn: async ({ signal }) => normalizeWorkspaces(await apiRequest<unknown>("/api/v1/workspaces", { signal })),
         staleTime: 10_000,
+        refetchInterval: () => (useConnectionStore.getState().wsState === "open" ? false : 5_000),
     });
 }
 
@@ -203,11 +228,25 @@ export function useWorkspaceSessionsQueries(workspaceIds: string[], enabled = tr
     });
 }
 
-export function useModelsQuery(workspaceId: string | null | undefined) {
+/**
+ * `GET /api/v1/models` — BARE endpoint, no workspaceId, never spawns.
+ * Polls every 1500 ms while `pending === true` (up to 12 rounds), then stops.
+ */
+export function useModelsQuery(legacyWorkspaceId?: string | null, enabled = true) {
     return useQuery<ModelsResponse>({
-        queryKey: ["models", workspaceId ?? ""],
-        queryFn: ({ signal }) => fetchModels(workspaceId ?? "", signal),
-        enabled: Boolean(workspaceId),
-        staleTime: 60_000,
+        queryKey: ["models"],
+        queryFn: ({ signal }) => fetchModels(legacyWorkspaceId, signal),
+        enabled,
+        staleTime: 30_000,
+        retry: 1,
+        refetchInterval: (query) => {
+            if (
+                query.state.data?.pending === true &&
+                (query.state.dataUpdateCount ?? 0) < 12
+            ) {
+                return 1500;
+            }
+            return false;
+        },
     });
 }

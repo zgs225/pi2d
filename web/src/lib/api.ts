@@ -257,6 +257,12 @@ export interface InfoResponse {
     /** Additive identity fields (daemon ≥ 0.2): OS label and process uptime. */
     os?: string;
     uptimeMs?: number;
+    /** Resource percentages from newer daemons (0..100). */
+    cpu?: number;
+    mem?: number;
+    disk?: number;
+    cpuCores?: number;
+    loadAvg?: [number, number, number] | null;
     /** Daemon does not send status today; resolveServerStatus() is the authority (a newer daemon may still send it as an override). */
     status?: "online" | "degraded" | "offline";
 }
@@ -289,10 +295,33 @@ export interface ModelInfo {
     models: { id: string; contextWindow: number; reasoning: boolean }[];
 }
 
+export interface ModelsResponse {
+    providers: ModelInfo[];
+    pending?: boolean;
+    workspaceId?: string | null;
+    pendingReason?: "fetching" | "no-instance" | "no-live-session";
+}
+
+export interface SystemStats {
+    sampledAt: number;
+    cpuPercent: number | null;
+    cpuCores: number;
+    loadAvg: [number, number, number] | null;
+    memUsedBytes: number;
+    memTotalBytes: number;
+    memPercent: number;
+    diskPath: string;
+    diskUsedBytes: number | null;
+    diskTotalBytes: number | null;
+    diskPercent: number | null;
+}
+
 export interface ResourcesResponse {
     instances: { workspaceId: string; instanceId: string; nvimPid: number | null; rssBytes: number | null; sessions: number; hasUI: boolean }[];
     totalRssBytes: number;
     physicalMemoryBytes: number;
+    /** Absent on daemons < 0.1.5. */
+    system?: SystemStats;
     warn: boolean;
     reason?: string;
 }
@@ -340,8 +369,6 @@ export const api = {
     devices: (signal?: AbortSignal) => request<DeviceInfo[]>("/api/v1/devices", { signal }),
     revokeDevice: (deviceId: string, signal?: AbortSignal) =>
         request<void>(`/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE", signal }),
-    models: (workspaceId: string, signal?: AbortSignal) =>
-        request<ModelInfo[]>(`/api/v1/models?workspaceId=${encodeURIComponent(workspaceId)}`, { signal }),
     resources: (signal?: AbortSignal) => request<ResourcesResponse>("/api/v1/resources", { signal }),
     diagnostics: (signal?: AbortSignal) => request<DiagnosticsResponse>("/api/v1/diagnostics", { signal }),
     command: (body: { method: string; params?: Record<string, unknown>; sessionId?: string; clientRequestId?: string }, signal?: AbortSignal) =>

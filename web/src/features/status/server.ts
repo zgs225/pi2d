@@ -204,7 +204,7 @@ export function formatBytes(bytes: number | null | undefined): string {
         value /= 1024;
         unit += 1;
     }
-    const digits = value >= 100 || unit === 0 ? 0 : value >= 10 ? 1 : 2;
+    const digits = Number.isInteger(value) || value >= 100 || unit === 0 ? 0 : value >= 10 ? 1 : 2;
     return `${value.toFixed(digits)} ${units[unit]}`;
 }
 

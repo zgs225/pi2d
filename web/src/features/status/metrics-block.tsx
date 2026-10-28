@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Icon } from "@/components/icons";
 import { RelativeTime } from "@/components/shared/relative-time";
 import type { ResourcesResponse } from "@/lib/api";
-import { formatUptime, type ServerIdentity } from "@/features/status/server";
+import { formatBytes, formatUptime, type ServerIdentity } from "@/features/status/server";
 
 import { ErrorBlock } from "./card-parts";
 
@@ -61,17 +61,18 @@ export function MetricsBlock({
     onRetry,
 }: MetricsBlockProps) {
     const { t } = useTranslation();
-    const cpu = percent(server.cpu);
-    // `/info` may not carry a memory percentage; `/resources` gives RSS and the
-    // physical total, so derive the ratio instead of showing "—".
-    const mem =
-        server.mem != null
-            ? percent(server.mem)
-            : resources && resources.physicalMemoryBytes > 0
-              ? percent((resources.totalRssBytes / resources.physicalMemoryBytes) * 100)
-              : null;
-    const disk = percent(server.disk);
+    const system = resources?.system;
+    const cpu = percent(system?.cpuPercent ?? server.cpu);
+    const mem = percent(system?.memPercent ?? server.mem);
+    const disk = percent(system?.diskPercent ?? server.disk);
     const live = t("status.live", { defaultValue: "Live" });
+    const cpuMeta = system
+        ? `${system.cpuCores} ${t("status.cores")}${system.loadAvg ? ` · ${t("status.load")} ${system.loadAvg[0].toFixed(2)}` : ""}`
+        : live;
+    const memMeta = system ? `${formatBytes(system.memUsedBytes)} / ${formatBytes(system.memTotalBytes)}` : live;
+    const diskMeta = system ? (
+        <span className="faint truncate" title={system.diskPath}>{system.diskPath}</span>
+    ) : live;
 
     const counts: Array<[string, string]> = [
         [t("status.workspaces"), String(workspaceCount)],
@@ -91,7 +92,7 @@ export function MetricsBlock({
                     <div className="tile__bar">
                         <Meter value={cpu} label="CPU" />
                     </div>
-                    <div className="tile__meta">{live}</div>
+                    <div className="tile__meta">{cpuMeta}</div>
                 </div>
 
                 <div className="tile status-tile" data-res="mem">
@@ -100,7 +101,7 @@ export function MetricsBlock({
                     <div className="tile__bar">
                         <Meter value={mem} label={t("status.memory")} />
                     </div>
-                    <div className="tile__meta">{live}</div>
+                    <div className="tile__meta">{memMeta}</div>
                 </div>
 
                 <div className="tile status-tile" data-res="disk">
@@ -109,7 +110,7 @@ export function MetricsBlock({
                     <div className="tile__bar">
                         <Meter value={disk} label={t("status.disk")} />
                     </div>
-                    <div className="tile__meta">{live}</div>
+                    <div className="tile__meta">{diskMeta}</div>
                 </div>
 
                 <div className="tile status-tile" data-res="uptime">
