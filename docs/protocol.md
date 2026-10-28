@@ -81,7 +81,7 @@ Plugin obligations:
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}` |
+| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}`; additive `cpu`, `mem`, `disk` (integer percent, each omitted when unknown), `cpuCores`, `loadAvg` |
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
@@ -91,8 +91,8 @@ Plugin obligations:
 | `POST /api/v1/pair` | **authenticated**; mints `{code, url, expiresAt, nonce, qr, bases}` |
 | `POST /api/v1/pair/redeem` | public + rate limited (`E_RATE_LIMITED`); `{code, kind, deviceName}` → `{token, device}` |
 | `GET /pair/:code` | public; `302 /connect?code=<code>&auto=1` (scanned links) |
-| `GET /api/v1/models?workspaceId=` | relayed to the instance |
-| `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice |
+| `GET /api/v1/models?workspaceId=` | `workspaceId` optional; relayed when given, daemon-resolved when omitted (below) |
+| `GET /api/v1/resources` | instances, sessions, RSS totals for the soft-limit notice; additive `system` (below) |
 | `GET /api/v1/diagnostics` | connections, event rates, slow queries, instance table |
 
 The entries read is the only query that is *about a session*. `workspaceId` from the
@@ -102,6 +102,32 @@ registry. `sessionFile` is an optional fallback for a session the receiving inst
 does not know. A session that exists but has no JSONL yet (`pi` creates the file with
 the first entry) answers an **empty page** (`{entries:[], cursor:{hasMore:false}}`),
 never an error: a new session has no history to fail on.
+
+The `system` object on `GET /api/v1/resources` is additive (absent on daemons
+older than 0.1.5, so clients must tolerate its absence) and reports **host**
+figures sampled by the daemon itself:
+
+| Field | Notes |
+|---|---|
+| `sampledAt` | epoch ms; a sample is cached ~1 s and shared across callers |
+| `cpuPercent` | integer 0–100, `null` on the first sample (it is a delta between two reads) |
+| `cpuCores` | logical core count |
+| `loadAvg` | 3-tuple `[1m, 5m, 15m]`, or `null` where the OS has no load average |
+| `memUsedBytes`, `memTotalBytes`, `memPercent` | **host** memory; `memPercent` is an integer. `totalRssBytes` stays the soft-limit input — it is instance RSS, not a host figure |
+| `diskPath` | the filesystem the sample describes: the daemon's state dir |
+| `diskUsedBytes`, `diskTotalBytes`, `diskPercent` | `diskPercent` integer, nullable; the byte counts are `null` when the stat fails |
+
+`GET /api/v1/models` no longer requires `workspaceId`. With one, the read is
+relayed as before and may spawn that workspace's instance — the chat picker's
+path. Without one, the daemon never spawns: it scans only instances with status
+`ready`, relays `workspace.query{kind:"models"}` to the best candidate
+(falling through on failure or a pending answer), and answers 200
+`{providers, pending, workspaceId, pendingReason?}` where `pendingReason` is
+`fetching` | `no-instance` | `no-live-session`. The plugin contract underneath
+is lazy: the first `workspace.query{kind:"models"}` answers
+`{providers:[], pending:true}` while a cache fills asynchronously, and an
+instance without a live `pi` session can stay pending indefinitely — clients
+must poll while `pending` and bound that polling.
 
 Workspace row (`GET /api/v1/workspaces`) — registry entry ∪ disk discovery ∪ live instance state. Every known workspace is returned; rows are never filtered, so `/workspace/<workspaceId>` deep links always resolve:
 
