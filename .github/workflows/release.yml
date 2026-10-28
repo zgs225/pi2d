@@ -176,82 +176,20 @@ jobs:
       - name: Build binary tarball
         run: bash scripts/build-binary.sh --target ${{ matrix.target }}
 
-      - name: Boot check
+      - name: Boot check (host-native)
+        if: ${{ !contains(matrix.target, 'musl') }}
+        run: sh scripts/boot-check.sh dist-bin/bin/pi2 "${GITHUB_REF_NAME#v}"
+
+      - name: Boot check (Alpine, musl artifact)
+        # Bun's musl binaries link against musl's libstdc++; the glibc runner
+        # cannot load them ("symbol not found" for std:: symbols), so musl
+        # artifacts are executed on the libc they are built for.
+        if: ${{ contains(matrix.target, 'musl') }}
         run: |
-          case "${{ matrix.target }}" in
-            *musl*)
-              ARCH="$(uname -m)"
-              [ "$ARCH" = "arm64" ] && ARCH="aarch64"
-              LOADER="/lib/ld-musl-${ARCH}.so.1"
-              if [ ! -f "$LOADER" ]; then
-                sudo apt-get update -y && sudo apt-get install -y musl
-                if [ ! -f "$LOADER" ]; then
-                  MUSL_LIB="$(find /usr/lib /lib -name 'libc.musl*' -o -name 'ld-musl*' 2>/dev/null | head -n 1)"
-                  if [ -n "$MUSL_LIB" ]; then
-                    sudo ln -s "$MUSL_LIB" "$LOADER"
-                  fi
-                fi
-              fi
-              ;;
-          esac
-
-          TMP="$(mktemp -d)"
-          export PI2_RUNTIME_DIR="$TMP/run"
-          export PI2_DATA_DIR="$TMP/data"
-          export PI2_STATE_DIR="$TMP/state"
-          mkdir -p "$PI2_RUNTIME_DIR" "$PI2_DATA_DIR" "$PI2_STATE_DIR"
-
-          dist-bin/bin/pi2 daemon --port 0 > "$TMP/stdout.log" 2> "$TMP/daemon.log" &
-          PID=$!
-          trap 'kill -TERM "$PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
-
-          for _ in $(seq 1 100); do
-            if grep -q "listening on http://" "$TMP/stdout.log" 2>/dev/null; then
-              break
-            fi
-            kill -0 "$PID" 2>/dev/null || break
-            sleep 0.1
-          done
-
-          if ! grep -q "listening on http://" "$TMP/stdout.log" 2>/dev/null; then
-            echo "daemon failed to start or emit listening line; stdout:" >&2
-            cat "$TMP/stdout.log" >&2 || true
-            echo "daemon stderr:" >&2
-            cat "$TMP/daemon.log" >&2 || true
-            exit 1
-          fi
-
-          URL="$(grep -o 'http://[^ ]*' "$TMP/stdout.log" | head -n 1)"
-          INFO="$(curl -fsS "$URL/api/v1/info")"
-
-          tag="${GITHUB_REF_NAME#v}"
-          node -e '
-            const info = JSON.parse(process.argv[1]);
-            const tag = process.argv[2];
-            const ref = process.argv[3];
-            if (info.v !== 1) {
-              console.error(`expected v: 1, got ${info.v}`);
-              process.exit(1);
-            }
-            if (info.version !== tag && info.version !== ref) {
-              console.error(`expected version ${tag} (or ${ref}), got ${info.version}`);
-              process.exit(1);
-            }
-            console.log(`Boot check ok: v=${info.v}, version=${info.version}`);
-          ' "$INFO" "$tag" "$GITHUB_REF_NAME"
-
-          kill -TERM "$PID"
-          set +e
-          wait "$PID"
-          EXIT_CODE=$?
-          set -e
-          trap - EXIT
-          rm -rf "$TMP"
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "daemon exited with code $EXIT_CODE on SIGTERM (expected 0)" >&2
-            exit 1
-          fi
+          docker run --rm \
+            -v "${{ github.workspace }}/scripts:/s:ro" \
+            -v "${{ github.workspace }}/dist-bin:/b:ro" \
+            alpine:3.20 sh -c 'apk add --no-cache libstdc++ curl >/dev/null 2>&1 && sh /s/boot-check.sh /b/bin/pi2 "${GITHUB_REF_NAME#v}"'
 
       - name: Upload binary tarball artifact
         uses: actions/upload-artifact@v4
