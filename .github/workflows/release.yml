@@ -304,6 +304,14 @@ jobs:
   packaging:
     needs: checksums
     runs-on: ubuntu-latest
+    # The two release credentials live in job-level env because GitHub does not
+    # expose the `secrets` context inside `if:` expressions (a step-level
+    # `if: secrets.X != ''` fails workflow parsing with "Unrecognized
+    # named-value: 'secrets'"). `env` *is* available in a step-level `if`, so
+    # the guards below test the mapped env vars instead.
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -329,9 +337,7 @@ jobs:
           if-no-files-found: error
 
       - name: Update Homebrew tap formula
-        if: secrets.HOMEBREW_TAP_TOKEN != ''
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           version="${GITHUB_REF_NAME#v}"
           echo "HOMEBREW_TAP_TOKEN is present; pushing formula to zgs225/homebrew-tap..."
@@ -351,9 +357,7 @@ jobs:
           fi
 
       - name: Update Arch Linux AUR package
-        if: secrets.AUR_SSH_KEY != ''
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        if: env.AUR_SSH_KEY != ''
         run: |
           version="${GITHUB_REF_NAME#v}"
           echo "AUR_SSH_KEY is present; pushing to aur@aur.archlinux.org/pi2d-bin.git..."
