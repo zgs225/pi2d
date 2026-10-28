@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { DEFAULT_HOST, DEFAULT_PORT, describeHost, loadConfig } from "../config.js";
 import { defaultStaticDir, executablePath, isBundledRuntime, runtimeDescription } from "../core/install.js";
 import { isLoopbackHost } from "../core/network.js";
-import { daemonSocketPath, runtimeDir } from "../core/paths.js";
+import { daemonSocketPath, expandTilde, runtimeDir } from "../core/paths.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
 import {
     defaultServicePaths,
@@ -71,7 +71,7 @@ export interface DoctorContext {
     nvim: BinaryProbe;
     pi: BinaryProbe;
     curl: BinaryProbe;
-    plugin: { dir: string | undefined; bridgeFound: boolean };
+    plugin: { dir: string | undefined; bridgeFound: boolean; hostFound?: boolean };
     runtime: { path: string; exists: boolean; mode: number | undefined };
     cliToken: { path: string; exists: boolean; mode: number | undefined };
     socket: { path: string; exists: boolean };
@@ -182,7 +182,16 @@ export function checkCurl(probe: BinaryProbe): DoctorCheck {
 
 export function checkPlugin(probe: DoctorContext["plugin"]): DoctorCheck {
     if (probe.bridgeFound) {
-        return { name: "plugin", status: "ok", detail: `${probe.dir ?? "pi2.nvim"} (lua/pi/web/bridge.lua)` };
+        // The daemon spawns headless hosts with `lua require("pi.host").start()`,
+        // so a plugin without `lua/pi/host.lua` cannot serve the web console.
+        if (probe.hostFound === true) {
+            return { name: "plugin", status: "ok", detail: `${probe.dir ?? "pi2.nvim"} (pi2.nvim host-capable)` };
+        }
+        return {
+            name: "plugin",
+            status: "warn",
+            detail: `pi2.nvim at ${probe.dir ?? "~/.local/share/nvim/lazy/pi2.nvim"} has no lua/pi/host.lua — update the plugin; the daemon cannot start a workspace from the web console`,
+        };
     }
     return {
         name: "plugin",
@@ -586,6 +595,13 @@ async function binaryProbe(command: string, args: readonly string[], options: Do
     return { found: true, path, version };
 }
 
+/** `PI2_PLUGIN_DIR` → plugin root; `~`/`~/…` expand against the resolved home. */
+function pluginHome(raw: string | undefined, home: string): string {
+    const configured = raw?.trim();
+    if (configured === undefined || configured === "") return join(home, ".local", "share", "nvim", "lazy", "pi2.nvim");
+    return expandTilde(configured, home) ?? configured;
+}
+
 export async function collectContext(options: DoctorOptions = {}): Promise<DoctorContext> {
     const env = options.env ?? process.env;
     const platform = options.platform ?? osPlatform();
@@ -602,8 +618,9 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
     const pi = await binaryProbe("pi", ["--version"], options, env);
     const curl = await binaryProbe("curl", ["--version"], options, env);
 
-    const pluginDir = env.PI2_PLUGIN_DIR?.trim() || join(home, ".local", "share", "nvim", "lazy", "pi2.nvim");
+    const pluginDir = pluginHome(env.PI2_PLUGIN_DIR, home);
     const bridgeFound = existsSync(join(pluginDir, "lua", "pi", "web", "bridge.lua"));
+    const hostFound = existsSync(join(pluginDir, "lua", "pi", "host.lua"));
 
     const runtimeStat = statOrUndefined(runtime);
     const cliTokenPath = join(runtime, "cli.token");
@@ -674,7 +691,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         nvim,
         pi,
         curl,
-        plugin: { dir: pluginDir, bridgeFound },
+        plugin: { dir: pluginDir, bridgeFound, hostFound },
         runtime: { path: runtime, exists: runtimeStat.exists, mode: runtimeStat.mode },
         cliToken: { path: cliTokenPath, exists: tokenStat.exists, mode: tokenStat.mode },
         socket: { path: socketPath, exists: existsSync(socketPath) },

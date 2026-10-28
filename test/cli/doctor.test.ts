@@ -8,6 +8,7 @@ import {
     checkLinger,
     checkNvim,
     checkNode,
+    checkPlugin,
     checkProtocol,
     checkUnit,
     collectContext,
@@ -34,7 +35,7 @@ function context(overrides: Partial<DoctorContext> = {}): DoctorContext {
             path: "/usr/bin/curl",
             version: "curl 8.7.1 (x86_64-pc-linux-gnu) libcurl/8.7.1 OpenSSL/3.3.1",
         },
-        plugin: { dir: "/home/u/.local/share/nvim/lazy/pi2.nvim", bridgeFound: true },
+        plugin: { dir: "/home/u/.local/share/nvim/lazy/pi2.nvim", bridgeFound: true, hostFound: true },
         runtime: { path: "/run/user/1000/pi2", exists: true, mode: 0o700 },
         cliToken: { path: "/run/user/1000/pi2/cli.token", exists: true, mode: 0o600 },
         socket: { path: "/run/user/1000/pi2/d.sock", exists: true },
@@ -96,6 +97,24 @@ describe("doctor checks (all passing)", () => {
         const report = await checks({ nodeVersion: "v18.0.0", bundled: true });
         expect(statusOf(report, "node")).toBe("ok");
         expect(report.checks.find((check) => check.name === "node")?.detail).toContain("bundled runtime, no separate node needed");
+    });
+});
+
+describe("doctor plugin check", () => {
+    it("passes only when bridge.lua and lua/pi/host.lua both exist", () => {
+        expect(checkPlugin({ dir: "/p", bridgeFound: true, hostFound: true })).toEqual({
+            name: "plugin",
+            status: "ok",
+            detail: "/p (pi2.nvim host-capable)",
+        });
+
+        const stale = checkPlugin({ dir: "/p", bridgeFound: true, hostFound: false });
+        expect(stale.status).toBe("warn");
+        expect(stale.detail).toContain("/p has no lua/pi/host.lua");
+        expect(checkPlugin({ dir: "/p", bridgeFound: true }).status).toBe("warn");
+
+        expect(checkPlugin({ dir: "/p", bridgeFound: false })).toMatchObject({ status: "fail" });
+        expect(checkPlugin({ dir: undefined, bridgeFound: false }).detail).toContain("set PI2_PLUGIN_DIR or install");
     });
 });
 
@@ -436,6 +455,15 @@ describe("doctor failure cases", () => {
         expect(report.ok).toBe(true);
     });
 
+    it("warns when the plugin lacks lua/pi/host.lua", async () => {
+        const report = await checks({
+            plugin: { dir: "/home/u/nvim/pi2.nvim", bridgeFound: true, hostFound: false },
+        });
+        expect(statusOf(report, "plugin")).toBe("warn");
+        expect(report.ok).toBe(true);
+        expect(report.checks.find((check) => check.name === "plugin")?.detail).toContain("lua/pi/host.lua");
+    });
+
     it("fails when the plugin is not installed", async () => {
         const report = await checks({ plugin: { dir: "/home/u/nvim/pi2.nvim", bridgeFound: false } });
         expect(statusOf(report, "plugin")).toBe("fail");
@@ -609,6 +637,30 @@ describe("collectContext", () => {
         // web/dist does not exist here, everything else passes.
         expect(report.ok).toBe(true);
         expect(report.checks.find((check) => check.name === "web-dist")?.status).toBe("warn");
+    });
+
+    it("expands a leading ~/ in PI2_PLUGIN_DIR", async () => {
+        const home = join(dir, "home");
+        const pluginDir = join(home, "plugins", "pi2.nvim");
+        mkdirSync(join(pluginDir, "lua", "pi", "web"), { recursive: true });
+        writeFileSync(join(pluginDir, "lua", "pi", "web", "bridge.lua"), "");
+        writeFileSync(join(pluginDir, "lua", "pi", "host.lua"), "");
+
+        const ctx = await collectContext({
+            platform: "linux",
+            home,
+            uid: 1000,
+            env: {
+                PATH: "/usr/bin",
+                PI2_PLUGIN_DIR: "~/plugins/pi2.nvim",
+                PI2_RUNTIME_DIR: join(dir, "run"),
+                PI2_STATIC_DIR: join(dir, "web"),
+            },
+            which: () => undefined,
+            run: async () => ({ ok: false, stdout: "", stderr: "not found" }),
+        });
+
+        expect(ctx.plugin).toEqual({ dir: pluginDir, bridgeFound: true, hostFound: true });
     });
 
     it("records a missing daemon as unreachable", async () => {

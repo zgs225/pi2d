@@ -46,6 +46,11 @@ Environment:
   PI2_PORT, PI2_HOST (${DEFAULT_HOST} (all interfaces)), PI2_STATIC_DIR,
   PI2_ORIGINS, PI2_RUNTIME_DIR, PI2_DATA_DIR, PI2_STATE_DIR,
   PI2_LOG_LEVEL, PI2_WORKSPACE_ROOTS, PI2_PUBLIC_URL
+Managed instances:
+  PI2_NVIM_BIN=<path>       nvim binary on the daemon's PATH (default nvim)
+  PI2_NVIM_INIT=<file>      -u <file>; "user" loads your own config; unset = generated init
+  PI2_PLUGIN_DIR=<dir>      pi2.nvim checkout the generated init prepends
+  PI2_ENSURE_TIMEOUT_MS=<n> spawn hello timeout in ms (default 10000)
 
 Runtime files ($PI2_RUNTIME_DIR):
   d.sock         plugin unix socket (nvim → daemon)
