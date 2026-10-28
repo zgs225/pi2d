@@ -15,7 +15,7 @@ Find your situation in the table below to choose the right installation command 
 | **I have Node 20+** | `npm i -g @yuez/pi2d`<br>*(or `pnpm add -g`, `bun add -g`, `mise use -g npm:@yuez/pi2d`)* | The `pi2` CLI running directly on your existing Node.js environment, updated via standard package manager commands. |
 | **no Node / old Node** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` | Standalone compiled binary in `~/.local/lib/pi2d` symlinked to `~/.local/bin/pi2`. Requires zero Node/npm dependencies and no root access. |
 | **macOS** | `brew install zgs225/tap/pi2d`<br>*(or the curl installer)* | Native Homebrew formula. Places `pi2` in `$(brew --prefix)/bin` and web assets in `$(brew --prefix)/share/pi2d/web/dist`. |
-| **Arch / EndeavourOS** | `paru -S pi2d-bin`<br>*(or `yay -S pi2d-bin`)* | Native Arch package managed by pacman. Binary in `/usr/bin/pi2`, web assets in `/usr/share/pi2d/web/dist`. |
+| **Arch / EndeavourOS / Manjaro** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(AUR `pi2d-bin` once AUR registration reopens)* | Standalone binary in `~/.local/lib/pi2d` + `~/.local/bin/pi2`. Package-manager channels are paused: the AUR is not accepting accounts, so the curl installer is the working path today. |
 | **NixOS** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(or dev checkout)* | Standalone binary in user home (`~/.local/bin/pi2`). Bun's `-musl` binaries are dynamically linked against the musl loader, so running a prebuilt binary on NixOS needs `nix-ld` (or an FHS env / `steam-run`-style wrapper). |
 | **I want it to survive reboot and logout** | `pi2 install-service --write`<br>`systemctl --user enable --now pi2.service`<br>`loginctl enable-linger $USER` | Background systemd user service (or launchd on macOS) that starts at boot and stays alive when SSH sessions disconnect. |
 | **I only want to try it** | Install via curl or npm, then run:<br>`pi2 daemon` | Foreground daemon in your current terminal. Logs stream to stdout/stderr. Stop anytime with `Ctrl-C` or `pi2 stop`. |
@@ -25,7 +25,7 @@ Find your situation in the table below to choose the right installation command 
 
 ## Install channels
 
-`pi2d` distributes through three primary channels:
+`pi2d` distributes through four primary channels:
 
 ### Channel A: Global package manager (Node >= 20)
 
@@ -106,7 +106,11 @@ brew install zgs225/tap/pi2d
 - UI Assets: `$(brew --prefix)/share/pi2d/web/dist`
 
 #### Arch Linux / Manjaro / EndeavourOS (AUR)
+
+> **AUR registration paused**: New user registration on the AUR is temporarily closed upstream (HTTP 503: "Registration on the AUR is paused while we deal with a wave of automated account creation..."). Until registration reopens and `pi2d-bin` can be submitted, the AUR channel is unavailable. Use **[Channel B: Standalone curl installer](#channel-b-standalone-curl-installer-no-node-required)** instead — it works on Arch today and `pi2 update`s with the same command.
+
 ```bash
+# (When AUR registration reopens)
 paru -S pi2d-bin
 # or:
 yay -S pi2d-bin
@@ -316,7 +320,7 @@ systemctl --user restart pi2.service
   brew update && brew upgrade pi2d
   ```
 
-- **Channel C (Arch AUR)**:
+- **Channel C (Arch AUR — when reopened)**:
   ```bash
   paru -Syu pi2d-bin
   # or:
@@ -342,7 +346,7 @@ systemctl --user restart pi2.service
   brew uninstall pi2d
   ```
 
-- **Channel C (Arch AUR)**:
+- **Channel C (Arch AUR — when reopened)**:
   ```bash
   sudo pacman -R pi2d-bin
   ```

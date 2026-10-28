@@ -50,7 +50,7 @@ To uninstall:
 curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh -s -- --uninstall
 ```
 
-### Channel C: System packages (Homebrew & AUR)
+### Channel C: System packages (Homebrew, AUR)
 
 *(Available once the release that publishes binaries has shipped)*:
 
@@ -58,7 +58,8 @@ curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh
   ```bash
   brew install zgs225/tap/pi2d
   ```
-- **Arch Linux / Manjaro / EndeavourOS (AUR):**
+- **Arch Linux / Manjaro / EndeavourOS (AUR `pi2d-bin`):**
+  *(AUR account registration is temporarily closed upstream — until it reopens, Arch users install with the [curl installer](#channel-b-standalone-curl-installer-no-node-required) above)*:
   ```bash
   paru -S pi2d-bin   # or: yay -S pi2d-bin
   ```

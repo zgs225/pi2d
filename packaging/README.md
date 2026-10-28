@@ -12,7 +12,7 @@ both the CLI launcher and the React web console.
 |---|---|---|
 | **curl installer** | Generic Linux & macOS | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` |
 | **Homebrew tap** | macOS & Linux (Homebrew) | `brew install zgs225/tap/pi2d` |
-| **Arch AUR (`-bin`)** | Arch Linux / Manjaro / EndeavourOS | `paru -S pi2d-bin` (or `yay -S pi2d-bin`) |
+| **Arch AUR (`-bin`)** | Arch Linux / Manjaro / EndeavourOS | `paru -S pi2d-bin` (when AUR registration reopens) |
 
 ### Shared Tarball Layout Contract
 
@@ -77,6 +77,13 @@ or `/usr`).
 
 ### 2. Arch Linux AUR (`pi2d-bin`)
 
+> **Note on AUR registration**: Account registration on [aur.archlinux.org](https://aur.archlinux.org) is
+> temporarily paused upstream (HTTP 503: "Registration on the AUR is paused while we deal with a
+> wave of automated account creation..."). AUR remains the intended canonical upstream channel for
+> Arch users once registration reopens. In the interim, Arch users install with the curl
+> installer (see `docs/install.md`, Channel B) — it is the only package path that works today.
+
+Once registration reopens:
 1. Register an account on [aur.archlinux.org](https://aur.archlinux.org) and add your SSH public key.
 2. Initialize the AUR package repository locally:
    ```bash
@@ -100,12 +107,13 @@ During a release (via GitHub Actions workflow when a version tag `vX.Y.Z` is pus
    ```bash
    bash scripts/update-packaging.sh --version <VERSION> --checksums dist-bin/SHA256SUMS --out build/packaging
    ```
-3. The generated `build/packaging/pi2d.rb` is committed and pushed to `Formula/pi2d.rb` in
+3. **Homebrew**: the generated `build/packaging/pi2d.rb` is committed and pushed to `Formula/pi2d.rb` in
    the `zgs225/homebrew-tap` repository.
-4. The generated `build/packaging/PKGBUILD` and `build/packaging/.SRCINFO` are committed
-   and pushed to the `pi2d-bin` AUR repository.
+4. **Arch AUR (`pi2d-bin`)**:
+   - Once AUR registration reopens, the generated `build/packaging/PKGBUILD` and
+     `build/packaging/.SRCINFO` will be committed and pushed to the `pi2d-bin` AUR repository.
 
-## Local Regeneration
+## Local Regeneration & Building
 
 You can regenerate or preview packaging files locally at any time:
 
