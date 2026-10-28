@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/dialog";
 import { KV } from "@/components/ui/kv";
 import { Spinner } from "@/components/ui/spinner";
+import { StatusDot } from "@/components/ui/status-dot";
 import { toast } from "@/components/ui/toast";
 import { ApiError, errorI18nKey } from "@/lib/api";
 import { chatCommands, runCommand } from "./commands";
 import type { ModelGroup } from "./data";
 import { withCurrentModel } from "./data";
 import { formatDuration, THINKING_LEVELS } from "./format";
+import { taskDotView } from "./session-tray";
 
 function rec(value: unknown): Record<string, unknown> | undefined {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -259,6 +261,7 @@ export function TaskOutputModal({ open, session, task, onClose, onStop }: TaskOu
     if (!task) return null;
     const status = result?.status ?? task.status;
     const running = status === "running";
+    const dot = taskDotView(status);
     const duration = result?.durationMs ?? (running ? Date.now() - task.startTime : (task.durationMs ?? 0));
     const exitCode = result?.exitCode !== undefined ? result.exitCode : (task.exitCode ?? null);
     const outputFile = result?.outputFile ?? task.outputFile;
@@ -295,7 +298,7 @@ export function TaskOutputModal({ open, session, task, onClose, onStop }: TaskOu
                 <div>
                     <KV label={t("chat.status")}>
                         <span className="row">
-                            <span className={`dot ${running ? "dot--busy" : status === "completed" ? "dot--ok" : status === "failed" ? "dot--err" : "dot--idle"}`} />
+                            <StatusDot status={dot.status} blink={dot.blink} />
                             {t(`state.${status}`)}
                         </span>
                     </KV>

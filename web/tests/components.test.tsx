@@ -66,17 +66,35 @@ describe("StatusDot", () => {
         expect(container.firstElementChild).toHaveClass("dot", expected);
     });
 
-    it("applies dot--steady modifier when steady is true", () => {
-        const { container } = render(<StatusDot status="err" steady={true} />);
-        expect(container.firstElementChild).toHaveClass("dot", "dot--err", "dot--steady");
+    it("applies the fast blink class only when blink='fast'", () => {
+        const { container } = render(<StatusDot status="err" blink="fast" />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--err", "dot--blink-fast");
+        expect(container.firstElementChild).not.toHaveClass("dot--blink-slow");
     });
 
-    it("does not apply dot--steady when steady is false or omitted", () => {
-        const { container: c1 } = render(<StatusDot status="err" steady={false} />);
-        expect(c1.firstElementChild).not.toHaveClass("dot--steady");
+    it("applies the slow blink class only when blink='slow'", () => {
+        const { container } = render(<StatusDot status="compacting" blink="slow" />);
+        expect(container.firstElementChild).toHaveClass("dot", "dot--compacting", "dot--blink-slow");
+        expect(container.firstElementChild).not.toHaveClass("dot--blink-fast");
+    });
 
-        const { container: c2 } = render(<StatusDot status="err" />);
-        expect(c2.firstElementChild).not.toHaveClass("dot--steady");
+    it("carries neither blink class when blink is omitted or null", () => {
+        const { container: c1 } = render(<StatusDot status="err" />);
+        expect(c1.firstElementChild).not.toHaveClass("dot--blink-fast");
+        expect(c1.firstElementChild).not.toHaveClass("dot--blink-slow");
+
+        const { container: c2 } = render(<StatusDot status="err" blink={null} />);
+        expect(c2.firstElementChild).not.toHaveClass("dot--blink-fast");
+        expect(c2.firstElementChild).not.toHaveClass("dot--blink-slow");
+    });
+
+    it("never encodes the blink in the colour class (a solid err dot is still dot--err)", () => {
+        // The old bug: the animation was keyed on the colour class + the wrapper.
+        const solid = render(<StatusDot status="err" />);
+        const blinking = render(<StatusDot status="err" blink="fast" />);
+        expect(solid.container.firstElementChild).toHaveClass("dot--err");
+        expect(blinking.container.firstElementChild).toHaveClass("dot--err");
+        expect(solid.container.firstElementChild).not.toHaveClass("dot--blink-fast");
     });
 
     it("applies dot--current modifier when current is true", () => {
@@ -92,14 +110,25 @@ describe("StatusDot", () => {
         expect(c2.firstElementChild).not.toHaveClass("dot--current");
     });
 
-    it("supports steady and current modifiers together", () => {
-        const { container } = render(<StatusDot status="busy" steady current />);
-        expect(container.firstElementChild).toHaveClass("dot", "dot--busy", "dot--steady", "dot--current");
+    it("composes blink, current and a custom className", () => {
+        const { container } = render(<StatusDot status="busy" blink="fast" current className="custom-dot" />);
+        expect(container.firstElementChild).toHaveClass(
+            "dot",
+            "dot--busy",
+            "dot--blink-fast",
+            "dot--current",
+            "custom-dot",
+        );
     });
 
-    it("preserves custom className alongside modifiers", () => {
-        const { container } = render(<StatusDot status="idle" steady current className="custom-dot" />);
-        expect(container.firstElementChild).toHaveClass("dot", "dot--idle", "dot--steady", "dot--current", "custom-dot");
+    it("composes a slow blink with the current marker", () => {
+        const { container } = render(<StatusDot status="compacting" blink="slow" current />);
+        expect(container.firstElementChild).toHaveClass(
+            "dot",
+            "dot--compacting",
+            "dot--blink-slow",
+            "dot--current",
+        );
     });
 
     it("exposes the state label when a title is provided", () => {

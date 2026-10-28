@@ -279,11 +279,7 @@ export function SubagentView({
                     <span className="sub-back__label">{t("chat.subview.back")}</span>
                 </button>
                 <div className="stream-title">
-                    <StatusDot
-                        status={dot.status}
-                        steady={dot.steady}
-                        title={t(`state.${subagent.status}`)}
-                    />
+                    <StatusDot status={dot.status} blink={dot.blink} title={t(`state.${subagent.status}`)} />
                     <h2 className="stream-name truncate" tabIndex={-1} title={task ? `${name} · ${task}` : name}>
                         {name}
                     </h2>

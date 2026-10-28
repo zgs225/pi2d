@@ -387,13 +387,20 @@ code, pre { font-family: var(--font-mono); font-size: 0.875em; }
 .dot--dead  { background: var(--err); }
 .dot--attention { background: var(--warn); box-shadow: 0 0 0 2px color-mix(in oklch, var(--warn) 22%, transparent); }
 .dot--exited { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted-foreground); }
+/* "You are here" (nvim `PiSessionsListCurrent`): agent blue wherever the dot is
+   mounted, so the stream-head dot and its list row cannot disagree. Scoping this
+   to `.tree-row` would leave the head's `dot--current` inert. */
+.dot--current { background: var(--info); }
 @keyframes pulse { 50% { opacity: .35; } }
 
-/* Shared blink phase driven by html[data-pi-blink-*] attributes (single window clock) */
-html[data-pi-blink-fast="dim"] .dot--busy:not(.dot--steady),
-html[data-pi-blink-fast="dim"] .dot--err:not(.dot--steady),
-html[data-pi-blink-fast="dim"] .tree-row .dot--ok { opacity: .35; }
-html[data-pi-blink-slow="dim"] .dot--compacting:not(.dot--steady) { opacity: .35; }
+/* One blink contract. The <html> attributes are the shared clock (lib/blink.ts);
+   whether a dot participates — and at which rate — is decided once, by the view
+   that renders it (`DotView.blink` → `.dot--blink-fast` / `.dot--blink-slow`).
+   Nothing here may key on a colour class or on a component wrapper: the same
+   status must blink the same in the session list, the stream head, a task row
+   or a dialog. A dot without a `dot--blink-*` class is solid. */
+html[data-pi-blink-fast="dim"] .dot--blink-fast,
+html[data-pi-blink-slow="dim"] .dot--blink-slow { opacity: .35; }
 
 .chip {
   display: inline-flex; align-items: center; gap: var(--space-2);

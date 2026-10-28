@@ -446,10 +446,8 @@
 }
 
 /* 状态圆点：由 <html> 根节点上的单一全局时钟驱动（data-pi-blink-* 属性，见 app.css 与 blink.ts），
-   不再使用每个圆点独立的 CSS animation，避免相位漂移。当前聚焦会话叠加高亮背景。 */
-.tree-row .dot--current {
-    background: var(--info);
-}
+   不再使用每个圆点独立的 CSS animation，避免相位漂移。当前会话的蓝色标记在 app.css 的
+   `.dot--current`（不按容器限定：流头圆点与列表行必须同色）。 */
 
 /* 子会话 / 子代理行：更矮、更小、灰一档；状态只由圆点表达。 */
 .tree-row--sub .tree-row__main {

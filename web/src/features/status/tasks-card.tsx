@@ -8,11 +8,14 @@ import { ErrorBlock, LoadingBlock, StatusCard, StatusEmpty } from "./card-parts"
 
 export type { StatusTask };
 
+/** `:PiTasks` (`lua/pi/ui/tasks.lua` `dot_hl`) vocabulary — the same colours the
+ *  chat tray renders through `taskDotView`; this card just never blinks (a
+ *  monitoring report has no acknowledgement gesture). */
 const TASK_DOT: Record<string, DotStatus> = {
     running: "busy",
     completed: "ok",
     failed: "err",
-    stopped: "exited",
+    stopped: "attention",
 };
 
 export interface TasksCardProps {

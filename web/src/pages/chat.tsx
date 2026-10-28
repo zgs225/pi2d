@@ -126,6 +126,10 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         if (!viewedSessionId || (!viewedDone && !viewedError)) return;
         useSessionsStore.getState().markSeen(viewedSessionId);
     }, [viewedSessionId, viewedDone, viewedError]);
+    // The stream head shows the same session the selected tree row does, so it
+    // renders that row's `DotView` (`viewed: true`) rather than re-deriving a
+    // colour: one session must never show two different blink rates.
+    const headDot = active ? sessionDot(active, { viewed: true }) : null;
     const history = useSessionHistory(
         active?.sessionId,
         active?.entries ?? NO_ENTRIES,
@@ -544,8 +548,13 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
                 </button>
             ) : null}
             <div className="stream-title">
-                {active ? (
-                    <StatusDot status={sessionDot(active).status} title={t(`state.${sessionStatusKey(active)}`)} />
+                {active && headDot ? (
+                    <StatusDot
+                        status={headDot.status}
+                        blink={headDot.blink}
+                        current={headDot.current}
+                        title={t(`state.${sessionStatusKey(active)}`)}
+                    />
                 ) : null}
                 <h2 className="stream-name truncate" tabIndex={-1} ref={streamNameRef}>
                     {active ? activeTitle?.text : (workspace?.name ?? t("nav.chat"))}

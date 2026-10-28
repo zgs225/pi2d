@@ -188,34 +188,55 @@ describe("session tree rows", () => {
         expect(s3Dot).toHaveClass("dot", "dot--ok");
         expect(s3Dot).not.toHaveClass("dot--current");
 
-        // 2. Child exited row renders hollow dot--exited (never dead red).
+        // 2. Child exited row renders hollow dot--exited (never dead red, never blinking).
         const c1Dot = rowMain("c1").querySelector(".dot");
         expect(c1Dot).toHaveClass("dot", "dot--exited");
         expect(c1Dot).not.toHaveClass("dot--dead");
         expect(c1Dot).not.toHaveClass("dot--current");
+        expect(c1Dot).not.toHaveClass("dot--blink-fast");
 
-        // 3. Child error row unselected renders dot--err without steady modifier.
+        // 3. Child error row unselected renders dot--err + dot--blink-fast in the list.
         const c2DotUnselected = rowMain("c2").querySelector(".dot");
-        expect(c2DotUnselected).toHaveClass("dot", "dot--err");
-        expect(c2DotUnselected).not.toHaveClass("dot--steady");
+        expect(c2DotUnselected).toHaveClass("dot", "dot--err", "dot--blink-fast");
+        expect(c2DotUnselected).not.toHaveClass("dot--blink-slow");
 
         // 4. Selected idle row renders dot--current (and dot--idle when done flag consumed).
         rerender(treeElement({ sessions, selectedId: "s2" }));
         const s2DotSelected = rowMain("s2").querySelector(".dot");
         expect(s2DotSelected).toHaveClass("dot", "dot--idle", "dot--current");
-        expect(s2DotSelected).not.toHaveClass("dot--steady");
+        // A focused idle session is solid.
+        expect(s2DotSelected).not.toHaveClass("dot--blink-fast");
+        expect(s2DotSelected).not.toHaveClass("dot--blink-slow");
 
-        // 5. Selected busy row renders dot--busy + dot--current.
+        // 5. Selected busy row renders dot--busy + dot--current and keeps blinking.
         rerender(treeElement({ sessions, selectedId: "s4" }));
         const s4DotSelected = rowMain("s4").querySelector(".dot");
         expect(s4DotSelected).toHaveClass("dot", "dot--busy", "dot--current");
-        expect(s4DotSelected).not.toHaveClass("dot--steady");
+        expect(s4DotSelected).toHaveClass("dot--blink-fast");
 
-        // 6. Selected child with error renders dot--err + dot--steady.
+        // 6. Selected child with error renders steady dot--err: viewed red is
+        //    acknowledged, so it carries NO blink class while the unselected
+        //    sibling above does.
         rerender(treeElement({ sessions, selectedId: "c2" }));
         const c2DotSelected = rowMain("c2").querySelector(".dot");
-        expect(c2DotSelected).toHaveClass("dot", "dot--err", "dot--steady");
+        expect(c2DotSelected).toHaveClass("dot", "dot--err");
+        expect(c2DotSelected).not.toHaveClass("dot--blink-fast");
+        expect(c2DotSelected).not.toHaveClass("dot--blink-slow");
         expect(c2DotSelected).not.toHaveClass("dot--current");
+
+        // 7. The regression: a `done` row blinks in the list. The old CSS keyed
+        //    the green animation on `.tree-row .dot--ok`, so it only pulsed here
+        //    and stayed solid everywhere else; the class must now be explicit.
+        const s3DotFinal = rowMain("s3").querySelector(".dot");
+        expect(s3DotFinal).toHaveClass("dot", "dot--ok");
+        expect(s3DotFinal).toHaveClass("dot--blink-fast");
+        expect(s3DotFinal).not.toHaveClass("dot--blink-slow");
+
+        // 8. An attention row never blinks (nothing to acknowledge twice).
+        const s1DotFinal = rowMain("s1").querySelector(".dot");
+        expect(s1DotFinal).toHaveClass("dot", "dot--attention");
+        expect(s1DotFinal).not.toHaveClass("dot--blink-fast");
+        expect(s1DotFinal).not.toHaveClass("dot--blink-slow");
     });
 
     it("draws child rows as a single line without a child-count badge", () => {
@@ -703,6 +724,19 @@ describe("chat session deep link", () => {
         expect(requestedUrls(fetchMock)).toContainEqual(
             expect.stringContaining("/api/v1/sessions/s2/entries"),
         );
+
+        // "One session, one blink": the stream head renders the same `DotView`
+        // as the selected tree row (`sessionDot(active, { viewed: true })`), so
+        // the colour, the blink rate and the current marker must agree. The bug
+        // was that the list blinked while the head did not (or vice versa).
+        const blinkClasses = (el: Element | null | undefined) =>
+            ["dot--blink-fast", "dot--blink-slow"].filter((cls) => el?.classList.contains(cls));
+        const headDot = streamPane().querySelector(".stream-title .dot");
+        const selectedRowDot = rowMain("s2").querySelector(".dot");
+        expect(headDot).not.toBeNull();
+        expect(headDot).toHaveClass("dot", "dot--busy", "dot--current");
+        expect(blinkClasses(headDot)).toEqual(["dot--blink-fast"]);
+        expect(blinkClasses(headDot)).toEqual(blinkClasses(selectedRowDot));
     });
 
     it("keeps the first-session fallback for the /chat index", async () => {
@@ -718,6 +752,13 @@ describe("chat session deep link", () => {
         expect(await screen.findByText("Alpha first message")).toBeInTheDocument();
         expect(screen.queryByTestId("session-not-found")).toBeNull();
         expect(streamPane().querySelector(".stream-name")).toHaveTextContent("Alpha");
+
+        // The same rule for a solid dot: an idle session is steady in the head
+        // and in the list — no wrapper may add or remove a blink.
+        const headDot = streamPane().querySelector(".stream-title .dot");
+        expect(headDot).toHaveClass("dot", "dot--idle", "dot--current");
+        expect(headDot).not.toHaveClass("dot--blink-fast");
+        expect(headDot?.className).toBe(rowMain("s1").querySelector(".dot")?.className);
     });
 
     it("renders a deep-linked hidden sub-session and offers the way back to its parent", async () => {

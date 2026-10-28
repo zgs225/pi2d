@@ -213,7 +213,7 @@ export function SessionTree({
                     aria-current={selected ? "true" : undefined}
                     onClick={() => onSelectSession(session.sessionId)}
                 >
-                    <StatusDot status={dot.status} steady={dot.steady} current={dot.current} />
+                    <StatusDot status={dot.status} blink={dot.blink} current={dot.current} />
                     {title.spinner ? <SessionTitleSpinner /> : null}
                     <span
                         className={cn(
@@ -280,7 +280,7 @@ export function SessionTree({
                     data-sub-id={subagent.id}
                     onClick={() => onSelectSubagent(session.sessionId, subagent.id)}
                 >
-                    <StatusDot status={dot.status} steady={dot.steady} />
+                    <StatusDot status={dot.status} blink={dot.blink} />
                     <span
                         className={cn(
                             "t-name truncate",

@@ -188,7 +188,7 @@ export function Telemetry({ session, subagent, entries, className }: TelemetryPr
                 data-testid="telemetry"
             >
                 <span className={cn("telemetry__state", "sub-state", tone)} data-testid="telemetry-state">
-                    <StatusDot status={dot.status} steady={dot.steady} />
+                    <StatusDot status={dot.status} blink={dot.blink} />
                     {t(`state.${subagent.status}`)}
                 </span>
                 {elapsed ? (

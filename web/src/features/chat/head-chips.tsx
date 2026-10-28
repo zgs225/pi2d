@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
+import { StatusDot } from "@/components/ui/status-dot";
 import { cn } from "@/lib/utils";
 
 import type { TrayTab } from "./store";
@@ -80,7 +81,7 @@ export function HeadChips({
             >
                 <Icon name="terminal" />
                 <span className="head-chip__label">{t("chat.tabTasks")}</span>
-                {running ? <span className="dot dot--busy" aria-hidden="true" /> : null}
+                {running ? <StatusDot status="busy" blink="fast" /> : null}
                 <span className="head-chip__count tabular">{taskCount}</span>
             </button>
         </div>

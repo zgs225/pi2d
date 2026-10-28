@@ -6,11 +6,12 @@ import { Icon } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Empty } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
-import { StatusDot, type DotStatus } from "@/components/ui/status-dot";
+import { StatusDot } from "@/components/ui/status-dot";
 import { cn } from "@/lib/utils";
 
 import { TodoList } from "./blocks";
 import { formatDuration } from "./format";
+import type { DotView } from "./session-state";
 import { subagentTitle } from "./session-title";
 import type { TrayTab } from "./store";
 
@@ -36,11 +37,19 @@ export interface SessionTrayProps {
 
 const TABS: TrayTab[] = ["todo", "tasks"];
 
-function taskDot(status: TaskItem["status"]): DotStatus {
-    if (status === "running") return "busy";
-    if (status === "completed") return "ok";
-    if (status === "failed") return "err";
-    return "idle";
+/**
+ * `:PiTasks` (`lua/pi/ui/tasks.lua` `dot_hl`) parity, shared with the
+ * task-output modal: only a *running* task blinks. A finished task is solid —
+ * a `completed` green is not an unread notification, and a `failed` red has no
+ * acknowledgement path, so blinking it would blink forever next to session dots
+ * that the user has already seen.
+ */
+export function taskDotView(status: TaskItem["status"]): DotView {
+    if (status === "running") return { status: "busy", blink: "fast" };
+    if (status === "completed") return { status: "ok" };
+    if (status === "failed") return { status: "err" };
+    if (status === "stopped") return { status: "attention" };
+    return { status: "idle" };
 }
 
 /**
@@ -274,9 +283,10 @@ export function SessionTray({
                             {tasks.map((task) => {
                                 const running = task.status === "running";
                                 const duration = running ? Date.now() - task.startTime : task.durationMs;
+                                const dot = taskDotView(task.status);
                                 return (
                                     <div key={task.id} className="task-row" data-task-id={task.id}>
-                                        <StatusDot status={taskDot(task.status)} />
+                                        <StatusDot status={dot.status} blink={dot.blink} />
                                         <button
                                             type="button"
                                             className="task-row__main"

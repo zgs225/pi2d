@@ -1,6 +1,6 @@
 import { applyEvent, createReducer, type Reducer } from "@protocol/reducer";
 import type { Entry, ModelRef, SessionEvent, SessionState, ThinkingLevel } from "@protocol/types";
-import type { DotStatus } from "@/components/ui/status-dot";
+import type { BlinkRate, DotStatus } from "@/components/ui/status-dot";
 import { normalizeTodos, projectEntries, type ProjectedEntry } from "@/lib/entry-projection";
 
 const EMPTY_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -509,12 +509,14 @@ function attentionPending(state: SessionState): boolean {
 }
 
 /**
- * A dot render decision: the base status plus the two overlay modifiers.
- * `steady` pins the dot solid, `current` paints the "you are here" overlay.
+ * A dot render decision: the colour, its blink rate and the "you are here"
+ * overlay. `blink` is the *only* place the animation is decided — the renderer
+ * never infers it from the colour class or from where the dot is mounted — and
+ * omitting it means the dot is solid.
  */
 export interface DotView {
     status: DotStatus;
-    steady?: boolean;
+    blink?: BlinkRate;
     current?: boolean;
 }
 
@@ -531,7 +533,10 @@ function withCurrent(view: DotView, state: SessionState, viewed: boolean): DotVi
     // The plugin's `markable` is a positive list: only a live session carries the
     // marker, and a `compacting` one blinks at the busy rate under it.
     if (state.status !== "idle" && state.status !== "busy" && state.status !== "compacting") return view;
-    return { current: true, status: state.status === "compacting" ? "busy" : view.status };
+    // The rate follows the painted status, so a focused compacting row blinks at
+    // the busy rate (fast) instead of half speed, exactly like the plugin.
+    if (state.status === "compacting") return { current: true, status: "busy", blink: "fast" };
+    return { ...view, current: true };
 }
 
 /**
@@ -545,11 +550,11 @@ function parentDot(state: SessionState): DotView {
     // plugin every "not running" row is `exited` (sessions.lua:75-78), which is
     // why a dead row outranks its own unread error/attention/done flags.
     if (state.status === "exited" || state.status === "interrupted") return { status: "dead" };
-    if (state.flags.error) return { status: "err" };
+    if (state.flags.error) return { status: "err", blink: "fast" };
     if (attentionPending(state)) return { status: "attention" };
-    if (state.flags.done) return { status: "ok" };
-    if (state.status === "busy") return { status: "busy" };
-    if (state.status === "compacting") return { status: "compacting" };
+    if (state.flags.done) return { status: "ok", blink: "fast" };
+    if (state.status === "busy") return { status: "busy", blink: "fast" };
+    if (state.status === "compacting") return { status: "compacting", blink: "slow" };
     return { status: "idle" };
 }
 
@@ -569,8 +574,8 @@ export function sessionDot(state: SessionState, opts: { viewed?: boolean } = {})
 function childDot(state: SessionState, viewed: boolean): DotView {
     if (state.status === "exited") return { status: "exited" };
     if (state.status === "interrupted") return { status: "dead" };
-    if (state.flags.error) return { status: "err", steady: viewed };
-    if (state.status === "busy" || state.status === "compacting") return { status: "busy" };
+    if (state.flags.error) return viewed ? { status: "err" } : { status: "err", blink: "fast" };
+    if (state.status === "busy" || state.status === "compacting") return { status: "busy", blink: "fast" };
     return { status: "idle" };
 }
 
@@ -591,12 +596,18 @@ export function subagentDot(
 ): DotView {
     switch (subagent.status) {
         case "active":
+            // A manifest entry with a live session is rendered as *that* session
+            // row, so this branch only ever sees a manifest nothing live owns (a
+            // spawn in flight, or a stale entry). The plugin colours a child by its
+            // live status (`sessions.lua` `append_child_row`) and blinks only the
+            // live busy one, so the amber is informative but must stay solid —
+            // nothing acknowledges a manifest blink and it would blink forever.
             return { status: "busy" };
         case "completed":
         case "dormant":
             return { status: "exited" };
         case "failed":
-            return { status: "err", steady: opts.viewed === true };
+            return opts.viewed === true ? { status: "err" } : { status: "err", blink: "fast" };
         case "interrupted":
             return { status: "dead" };
         default:
