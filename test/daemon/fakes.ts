@@ -65,6 +65,10 @@ export class FakeConnection implements PluginConnection {
         this.subscribed.delete(sessionId);
     }
 
+    sessionIds(): string[] {
+        return [...this.snapshots.keys()];
+    }
+
     snapshot(sessionId: string): SessionState | undefined {
         return this.snapshots.get(sessionId);
     }

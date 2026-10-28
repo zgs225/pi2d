@@ -275,6 +275,7 @@ describe("HTTP API", () => {
         expect(attention.status).toBe(200);
         const models = await fetch(`${h.url}/api/v1/models?workspaceId=ws-1`, authed());
         expect(models.status).toBe(200);
+        expect(await models.json()).toEqual(expect.objectContaining({ workspaceId: "ws-1" }));
         expect(conn.commands.some((call) => call.method === "workspace.query" && call.params?.kind === "models")).toBe(
             true,
         );
@@ -449,6 +450,25 @@ describe("HTTP API", () => {
             mem: 25,
             disk: 25,
         }));
+    });
+
+    it("resolves bare models without spawning when no instance is ready", async () => {
+        const bare = await createHarness();
+        try {
+            const bareToken = bare.createToken();
+            const response = await fetch(`${bare.url}/api/v1/models`, {
+                headers: { Authorization: `Bearer ${bareToken}` },
+            });
+            expect(response.status).toBe(200);
+            const body = (await response.json()) as Record<string, unknown>;
+            expect(body).toEqual({
+                providers: [], pending: true, workspaceId: null, pendingReason: "no-instance",
+            });
+            expect(body).not.toHaveProperty("attempted");
+            expect(bare.instances.ensureCalls).toEqual([]);
+        } finally {
+            await bare.cleanup();
+        }
     });
 
     it("redirects a scanned /pair/<code> link to the zero-input connect page", async () => {

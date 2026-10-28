@@ -1,5 +1,6 @@
 /** Hono application factory for the daemon HTTP surface. */
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname as osHostname, platform as osPlatform, release as osRelease } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
@@ -18,6 +19,7 @@ import { PairRateLimiter } from "./rate-limit.js";
 import { CommandRouter } from "./router.js";
 import { createSseHandler } from "./sse.js";
 import { serveStatic } from "./static.js";
+import { resolveModels, type ModelsCandidate } from "./models.js";
 
 type Env = { Bindings: HttpBindings };
 
@@ -318,10 +320,38 @@ export function createApp(deps: AppDeps): Hono<Env> {
 
     app.get("/api/v1/models", async (c) => {
         const workspaceId = c.req.query("workspaceId");
-        if (!workspaceId) throw DaemonError.badRequest("workspaceId is required");
-        if (!workspaces.get(workspaceId)) throw DaemonError.notFound(`unknown workspace ${workspaceId}`);
-        const ack = await router.relayWorkspaceQuery(workspaceId, "models");
-        return json(200, ack);
+        if (workspaceId) {
+            if (!workspaces.get(workspaceId)) throw DaemonError.notFound(`unknown workspace ${workspaceId}`);
+            const ack = await router.relayWorkspaceQuery(workspaceId, "models");
+            return json(200, { ...ack, workspaceId });
+        }
+        const candidates: ModelsCandidate[] = instances.instanceStates().map((state) => ({
+            workspaceId: state.workspaceId,
+            status: state.status,
+            startedAt: state.startedAt ?? 0,
+            sessions: instances.get(state.workspaceId)?.sessionIds().length ?? 0,
+        }));
+        const resolution = await resolveModels({
+            candidates,
+            query: async (ws) => {
+                const connection = instances.get(ws);
+                if (connection === undefined) {
+                    throw new DaemonError(ERROR_CODES.INSTANCE_UNAVAILABLE, `no instance for workspace ${ws}`);
+                }
+                return (await connection.command(
+                    { id: `req-${randomUUID()}`, method: "workspace.query", params: { kind: "models" } },
+                    2500,
+                )) as unknown as Record<string, unknown>;
+            },
+            log: (event, detail) => deps.logger?.debug(event, detail),
+        });
+        const { providers, pending, workspaceId: resolvedWorkspaceId, pendingReason } = resolution;
+        return c.json({
+            providers,
+            pending,
+            workspaceId: resolvedWorkspaceId,
+            ...(pendingReason === undefined ? {} : { pendingReason }),
+        });
     });
 
     app.get("/api/v1/devices", (c) => c.json(auth.listDevices()));

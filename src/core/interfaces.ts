@@ -31,6 +31,8 @@ export interface PluginConnection {
     ): Promise<{ seq?: number; disposition?: string } & Record<string, unknown>>;
     subscribe(sessionId: string): void;
     unsubscribe(sessionId: string): void;
+    /** Session IDs currently known by the plugin. */
+    sessionIds(): string[];
     /** Last snapshot received for a session (render cache, may be undefined). */
     snapshot(sessionId: string): SessionState | undefined;
     /** Last seq received for a session. */
