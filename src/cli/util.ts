@@ -1,6 +1,6 @@
 /** Small shared helpers for the `pi2` command line front end (and `pi2 daemon`). */
-import { readFileSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+import { version } from "../core/install.js";
 
 /** Bad arguments; the CLI prints the usage block and exits 2. */
 export class UsageError extends Error {
@@ -100,13 +100,7 @@ export function boolFlag(flags: Record<string, FlagValue>, name: string): boolea
 
 /** Version of the installed package (`dist/cli/*` sits two levels below it). */
 export function packageVersion(): string {
-    try {
-        const file = fileURLToPath(new URL("../../package.json", import.meta.url));
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as { version?: unknown };
-        return typeof parsed.version === "string" ? parsed.version : "0.0.0";
-    } catch {
-        return "0.0.0";
-    }
+    return version();
 }
 
 export function realpathOrSelf(path: string): string {

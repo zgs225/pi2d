@@ -5,7 +5,7 @@
   "license": "MIT",
   "description": "pi2 web console daemon (`pi2 daemon`): HTTP/WS gateway, workspace registry and instance supervisor for pi2.nvim",
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "bin": {
     "pi2": "./dist/cli/pi2.js"
@@ -39,6 +39,8 @@
     "dev": "tsx watch src/cli/pi2.ts daemon",
     "build": "tsc -p tsconfig.json",
     "build:web": "pnpm --dir web build",
+    "build:binary": "bash scripts/build-binary.sh",
+    "smoke:binary": "bash scripts/smoke-binary.sh",
     "prepack": "npm run build && npm run build:web",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

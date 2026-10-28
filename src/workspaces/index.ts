@@ -18,6 +18,7 @@ import { dataDir, realpathSafe, workspaceIdForCwd } from "../core/paths.js";
 import { ERROR_CODES } from "../protocol/errors.js";
 import type {
     InstanceState,
+    RecentSessionInfo,
     WorkspaceInfo,
     WorkspaceVisibility,
     WorkspaceVisibilityReason,
@@ -239,6 +240,43 @@ class WorkspaceStore implements WorkspaceStoreHandle {
     async ensureForCwd(cwd: string): Promise<WorkspaceInfo> {
         const record = await this.registry.ensureForCwd(cwd);
         return this.requireInfo(record.workspaceId);
+    }
+
+    /**
+     * Newest session files across every known workspace (registry ∪ discovery).
+     *
+     * Each workspace asks discovery for at most `limit` rows, so the header scan
+     * stays bounded even on a workspace with a long history. Rows are deduped by
+     * session id (two encoded directories can resolve to the same cwd) and sorted
+     * by file mtime, then header timestamp, then id for a deterministic order.
+     */
+    recentSessions(limit = 20): RecentSessionInfo[] {
+        const capped = clampLimit(limit);
+        const rows: RecentSessionInfo[] = [];
+        const seen = new Set<string>();
+        for (const workspace of this.list()) {
+            if (!workspace.cwd) continue;
+            for (const file of this.discovery.listSessions(workspace.cwd, capped)) {
+                if (file.id === "" || seen.has(file.id)) continue;
+                seen.add(file.id);
+                rows.push({
+                    sessionId: file.id,
+                    workspaceId: workspace.workspaceId,
+                    workspaceName: workspace.name,
+                    cwd: workspace.cwd,
+                    sessionFile: file.file,
+                    timestamp: file.timestamp,
+                    modified: file.modified,
+                });
+            }
+        }
+        rows.sort(
+            (a, b) =>
+                b.modified - a.modified ||
+                b.timestamp - a.timestamp ||
+                a.sessionId.localeCompare(b.sessionId),
+        );
+        return rows.slice(0, capped);
     }
 
     // ------------------------------------------------------------------
@@ -565,6 +603,12 @@ function liveCountOf(state: InstanceState): number {
         return Math.max(0, extended.liveCount);
     }
     return 0;
+}
+
+/** Keeps a user-supplied recent-session limit in a cheap, predictable range. */
+function clampLimit(limit: number): number {
+    if (!Number.isFinite(limit) || limit <= 0) return 20;
+    return Math.min(200, Math.max(1, Math.floor(limit)));
 }
 
 function mapFsError(error: unknown, path: string): WorkspaceError {

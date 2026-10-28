@@ -16,7 +16,7 @@
  * (optionally `pi2 daemon start`) to `main()`.
  */
 import { randomUUID } from "node:crypto";
-import { loadConfig, DEFAULT_PORT, type Config } from "../config.js";
+import { loadConfig, DEFAULT_HOST, DEFAULT_PORT, type Config } from "../config.js";
 import { ensureDir, runtimeDir } from "../core/paths.js";
 import type { Logger } from "../core/interfaces.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
@@ -24,7 +24,7 @@ import { createLogger } from "./logger.js";
 import { acquireLock, writeDaemonJson, type DaemonLockHandle } from "./lock.js";
 import { cliTokenPath, writeCliToken } from "./token.js";
 import { boolFlag, errorMessage, packageVersion, parseArgs, stringFlag, UsageError } from "./util.js";
-import { wireDaemon, type WiredDaemon } from "./wiring.js";
+import { wireDaemon, type StartedServer, type WiredDaemon } from "./wiring.js";
 
 /** Extra attempts when the *default* port is taken (7676 → 7677 … 7685). */
 export const DEFAULT_PORT_RETRIES = 9;
@@ -35,7 +35,7 @@ Usage: pi2 daemon [start] [options]
 
 Options:
   --port <n>         TCP port (default ${DEFAULT_PORT}; 0 = ephemeral)
-  --host <addr>      bind address (default 127.0.0.1)
+  --host <addr>      bind address (default ${DEFAULT_HOST} (all interfaces))
   --static-dir <p>   built web UI (default <repo>/web/dist)
   --force            override a live daemon.lock
   --foreground       stay in the foreground (default; kept for unit files)
@@ -43,9 +43,9 @@ Options:
   --help             print this help and exit
 
 Environment:
-  PI2_PORT, PI2_HOST, PI2_STATIC_DIR, PI2_ORIGINS, PI2_RUNTIME_DIR,
-  PI2_DATA_DIR, PI2_STATE_DIR, PI2_LOG_LEVEL, PI2_WORKSPACE_ROOTS,
-  PI2_PUBLIC_URL
+  PI2_PORT, PI2_HOST (${DEFAULT_HOST} (all interfaces)), PI2_STATIC_DIR,
+  PI2_ORIGINS, PI2_RUNTIME_DIR, PI2_DATA_DIR, PI2_STATE_DIR,
+  PI2_LOG_LEVEL, PI2_WORKSPACE_ROOTS, PI2_PUBLIC_URL
 
 Runtime files ($PI2_RUNTIME_DIR):
   d.sock         plugin unix socket (nvim → daemon)
@@ -112,10 +112,15 @@ function defaultIo(): CliIo {
     };
 }
 
+export function startupLine(host: string, port: number): string {
+    return `pi2 daemon listening on http://${host}:${port}`;
+}
+
 export interface RunDaemonOptions {
     out?: (line: string) => void;
     err?: (line: string) => void;
     logger?: Logger;
+    onStarted?: (handle: { server: StartedServer; wired: WiredDaemon; close: () => Promise<void> }) => void | Promise<void>;
 }
 
 /**
@@ -198,7 +203,7 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
         lock.update({ port: server.port });
         writeDaemonJson(lock.lock);
         // One machine-readable line; every log record goes to stderr.
-        io.out(`pi2 daemon listening on ${server.url}`);
+        io.out(startupLine(config.host, server.port));
     } catch (error) {
         io.err(`pi2: ${errorMessage(error)}`);
         lock?.release();
@@ -226,12 +231,39 @@ export async function main(argv: readonly string[], ioOptions: RunDaemonOptions 
         process.exit(0);
     };
 
+    const cleanups: (() => void)[] = [];
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-        process.once(signal, () => {
+        const handler = (): void => {
             void shutdown(signal).catch((error: unknown) => {
                 io.err(`pi2: shutdown failed: ${errorMessage(error)}`);
                 process.exit(1);
             });
+        };
+        process.once(signal, handler);
+        cleanups.push(() => process.off(signal, handler));
+    }
+
+    if (options.onStarted !== undefined && server !== undefined && wired !== undefined && lock !== undefined) {
+        const activeLock = lock;
+        const activeServer = server;
+        const activeWired = wired;
+        await options.onStarted({
+            server: activeServer,
+            wired: activeWired,
+            close: async () => {
+                for (const off of cleanups) off();
+                try {
+                    await activeServer.close();
+                } catch {
+                    // ignore
+                }
+                try {
+                    await activeWired.close();
+                } catch {
+                    // ignore
+                }
+                activeLock.release();
+            },
         });
     }
 

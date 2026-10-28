@@ -9,11 +9,7 @@ on:
 # The publish step deliberately gets no NPM_TOKEN / NODE_AUTH_TOKEN env.
 # See docs/releasing.md.
 permissions:
-  # `contents: write` is for the `softprops/action-gh-release` step below, which
-  # creates the GitHub release; with `contents: read` it fails with 403. Kept at
-  # workflow level (single job) so the release step does not need a second job
-  # with its own checkout/install/test cycle.
-  contents: write
+  contents: write # create GitHub release and upload binary assets
   id-token: write # mint the OIDC token npm exchanges for publish rights
 
 jobs:
@@ -133,3 +129,270 @@ jobs:
             `npm i -g @yuez/pi2d@${{ github.ref_name }}`
 
             Compatible pi2.nvim: protocol v1 (see `docs/protocol.md`).
+
+  binaries:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm is GA for public repositories. Running linux-arm64 and
+        # linux-arm64-musl on native ARM64 runners lets us actually execute and
+        # boot-check the artifact before publishing it (all six legs are host-native).
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: linux-x64-musl
+            runner: ubuntu-latest
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-13
+          - target: darwin-arm64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/pnpm-lock.yaml
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install deps
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir web install --frozen-lockfile
+
+      - name: Build binary tarball
+        run: bash scripts/build-binary.sh --target ${{ matrix.target }}
+
+      - name: Boot check
+        run: |
+          case "${{ matrix.target }}" in
+            *musl*)
+              ARCH="$(uname -m)"
+              [ "$ARCH" = "arm64" ] && ARCH="aarch64"
+              LOADER="/lib/ld-musl-${ARCH}.so.1"
+              if [ ! -f "$LOADER" ]; then
+                sudo apt-get update -y && sudo apt-get install -y musl
+                if [ ! -f "$LOADER" ]; then
+                  MUSL_LIB="$(find /usr/lib /lib -name 'libc.musl*' -o -name 'ld-musl*' 2>/dev/null | head -n 1)"
+                  if [ -n "$MUSL_LIB" ]; then
+                    sudo ln -s "$MUSL_LIB" "$LOADER"
+                  fi
+                fi
+              fi
+              ;;
+          esac
+
+          TMP="$(mktemp -d)"
+          export PI2_RUNTIME_DIR="$TMP/run"
+          export PI2_DATA_DIR="$TMP/data"
+          export PI2_STATE_DIR="$TMP/state"
+          mkdir -p "$PI2_RUNTIME_DIR" "$PI2_DATA_DIR" "$PI2_STATE_DIR"
+
+          dist-bin/bin/pi2 daemon --port 0 > "$TMP/stdout.log" 2> "$TMP/daemon.log" &
+          PID=$!
+          trap 'kill -TERM "$PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+          for _ in $(seq 1 100); do
+            if grep -q "listening on http://" "$TMP/stdout.log" 2>/dev/null; then
+              break
+            fi
+            kill -0 "$PID" 2>/dev/null || break
+            sleep 0.1
+          done
+
+          if ! grep -q "listening on http://" "$TMP/stdout.log" 2>/dev/null; then
+            echo "daemon failed to start or emit listening line; stdout:" >&2
+            cat "$TMP/stdout.log" >&2 || true
+            echo "daemon stderr:" >&2
+            cat "$TMP/daemon.log" >&2 || true
+            exit 1
+          fi
+
+          URL="$(grep -o 'http://[^ ]*' "$TMP/stdout.log" | head -n 1)"
+          INFO="$(curl -fsS "$URL/api/v1/info")"
+
+          tag="${GITHUB_REF_NAME#v}"
+          node -e '
+            const info = JSON.parse(process.argv[1]);
+            const tag = process.argv[2];
+            const ref = process.argv[3];
+            if (info.v !== 1) {
+              console.error(`expected v: 1, got ${info.v}`);
+              process.exit(1);
+            }
+            if (info.version !== tag && info.version !== ref) {
+              console.error(`expected version ${tag} (or ${ref}), got ${info.version}`);
+              process.exit(1);
+            }
+            console.log(`Boot check ok: v=${info.v}, version=${info.version}`);
+          ' "$INFO" "$tag" "$GITHUB_REF_NAME"
+
+          kill -TERM "$PID"
+          set +e
+          wait "$PID"
+          EXIT_CODE=$?
+          set -e
+          trap - EXIT
+          rm -rf "$TMP"
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "daemon exited with code $EXIT_CODE on SIGTERM (expected 0)" >&2
+            exit 1
+          fi
+
+      - name: Upload binary tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi2d-${{ matrix.target }}
+          path: dist-bin/pi2d-*.tar.gz
+          if-no-files-found: error
+
+  checksums:
+    needs: [publish, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pi2d-*
+          path: dist-bin
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist-bin
+          sha256sum pi2d-*.tar.gz > SHA256SUMS
+          echo "Generated SHA256SUMS:"
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+          COUNT="$(wc -l < SHA256SUMS)"
+          if [ "$COUNT" -ne 6 ]; then
+            echo "Expected 6 checksums, got $COUNT" >&2
+            exit 1
+          fi
+
+      - name: Upload SHA256SUMS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: dist-bin/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Append artifacts to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist-bin/*.tar.gz
+            dist-bin/SHA256SUMS
+
+  packaging:
+    needs: checksums
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download checksums artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+
+      - name: Render packaging manifests
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          bash scripts/update-packaging.sh \
+            --version "$tag" \
+            --checksums SHA256SUMS \
+            --out build/packaging \
+            --no-download
+
+      - name: Upload rendered packaging files
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaging
+          path: build/packaging/
+          if-no-files-found: error
+
+      - name: Update Homebrew tap formula
+        if: secrets.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "HOMEBREW_TAP_TOKEN is present; pushing formula to zgs225/homebrew-tap..."
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/zgs225/homebrew-tap.git" tap-repo
+          mkdir -p tap-repo/Formula
+          cp build/packaging/pi2d.rb tap-repo/Formula/pi2d.rb
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/pi2d.rb
+          if git diff --staged --quiet; then
+            echo "Formula/pi2d.rb is already up to date"
+          else
+            git commit -m "pi2d ${version}"
+            git push origin HEAD
+            echo "Successfully pushed Formula/pi2d.rb to zgs225/homebrew-tap"
+          fi
+
+      - name: Update Arch Linux AUR package
+        if: secrets.AUR_SSH_KEY != ''
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "AUR_SSH_KEY is present; pushing to aur@aur.archlinux.org/pi2d-bin.git..."
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur_ed25519
+          chmod 600 ~/.ssh/aur_ed25519
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_ed25519 -o StrictHostKeyChecking=accept-new"
+          git clone ssh://aur@aur.archlinux.org/pi2d-bin.git aur-repo
+          cp build/packaging/PKGBUILD build/packaging/.SRCINFO aur-repo/
+          cd aur-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --staged --quiet; then
+            echo "AUR package is already up to date"
+          else
+            git commit -m "pi2d ${version}"
+            git push origin master
+            echo "Successfully pushed to AUR pi2d-bin"
+          fi
+
+      - name: Manual packaging instructions
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping automated Homebrew tap update."
+            echo "To update manually:"
+            echo "  git clone https://github.com/zgs225/homebrew-tap.git"
+            echo "  cp <downloaded-artifact>/pi2d.rb homebrew-tap/Formula/pi2d.rb"
+            echo "  cd homebrew-tap && git add Formula/pi2d.rb && git commit -m 'pi2d ${version}' && git push origin main"
+          fi
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY not set; skipping automated AUR update."
+            echo "To update manually:"
+            echo "  git clone ssh://aur@aur.archlinux.org/pi2d-bin.git"
+            echo "  cp <downloaded-artifact>/PKGBUILD <downloaded-artifact>/.SRCINFO pi2d-bin/"
+            echo "  cd pi2d-bin && git add PKGBUILD .SRCINFO && git commit -m 'pi2d ${version}' && git push origin master"
+          fi

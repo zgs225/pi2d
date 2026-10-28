@@ -76,3 +76,76 @@ jobs:
             }
             console.log(`tarball ok: ${files.length} files`);
           '
+
+  binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/pnpm-lock.yaml
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install daemon deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Install web deps
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Build standalone binary (musl)
+        run: bash scripts/build-binary.sh --target bun-linux-x64-musl
+
+      - name: Boot check
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y musl
+          if [ ! -f /lib/ld-musl-x86_64.so.1 ]; then
+            MUSL_LIB="$(find /usr/lib /lib -name 'libc.musl*' -o -name 'ld-musl*' 2>/dev/null | head -n 1)"
+            if [ -n "$MUSL_LIB" ]; then
+              sudo ln -s "$MUSL_LIB" /lib/ld-musl-x86_64.so.1
+            fi
+          fi
+
+          TMP="$(mktemp -d)"
+          export PI2_RUNTIME_DIR="$TMP/run"
+          export PI2_DATA_DIR="$TMP/data"
+          export PI2_STATE_DIR="$TMP/state"
+          mkdir -p "$PI2_RUNTIME_DIR" "$PI2_DATA_DIR" "$PI2_STATE_DIR"
+
+          dist-bin/bin/pi2 daemon --port 0 > "$TMP/daemon.log" 2>&1 &
+          PID=$!
+          trap 'kill -TERM "$PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+          for _ in $(seq 1 50); do
+            [ -f "$PI2_RUNTIME_DIR/daemon.json" ] && break
+            kill -0 "$PID" 2>/dev/null || break
+            sleep 0.1
+          done
+
+          if [ ! -f "$PI2_RUNTIME_DIR/daemon.json" ]; then
+            echo "daemon failed to start; log:" >&2
+            cat "$TMP/daemon.log" >&2
+            exit 1
+          fi
+
+          PORT="$(node -p 'require(process.env.PI2_RUNTIME_DIR + "/daemon.json").port')"
+          STATUS="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/api/v1/info")"
+          if [ "$STATUS" != "200" ]; then
+            echo "expected HTTP 200 from /api/v1/info, got $STATUS" >&2
+            exit 1
+          fi
+
+          echo "Standalone binary boot check passed (HTTP $STATUS on port $PORT)"
+          kill -TERM "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          trap - EXIT
+          rm -rf "$TMP"

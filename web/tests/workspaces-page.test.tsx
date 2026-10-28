@@ -34,8 +34,30 @@ function routes() {
     return [
         { path: "/workspaces", component: WorkspacesPage },
         { path: "/chat", component: () => <div>Chat destination</div> },
+        { path: "/chat/$sessionId", component: () => <div>Chat session destination</div> },
         { path: "/status", component: () => <div>Status destination</div> },
     ];
+}
+
+/** The activity column's disk feed; most tests only need it to resolve empty. */
+function recentRoute(rows: unknown[] = []) {
+    return { path: "/api/v1/sessions/recent", handler: () => ({ body: { sessions: rows } }) };
+}
+
+/** One workspace's `/sessions` relay (only called for live instances). */
+function sessionsRoute(workspaceId: string, rows: unknown[] = []) {
+    return { path: `/api/v1/workspaces/${workspaceId}/sessions`, handler: () => ({ body: { sessions: rows } }) };
+}
+
+function diskSession(overrides: Record<string, unknown> & { sessionId: string; workspaceId: string }) {
+    return {
+        workspaceName: overrides.workspaceId,
+        cwd: `/work/${overrides.workspaceId}`,
+        sessionFile: `/sessions/${overrides.workspaceId}/${overrides.sessionId}.jsonl`,
+        timestamp: 1_000,
+        modified: 1_000,
+        ...overrides,
+    };
 }
 
 /** Card names are also repeated in the activity column, so wait on the cards. */
@@ -61,6 +83,7 @@ describe("WorkspacesPage", () => {
         mockApi([
             { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
             { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute(),
         ]);
 
         const { container } = await renderPage(routes(), "/workspaces", { paired: true });
@@ -108,6 +131,8 @@ describe("WorkspacesPage", () => {
                     ],
                 }),
             },
+            recentRoute(),
+            sessionsRoute("ws-a"),
         ]);
 
         const { container } = await renderPage(routes(), "/workspaces", { paired: true });
@@ -145,6 +170,7 @@ describe("WorkspacesPage", () => {
                     ],
                 }),
             },
+            recentRoute(),
         ]);
 
         const { container } = await renderPage(routes(), "/workspaces", { paired: true });
@@ -164,28 +190,89 @@ describe("WorkspacesPage", () => {
         expect(container.querySelector(".ws-context")).toBeNull();
     });
 
-    it("lists the newest workspaces in a recent-activity column", async () => {
-        const items = [1, 2, 3, 4, 5, 6].map((n) =>
-            workspace({ workspaceId: `ws-${n}`, cwd: `/work/${n}`, name: `Project ${n}`, lastActiveAt: n * 1_000 }),
-        );
+    it("lists the newest sessions across workspaces in a recent-activity column", async () => {
+        const items = [
+            workspace({ workspaceId: "ws-a", cwd: "/work/a", name: "Alpha", lastActiveAt: 1_000 }),
+            workspace({ workspaceId: "ws-b", cwd: "/work/b", name: "Bravo", lastActiveAt: 2_000 }),
+        ];
+        const rows = [
+            diskSession({ sessionId: "s-6", workspaceId: "ws-b", workspaceName: "Bravo", modified: 6_000 }),
+            diskSession({ sessionId: "s-1", workspaceId: "ws-a", workspaceName: "Alpha", modified: 1_000 }),
+            diskSession({ sessionId: "s-4", workspaceId: "ws-a", workspaceName: "Alpha", modified: 4_000 }),
+            diskSession({ sessionId: "s-2", workspaceId: "ws-b", workspaceName: "Bravo", modified: 2_000 }),
+            diskSession({ sessionId: "s-5", workspaceId: "ws-a", workspaceName: "Alpha", modified: 5_000 }),
+            diskSession({ sessionId: "s-3", workspaceId: "ws-a", workspaceName: "Alpha", modified: 3_000 }),
+        ];
         mockApi([
             { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
             { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute(rows),
         ]);
 
         await renderPage(routes(), "/workspaces", { paired: true });
-        await waitForCards(6);
+        await waitForCards(2);
 
         const activity = screen.getByTestId("workspaces-activity");
         expect(activity.tagName).toBe("ASIDE");
 
-        const rows = within(activity).getAllByTestId("workspace-activity-row");
-        // Newest first, capped at 5 (v0.1.1 §5.1).
-        expect(rows.map((row) => row.getAttribute("data-workspace-id"))).toEqual(["ws-6", "ws-5", "ws-4", "ws-3", "ws-2"]);
-        expect(rows[0]).toHaveAttribute("href", "/chat?workspace=ws-6");
+        const links = await within(activity).findAllByTestId("workspace-activity-row");
+        // Newest session first, capped at 5 (v0.1.1 §5.1), regardless of the
+        // workspace order in the grid.
+        expect(links.map((row) => row.getAttribute("data-session-id"))).toEqual(["s-6", "s-5", "s-4", "s-3", "s-2"]);
+        expect(links[0]).toHaveAttribute("href", "/chat/s-6?workspace=ws-b");
+        expect(links[0]).toHaveTextContent("Bravo");
         // Head carries the section label + the entry count (a11y name is the i18n label).
         expect(activity).toHaveAttribute("aria-label");
         expect(activity.querySelector(".ws-activity__count")).toHaveTextContent("5");
+    });
+
+    it("enriches a recent-activity row with the live session's title and status", async () => {
+        const items = [
+            workspace({
+                workspaceId: "ws-a",
+                cwd: "/work/a",
+                name: "Alpha",
+                sessionCount: 1,
+                liveCount: 1,
+                lastActiveAt: 5_000,
+                instance: {
+                    workspaceId: "ws-a",
+                    instanceId: "inst-a",
+                    status: "ready",
+                    nvimPid: 42,
+                    pluginVersion: "0.1.1",
+                    hasUI: true,
+                    attachedClients: 1,
+                    listenAddr: "127.0.0.1:7777",
+                    startedAt: 1_000,
+                },
+            }),
+        ];
+        const liveRow = {
+            sessionId: "s-live",
+            workspaceId: "ws-a",
+            name: "Refactor the console",
+            status: "busy",
+            flags: { attention: false, done: false, error: false },
+            lastActiveAt: 9_000,
+        };
+        mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute([diskSession({ sessionId: "s-live", workspaceId: "ws-a", modified: 4_000 })]),
+            sessionsRoute("ws-a", [liveRow]),
+        ]);
+
+        await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(1);
+
+        const activity = screen.getByTestId("workspaces-activity");
+        expect(await within(activity).findByText("Refactor the console")).toBeInTheDocument();
+        const [row] = within(activity).getAllByTestId("workspace-activity-row");
+        expect(row).toHaveAttribute("data-session-id", "s-live");
+        expect(row).toHaveAttribute("href", "/chat/s-live?workspace=ws-a");
+        expect(row?.querySelector(".ws-activity__ws")).toHaveTextContent("Alpha");
+        expect(row?.querySelector(".dot")).toHaveClass("dot--busy");
     });
 
     it("opens the new-workspace dialog from the empty state", async () => {
@@ -259,6 +346,7 @@ describe("WorkspacesPage", () => {
         const fetchMock = mockApi([
             { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
             { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute(),
             {
                 method: "POST",
                 path: "/api/v1/cmd",

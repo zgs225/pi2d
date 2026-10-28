@@ -11,7 +11,7 @@ import type {
     PluginConnection,
     WorkspaceStore,
 } from "../../src/core/interfaces.js";
-import type { InstanceState, SessionState, WorkspaceInfo } from "../../src/protocol/types.js";
+import type { InstanceState, RecentSessionInfo, SessionState, WorkspaceInfo } from "../../src/protocol/types.js";
 
 export interface CommandCall {
     id: string;
@@ -211,6 +211,8 @@ export class FakeWorkspaceStore implements WorkspaceStore {
     updateCalls: { workspaceId: string; patch: Record<string, unknown> }[] = [];
     removeCalls: string[] = [];
     refreshCalls: (string | undefined)[] = [];
+    /** Seeded answer for `recentSessions()`; the fake never touches disk. */
+    recentSessionRows: RecentSessionInfo[] = [];
 
     constructor(seed: WorkspaceInfo[] = []) {
         for (const workspace of seed) this.workspaces.set(workspace.workspaceId, workspace);
@@ -261,6 +263,10 @@ export class FakeWorkspaceStore implements WorkspaceStore {
 
     async ensureForCwd(cwd: string): Promise<WorkspaceInfo> {
         return this.byCwd(cwd) ?? this.add({ cwd });
+    }
+
+    recentSessions(limit = 20): RecentSessionInfo[] {
+        return this.recentSessionRows.slice(0, limit);
     }
 }
 

@@ -18,6 +18,9 @@ PI2_DATA_DIR="$TMP/data"
 PI2_STATE_DIR="$TMP/state"
 export PI2_RUNTIME_DIR PI2_DATA_DIR PI2_STATE_DIR
 export PI2_PORT=0
+# Hermetic: bind loopback (the daemon defaults to 0.0.0.0, which the unit/env
+# tests cover); an ambient PI2_HOST from the developer's shell must not leak in.
+export PI2_HOST="${PI2_HOST:-127.0.0.1}"
 export PI2_LOG_LEVEL="${PI2_LOG_LEVEL:-warn}"
 
 LOG="$TMP/pi2-daemon.log"
@@ -25,7 +28,6 @@ DAEMON_JSON="$PI2_RUNTIME_DIR/daemon.json"
 LOCK="$PI2_RUNTIME_DIR/daemon.lock"
 TOKEN_FILE="$PI2_RUNTIME_DIR/cli.token"
 BODY="$TMP/body"
-STARTED=0
 DAEMON_PID=""
 
 cleanup() {
@@ -133,9 +135,9 @@ pass "daemon.lock holds pid $DAEMON_PID"
 
 expect_json "body.protocolVersion === 1" "daemon.json protocolVersion === 1" "$DAEMON_JSON"
 
-grep -q "^pi2 daemon listening on http://127.0.0.1:$PORT$" "$TMP/stdout.log" ||
-    fail "stdout line missing: expected 'pi2 daemon listening on http://127.0.0.1:$PORT' (got: $(cat "$TMP/stdout.log"))"
-pass "stdout announced http://127.0.0.1:$PORT"
+grep -q "^pi2 daemon listening on http://$PI2_HOST:$PORT$" "$TMP/stdout.log" ||
+    fail "stdout line missing: expected 'pi2 daemon listening on http://$PI2_HOST:$PORT' (got: $(cat "$TMP/stdout.log"))"
+pass "stdout announced http://$PI2_HOST:$PORT"
 
 [[ -f "$TOKEN_FILE" ]] || fail "cli.token missing"
 TOKEN="$(tr -d '\n' <"$TOKEN_FILE")"

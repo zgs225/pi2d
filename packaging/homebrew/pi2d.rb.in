@@ -1,0 +1,44 @@
+class Pi2d < Formula
+  desc "Web console daemon for pi2.nvim"
+  homepage "https://github.com/zgs225/pi2d"
+  version "@@VERSION@@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/zgs225/pi2d/releases/download/v@@VERSION@@/pi2d-@@VERSION@@-darwin-arm64.tar.gz"
+      sha256 "@@SHA256_DARWIN_ARM64@@"
+    end
+    on_intel do
+      url "https://github.com/zgs225/pi2d/releases/download/v@@VERSION@@/pi2d-@@VERSION@@-darwin-x64.tar.gz"
+      sha256 "@@SHA256_DARWIN_X64@@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/zgs225/pi2d/releases/download/v@@VERSION@@/pi2d-@@VERSION@@-linux-arm64.tar.gz"
+      sha256 "@@SHA256_LINUX_ARM64@@"
+    end
+    on_intel do
+      url "https://github.com/zgs225/pi2d/releases/download/v@@VERSION@@/pi2d-@@VERSION@@-linux-x64.tar.gz"
+      sha256 "@@SHA256_LINUX_X64@@"
+    end
+  end
+
+  def install
+    bin.install "bin/pi2"
+    (share/"pi2d").install "share/pi2d/web"
+  end
+
+  def caveats
+    <<~EOS
+      To run pi2d as a background service:
+        pi2 install-service --write
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/pi2 --version")
+  end
+end

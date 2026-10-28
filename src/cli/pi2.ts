@@ -5,6 +5,7 @@
  *   pi2 daemon [start]     run the web-console daemon (foreground)
  *   pi2 attach [path]      attach nvim to the workspace instance (or open nvim)
  *   pi2 status [--json]    daemon, instances, resources, health
+ *   pi2 config [--json]    resolved configuration and sources
  *   pi2 doctor [--json]    environment checks
  *   pi2 pairing            create a pairing code for another device
  *   pi2 install-service    render/install a systemd user unit or LaunchAgent
@@ -46,9 +47,11 @@ import {
 } from "./service.js";
 import { diagnose, formatReport, reportToJson, type DoctorReport } from "./doctor.js";
 import { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
+import { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
 
 export { CliError } from "./util.js";
 export { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
+export { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
 
 export const USAGE = `pi2 — pi2 client
 
@@ -59,6 +62,7 @@ Usage:
   pi2 attach [path]                  attach nvim to the workspace instance, else open nvim
   pi2 status [--json]                daemon info, instances, resources, health
   pi2 open [--print] [--no-browser]  open the web console signed in (local only)
+  pi2 config [--json]                resolved configuration and sources
   pi2 doctor [--json]                environment checks
   pi2 pairing [--base <url>]         create a pairing code (URL + code + QR)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
@@ -688,6 +692,7 @@ export interface Pi2Options {
     writeFile?: (path: string, content: string) => void;
     removeFile?: (path: string) => void;
     runtime?: string;
+    env?: Record<string, string | undefined>;
     /** Injected `pi2 daemon` runner (defaults to `src/cli/daemon.ts:main`). */
     daemonMain?: (argv: readonly string[], io: { out: (line: string) => void; err: (line: string) => void }) => Promise<number>;
     stopRunner?: (options: StopOptions) => Promise<number>;
@@ -767,6 +772,30 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                     print: out,
                     printOnly: boolFlag(parsed.flags, "--print"),
                     noBrowser: boolFlag(parsed.flags, "--no-browser"),
+                });
+            }
+            case "config": {
+                let parsed;
+                try {
+                    parsed = parseArgs(rest, { booleans: ["--json", "--help"], aliases: { "-h": "--help" } });
+                } catch (error) {
+                    if (error instanceof UsageError) {
+                        throw new UsageError(error.message, CONFIG_USAGE);
+                    }
+                    throw error;
+                }
+                if (boolFlag(parsed.flags, "--help")) {
+                    out(CONFIG_USAGE);
+                    return 0;
+                }
+                if (parsed.positionals.length > 0) {
+                    throw new UsageError(`unexpected argument "${parsed.positionals[0]}"`, CONFIG_USAGE);
+                }
+                return runConfig({
+                    env: options.env ?? process.env,
+                    ...(options.platform === undefined ? {} : { platform: options.platform }),
+                    json: boolFlag(parsed.flags, "--json"),
+                    print: out,
                 });
             }
             case "doctor": {

@@ -227,6 +227,36 @@ describe("workspace disk discovery", () => {
         }
     });
 
+    it("defaults the root to PI2_CODING_AGENT_DIR/sessions, taking precedence over PI_CODING_AGENT_DIR", () => {
+        const pi2Agent = join(sandbox, "pi2-agent");
+        const pi2Sessions = join(pi2Agent, "sessions");
+        mkdirSync(pi2Sessions, { recursive: true });
+        writeSessionDir(pi2Sessions, encodedDirName(sandbox), [
+            { name: "2026-10-10T06-40-33-032Z_pi2.jsonl", cwd: sandbox, id: "pi2" },
+        ]);
+        const piAgent = join(sandbox, "pi-agent");
+        const piSessions = join(piAgent, "sessions");
+        mkdirSync(piSessions, { recursive: true });
+        writeSessionDir(piSessions, encodedDirName(sandbox), [
+            { name: "2026-10-10T06-40-33-032Z_pi.jsonl", cwd: sandbox, id: "pi" },
+        ]);
+
+        const prevPi2 = process.env.PI2_CODING_AGENT_DIR;
+        const prevPi = process.env.PI_CODING_AGENT_DIR;
+        process.env.PI2_CODING_AGENT_DIR = pi2Agent;
+        process.env.PI_CODING_AGENT_DIR = piAgent;
+        try {
+            const discovered = createDiscovery().discover();
+            expect(discovered).toHaveLength(1);
+            expect(discovered[0]?.dir).toBe(join(pi2Sessions, encodedDirName(sandbox)));
+        } finally {
+            if (prevPi2 === undefined) delete process.env.PI2_CODING_AGENT_DIR;
+            else process.env.PI2_CODING_AGENT_DIR = prevPi2;
+            if (prevPi === undefined) delete process.env.PI_CODING_AGENT_DIR;
+            else process.env.PI_CODING_AGENT_DIR = prevPi;
+        }
+    });
+
     it("ignores a vanished directory gracefully", () => {
         const dir = writeSessionDir(root, encodedDirName(sandbox), [
             { name: "2026-10-10T06-40-33-032Z_a.jsonl", cwd: sandbox, id: "a" },

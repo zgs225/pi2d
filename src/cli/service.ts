@@ -4,19 +4,41 @@
  * Pure string generation: nothing here executes a command. `--dry-run` prints
  * the rendered file, `--write` writes it (0644) and prints the enable/load
  * commands for the user to run — the CLI never talks to systemd or launchd.
+ *
+ * Supports two install shapes:
+ * 1. Bundled binary (`bun build --compile`): invokes the compiled executable directly
+ *    (`ExecStart=<execPath> daemon --foreground` or `ProgramArguments = [execPath, "daemon", "--foreground"]`).
+ * 2. Node / script: invokes node with the CLI entrypoint script
+ *    (`ExecStart=<nodePath> <scriptPath> daemon --foreground`).
+ *
+ * On systemd (Linux), the service unit supports an optional environment file
+ * (`ServicePaths.envFile`, defaulting to `-%h/.config/pi2/env`, where the leading `-`
+ * instructs systemd to ignore missing files). Setting `envFile: ""` omits the
+ * `EnvironmentFile=` directive. launchd (macOS) ignores this setting as macOS
+ * has no direct launchd equivalent for systemd environment files.
  */
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { stateDir } from "../core/paths.js";
+import { executablePath, isBundledRuntime } from "../core/install.js";
 
 export type ServicePlatform = "linux" | "darwin";
 
 export interface ServicePaths {
+    /** True when running as a compiled binary (`bun build --compile`). */
+    bundled?: boolean;
+    /** Absolute path of the running executable (`process.execPath`). */
+    execPath?: string;
     /** Absolute node binary (`process.execPath`). */
-    nodePath: string;
+    nodePath?: string;
     /** Absolute path to `dist/cli/pi2.js`. */
-    scriptPath: string;
+    scriptPath?: string;
+    /**
+     * Optional systemd environment file (defaults to `-%h/.config/pi2/env`).
+     * Set to `""` to omit `EnvironmentFile=` entirely. Ignored by launchd.
+     */
+    envFile?: string;
     /** Where logs go (plist StandardOut/ErrPath). */
     stateDir: string;
     /** Home dir; the unit file lives under it. */
@@ -44,6 +66,7 @@ export interface RenderedService {
 export const SYSTEMD_UNIT_NAME = "pi2.service";
 export const LAUNCHD_LABEL = "com.pi2.daemon";
 export const LAUNCHD_PLIST_NAME = `${LAUNCHD_LABEL}.plist`;
+export const DEFAULT_SYSTEMD_ENV_FILE = "-%h/.config/pi2/env";
 
 /** `<repo>/dist/cli/pi2.js`, resolved from either `src/cli/` or `dist/cli/`. */
 export function defaultScriptPath(): string {
@@ -52,8 +75,11 @@ export function defaultScriptPath(): string {
 
 export function defaultServicePaths(overrides: Partial<ServicePaths> = {}): ServicePaths {
     return {
+        bundled: isBundledRuntime(),
+        execPath: executablePath(),
         nodePath: process.execPath,
         scriptPath: defaultScriptPath(),
+        envFile: DEFAULT_SYSTEMD_ENV_FILE,
         stateDir: stateDir(),
         homeDir: homedir(),
         ...(process.env.XDG_CONFIG_HOME === undefined ? {} : { configHome: process.env.XDG_CONFIG_HOME }),
@@ -93,6 +119,15 @@ function environmentEntries(paths: ServicePaths): [string, string][] {
 }
 
 export function renderSystemdUnit(paths: ServicePaths): string {
+    const execStart = paths.bundled
+        ? `ExecStart=${systemdQuote(paths.execPath ?? executablePath())} daemon --foreground`
+        : `ExecStart=${systemdQuote(paths.nodePath ?? paths.execPath ?? executablePath())} ${systemdQuote(paths.scriptPath ?? defaultScriptPath())} daemon --foreground`;
+
+    const envFileLine =
+        paths.envFile !== undefined && paths.envFile !== ""
+            ? [`EnvironmentFile=${paths.envFile}`]
+            : [];
+
     const env = environmentEntries(paths).map(([key, value]) => `Environment=${key}=${systemdQuote(value)}`);
     return [
         "[Unit]",
@@ -101,7 +136,8 @@ export function renderSystemdUnit(paths: ServicePaths): string {
         "",
         "[Service]",
         "Type=simple",
-        `ExecStart=${systemdQuote(paths.nodePath)} ${systemdQuote(paths.scriptPath)} daemon --foreground`,
+        execStart,
+        ...envFileLine,
         ...env,
         "Restart=on-failure",
         "RestartSec=2",
@@ -115,6 +151,21 @@ export function renderSystemdUnit(paths: ServicePaths): string {
 }
 
 export function renderLaunchAgent(paths: ServicePaths): string {
+    const programArgs = paths.bundled
+        ? [
+              `        <string>${xmlEscape(paths.execPath ?? executablePath())}</string>`,
+              "        <string>daemon</string>",
+              "        <string>--foreground</string>",
+          ]
+        : [
+              `        <string>${xmlEscape(paths.nodePath ?? paths.execPath ?? executablePath())}</string>`,
+              `        <string>${xmlEscape(paths.scriptPath ?? defaultScriptPath())}</string>`,
+              "        <string>daemon</string>",
+              "        <string>--foreground</string>",
+          ];
+
+    // launchd has no direct equivalent for systemd's EnvironmentFile=;
+    // ServicePaths.envFile is ignored on darwin.
     const env = environmentEntries(paths);
     const envBlock =
         env.length === 0
@@ -137,10 +188,7 @@ export function renderLaunchAgent(paths: ServicePaths): string {
         `    <string>${LAUNCHD_LABEL}</string>`,
         "    <key>ProgramArguments</key>",
         "    <array>",
-        `        <string>${xmlEscape(paths.nodePath)}</string>`,
-        `        <string>${xmlEscape(paths.scriptPath)}</string>`,
-        "        <string>daemon</string>",
-        "        <string>--foreground</string>",
+        ...programArgs,
         "    </array>",
         ...envBlock,
         "    <key>RunAtLoad</key>",

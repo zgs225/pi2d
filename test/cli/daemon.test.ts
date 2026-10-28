@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_PORT_RETRIES, main, parseDaemonArgs } from "../../src/cli/daemon.js";
+import { DEFAULT_PORT_RETRIES, main, parseDaemonArgs, startupLine, USAGE } from "../../src/cli/daemon.js";
+import { DEFAULT_HOST } from "../../src/config.js";
 import { acquireLock } from "../../src/cli/lock.js";
 import { readCliToken, tokenPerms, writeCliToken } from "../../src/cli/token.js";
 import { UsageError } from "../../src/cli/util.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/types.js";
-import { clearRuntimeEnv, removeDir, setRuntimeEnv, tempDir } from "./helpers.js";
+import { clearRuntimeEnv, removeDir, setRuntimeEnv, silentLogger, tempDir } from "./helpers.js";
 
 describe("parseDaemonArgs", () => {
     it("defaults to nothing set (foreground daemon, config defaults)", () => {
@@ -52,6 +53,10 @@ describe("daemon main (non-listening paths)", () => {
         expect(out[0]?.split("\n")[0]).toBe("pi2 daemon — pi2 daemon");
         expect(out.join("\n")).toContain("Usage: pi2 daemon [start] [options]");
         expect(out.join("\n")).toContain("--static-dir");
+        expect(out.join("\n")).toContain("0.0.0.0");
+        expect(out.join("\n")).toContain("--host <addr>      bind address (default 0.0.0.0 (all interfaces))");
+        expect(out.join("\n")).toContain("PI2_HOST (0.0.0.0 (all interfaces))");
+        expect(USAGE).toContain("0.0.0.0");
     });
 
     it("prints the version for --version", async () => {
@@ -163,6 +168,76 @@ describe("daemon singleton lock vs cli.token", () => {
             expect(existsSync(tokenPath)).toBe(false);
         } finally {
             holder.release();
+        }
+    });
+});
+
+describe("daemon startup line", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = tempDir("pi2-daemon-startup-");
+        setRuntimeEnv(dir);
+        delete process.env.PI2_HOST;
+        mkdirSync(join(dir, "web"), { recursive: true });
+        writeFileSync(join(dir, "web", "index.html"), "<!doctype html><title>pi2</title>");
+    });
+
+    afterEach(() => {
+        clearRuntimeEnv();
+        delete process.env.PI2_HOST;
+        removeDir(dir);
+    });
+
+    it("formats startup line with verbatim configured host", () => {
+        const defaultLine = startupLine(DEFAULT_HOST, 7676);
+        expect(defaultLine).toMatch(/^pi2 daemon listening on http:\/\/\S+:\d+$/);
+        expect(defaultLine).toBe("pi2 daemon listening on http://0.0.0.0:7676");
+
+        const explicitLine = startupLine("127.0.0.1", 7676);
+        expect(explicitLine).toMatch(/^pi2 daemon listening on http:\/\/\S+:\d+$/);
+        expect(explicitLine).toBe("pi2 daemon listening on http://127.0.0.1:7676");
+    });
+
+    it("announces default wildcard host verbatim on start", async () => {
+        let handle: { close: () => Promise<void> } | undefined;
+        const out: string[] = [];
+        try {
+            const code = await main(["--port", "0"], {
+                out: (line) => out.push(line),
+                err: () => undefined,
+                logger: silentLogger,
+                onStarted: (h) => {
+                    handle = h;
+                },
+            });
+            expect(code).toBe(0);
+            expect(out).toHaveLength(1);
+            expect(out[0]).toMatch(/^pi2 daemon listening on http:\/\/\S+:\d+$/);
+            expect(out[0]).toMatch(/^pi2 daemon listening on http:\/\/0\.0\.0\.0:\d+$/);
+        } finally {
+            if (handle !== undefined) await handle.close();
+        }
+    });
+
+    it("announces explicit --host 127.0.0.1 verbatim on start", async () => {
+        let handle: { close: () => Promise<void> } | undefined;
+        const out: string[] = [];
+        try {
+            const code = await main(["--port", "0", "--host", "127.0.0.1"], {
+                out: (line) => out.push(line),
+                err: () => undefined,
+                logger: silentLogger,
+                onStarted: (h) => {
+                    handle = h;
+                },
+            });
+            expect(code).toBe(0);
+            expect(out).toHaveLength(1);
+            expect(out[0]).toMatch(/^pi2 daemon listening on http:\/\/\S+:\d+$/);
+            expect(out[0]).toMatch(/^pi2 daemon listening on http:\/\/127\.0\.0\.1:\d+$/);
+        } finally {
+            if (handle !== undefined) await handle.close();
         }
     });
 });

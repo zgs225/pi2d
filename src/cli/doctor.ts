@@ -6,15 +6,22 @@
  * build a context directly instead of poking at the real machine.
  */
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_HOST, DEFAULT_PORT, describeHost, loadConfig } from "../config.js";
+import { defaultStaticDir, executablePath, isBundledRuntime, runtimeDescription } from "../core/install.js";
 import { isLoopbackHost } from "../core/network.js";
 import { daemonSocketPath, runtimeDir } from "../core/paths.js";
 import { PROTOCOL_VERSION } from "../protocol/types.js";
+import {
+    defaultServicePaths,
+    launchAgentDir,
+    LAUNCHD_PLIST_NAME,
+    systemdUserDir,
+    SYSTEMD_UNIT_NAME,
+} from "./service.js";
 import { formatTable } from "./util.js";
 
 const execFileAsync = promisify(execFile);
@@ -50,9 +57,17 @@ export interface BindContext {
     publicUrl: string | null;
 }
 
+export interface UnitProbe {
+    path: string;
+    exists: boolean;
+    content?: string;
+    pathExists?: (path: string) => boolean;
+}
+
 export interface DoctorContext {
     platform: NodeJS.Platform;
     nodeVersion: string;
+    bundled?: boolean;
     nvim: BinaryProbe;
     pi: BinaryProbe;
     curl: BinaryProbe;
@@ -65,6 +80,7 @@ export interface DoctorContext {
     bind: BindContext;
     serviceManager: { name: "systemd" | "launchd"; available: boolean; detail?: string };
     linger: { checked: boolean; enabled?: boolean; detail?: string };
+    unit?: UnitProbe;
     webDist: { path: string; exists: boolean };
 }
 
@@ -98,15 +114,22 @@ export function parseCurlVersion(output: string | undefined): string | undefined
     return match?.[1];
 }
 
-export const MIN_NODE: readonly [number, number, number] = [22, 0, 0];
+export const MIN_NODE: readonly [number, number, number] = [20, 0, 0];
 export const MIN_NVIM: readonly [number, number, number] = [0, 9, 0];
 
-/** `<repo>/web/dist`, matching `loadConfig()`'s default. */
+/** Built web UI, matching `loadConfig()`'s default. */
 export function defaultWebDist(): string {
-    return fileURLToPath(new URL("../../web/dist", import.meta.url));
+    return defaultStaticDir();
 }
 
-export function checkNode(version: string): DoctorCheck {
+export function checkNode(version: string, bundled = false): DoctorCheck {
+    if (bundled) {
+        return {
+            name: "node",
+            status: "ok",
+            detail: `${runtimeDescription()} — bundled runtime, no separate node needed`,
+        };
+    }
     const parsed = parseVersion(version);
     if (parsed === undefined) return { name: "node", status: "fail", detail: `unparsable version "${version}"` };
     const ok = versionAtLeast(parsed, MIN_NODE);
@@ -252,6 +275,174 @@ export function checkLinger(probe: DoctorContext["linger"]): DoctorCheck {
     return { name: "linger", status: probe.enabled === true ? "ok" : "warn", detail };
 }
 
+export function defaultUnitPath(platform: NodeJS.Platform, home: string, configHome?: string): string {
+    const paths = defaultServicePaths({ homeDir: home, ...(configHome !== undefined ? { configHome } : {}) });
+    return platform === "darwin"
+        ? join(launchAgentDir(paths), LAUNCHD_PLIST_NAME)
+        : join(systemdUserDir(paths), SYSTEMD_UNIT_NAME);
+}
+
+export function tokenizeCommandLine(cmd: string): string[] {
+    const tokens: string[] = [];
+    let current = "";
+    let inQuote: '"' | "'" | null = null;
+    let escape = false;
+
+    for (let index = 0; index < cmd.length; index += 1) {
+        const char = cmd[index]!;
+        if (escape) {
+            current += char;
+            escape = false;
+        } else if (char === "\\") {
+            escape = true;
+        } else if (inQuote !== null) {
+            if (char === inQuote) {
+                inQuote = null;
+            } else {
+                current += char;
+            }
+        } else if (char === '"' || char === "'") {
+            inQuote = char;
+        } else if (/\s/.test(char)) {
+            if (current.length > 0) {
+                tokens.push(current);
+                current = "";
+            }
+        } else {
+            current += char;
+        }
+    }
+    if (current.length > 0) {
+        tokens.push(current);
+    }
+    return tokens;
+}
+
+export function parsePlistProgramArguments(content: string): string[] {
+    const arrayMatch = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(content);
+    if (!arrayMatch) return [];
+    const strings: string[] = [];
+    const stringRegex = /<string>([\s\S]*?)<\/string>/g;
+    let match: RegExpExecArray | null;
+    while ((match = stringRegex.exec(arrayMatch[1] ?? "")) !== null) {
+        const val = match[1];
+        if (val !== undefined) {
+            const unescaped = val
+                .replace(/&quot;/g, '"')
+                .replace(/&apos;/g, "'")
+                .replace(/&lt;/g, "<")
+                .replace(/&gt;/g, ">")
+                .replace(/&amp;/g, "&");
+            strings.push(unescaped.trim());
+        }
+    }
+    return strings;
+}
+
+export function isNodeExecutable(path: string): boolean {
+    return /(?:^|\/)node(?:\.exe)?$/.test(path);
+}
+
+export function checkUnit(
+    probe: UnitProbe | undefined,
+    bundled: boolean = isBundledRuntime(),
+    platform: NodeJS.Platform = osPlatform(),
+): DoctorCheck {
+    if (probe === undefined || !probe.exists) {
+        return {
+            name: "unit",
+            status: "ok",
+            detail: "no service unit installed (run `pi2 install-service --write` to keep the daemon running)",
+        };
+    }
+
+    let content = probe.content;
+    if (content === undefined && probe.path) {
+        try {
+            content = readFileSync(probe.path, "utf8");
+        } catch {
+            content = undefined;
+        }
+    }
+
+    if (content === undefined) {
+        return {
+            name: "unit",
+            status: "warn",
+            detail: `could not read unit file ${probe.path}; re-run \`pi2 install-service --write\``,
+        };
+    }
+
+    const isDarwin = platform === "darwin" || probe.path.endsWith(".plist") || content.includes("<plist");
+    let executable: string | undefined;
+    const pathsToCheck: string[] = [];
+
+    if (isDarwin) {
+        const args = parsePlistProgramArguments(content);
+        executable = args[0];
+        if (executable !== undefined) {
+            pathsToCheck.push(executable);
+        }
+    } else {
+        const lines = content.split("\n");
+        let lastExecStart: string | undefined;
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("ExecStart=")) {
+                const val = trimmed.slice("ExecStart=".length).trim();
+                if (val.length > 0) {
+                    lastExecStart = val;
+                }
+            }
+        }
+        if (lastExecStart !== undefined) {
+            const tokens = tokenizeCommandLine(lastExecStart);
+            const first = tokens[0]?.replace(/^[-+!@]+(?=\/)/, "");
+            if (first !== undefined && first.length > 0) {
+                executable = first;
+                for (const token of tokens) {
+                    if (token === "daemon" || token.startsWith("-")) break;
+                    pathsToCheck.push(token.replace(/^[-+!@]+(?=\/)/, ""));
+                }
+            }
+        }
+    }
+
+    if (executable === undefined || pathsToCheck.length === 0) {
+        return {
+            name: "unit",
+            status: "warn",
+            detail: `could not parse executable from ${probe.path}; re-run \`pi2 install-service --write\``,
+        };
+    }
+
+    const checkExists = probe.pathExists ?? existsSync;
+    for (const targetPath of pathsToCheck) {
+        if (!checkExists(targetPath)) {
+            return {
+                name: "unit",
+                status: "warn",
+                detail: `${targetPath} missing; re-run \`pi2 install-service --write\``,
+            };
+        }
+    }
+
+    const isNode = isNodeExecutable(executable);
+    if ((bundled && isNode) || (!bundled && !isNode)) {
+        return {
+            name: "unit",
+            status: "warn",
+            detail: "unit was rendered for a different install shape; re-run pi2 install-service --write",
+        };
+    }
+
+    return {
+        name: "unit",
+        status: "ok",
+        detail: executable,
+    };
+}
+
 export function checkWebDist(probe: DoctorContext["webDist"]): DoctorCheck {
     if (probe.exists) return { name: "web-dist", status: "ok", detail: probe.path };
     return { name: "web-dist", status: "warn", detail: `${probe.path} missing (build the web UI for the browser console)` };
@@ -273,7 +464,7 @@ export function checkProtocol(probe: DoctorContext["daemon"]): DoctorCheck {
 export function defaultProbes(ctx: DoctorContext): DoctorProbe[] {
     const isLinux = ctx.platform === "linux";
     return [
-        { name: "node", run: () => checkNode(ctx.nodeVersion) },
+        { name: "node", run: () => checkNode(ctx.nodeVersion, ctx.bundled ?? isBundledRuntime()) },
         { name: "nvim", run: () => checkNvim(ctx.nvim) },
         { name: "pi", run: () => checkPi(ctx.pi) },
         { name: "curl", run: () => checkCurl(ctx.curl) },
@@ -286,6 +477,7 @@ export function defaultProbes(ctx: DoctorContext): DoctorProbe[] {
         { name: "bind", run: () => checkBind(ctx.bind) },
         { name: "service-manager", run: () => checkServiceManager(ctx.serviceManager) },
         ...(isLinux ? [{ name: "linger", run: () => checkLinger(ctx.linger) }] : []),
+        { name: "unit", run: () => checkUnit(ctx.unit, ctx.bundled ?? isBundledRuntime(), ctx.platform) },
         { name: "web-dist", run: () => checkWebDist(ctx.webDist) },
         { name: "protocol", run: () => checkProtocol(ctx.daemon) },
     ];
@@ -337,6 +529,7 @@ export interface DoctorOptions {
     run?: RunLike;
     which?: (command: string) => string | undefined;
     now?: () => number;
+    unit?: Partial<UnitProbe>;
 }
 
 async function defaultRun(command: string, args: readonly string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
@@ -456,9 +649,28 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         }
     }
 
+    const defaultPath = defaultUnitPath(platform, home, env.XDG_CONFIG_HOME?.trim() || undefined);
+    const unitPath = options.unit?.path ?? defaultPath;
+    const unitExists = options.unit?.exists ?? existsSync(unitPath);
+    let unitContent = options.unit?.content;
+    if (unitContent === undefined && unitExists) {
+        try {
+            unitContent = readFileSync(unitPath, "utf8");
+        } catch {
+            unitContent = undefined;
+        }
+    }
+    const unit: UnitProbe = {
+        path: unitPath,
+        exists: unitExists,
+        ...(unitContent !== undefined ? { content: unitContent } : {}),
+        ...(options.unit?.pathExists !== undefined ? { pathExists: options.unit.pathExists } : {}),
+    };
+
     return {
         platform,
         nodeVersion: process.version,
+        bundled: isBundledRuntime(),
         nvim,
         pi,
         curl,
@@ -471,6 +683,7 @@ export async function collectContext(options: DoctorOptions = {}): Promise<Docto
         bind: bindContext(env, daemon.port ?? configuredPort),
         serviceManager,
         linger,
+        unit,
         webDist: { path: env.PI2_STATIC_DIR?.trim() || defaultWebDist(), exists: existsSync(env.PI2_STATIC_DIR?.trim() || defaultWebDist()) },
     };
 }

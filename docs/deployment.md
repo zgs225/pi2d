@@ -35,14 +35,18 @@ Contents
 
 | Component | Requirement | Needed for |
 |---|---|---|
-| Node | **>= 22** (`engines` field) | daemon + CLI |
+| Node | **>= 20** (`engines` field for npm install); **none** for compiled binary | daemon + CLI (npm/Node install) |
 | Neovim | **>= 0.9** | managed instances; `nvim --remote-ui` for `pi2 attach` |
 | pi CLI | any recent version | agent sessions inside nvim |
 | pi2.nvim | `lua/pi/web/bridge.lua` present | the plugin that dials the daemon |
 
-`pi2 doctor` checks all of the above (see [§8.3](#83-pi2-doctor)).
+The compiled standalone binary (`bun build --compile`) needs no Node at all and reports
+its runtime as `bundled` (e.g. `bundled bun 1.3.14`). `pi2 doctor` checks all of the above
+(see [§8.3](#83-pi2-doctor)).
 
 ## 2. Build
+
+### Node / npm package build
 
 ```bash
 pnpm install
@@ -54,8 +58,35 @@ The daemon serves the browser console from `<repo>/web/dist` (or `PI2_STATIC_DIR
 Without it `/` returns 404/SPA fallback behaviour and `/api/v1/health` reports
 `static=FAIL`; the API and `pi2` keep working.
 
-There is exactly one built binary, `dist/cli/pi2.js` (client commands **and** the
-`daemon` subcommand). It is ESM and starts with a `#!` line.
+For an npm install, there is exactly one entrypoint script, `dist/cli/pi2.js` (client
+commands **and** the `daemon` subcommand). It is ESM and starts with a `#!` line.
+
+### Compiled binary build
+
+```bash
+pnpm build:binary     # or: bash scripts/build-binary.sh
+```
+
+Produces the standalone artifact tree under `dist-bin/`:
+- `dist-bin/bin/pi2` — compiled executable (`bun build --compile`) with injected `PI2_BUILD_VERSION`
+- `dist-bin/share/pi2d/web/dist/` — web console assets
+- `dist-bin/LICENSE` — license file
+- `dist-bin/pi2d-<version>-<os>-<arch>.tar.gz` — distribution tarball containing `bin`, `share`, and `LICENSE`
+
+Cross-compilation targets (`bun-linux-x64`, `bun-linux-arm64`, `bun-linux-x64-musl`,
+`bun-linux-arm64-musl`, `bun-darwin-x64`, `bun-darwin-arm64`):
+```bash
+bash scripts/build-binary.sh --target bun-linux-x64
+```
+
+To run the whole test gate against the compiled artifact:
+```bash
+bash scripts/smoke-binary.sh   # or: pnpm smoke:binary
+```
+It asserts daemon startup on ephemeral port 0, `GET /api/v1/info`, `GET /` (HTML from
+`share/pi2d/web/dist`), `GET /api/v1/health` (`static` ok), `pi2 doctor` (bundled runtime
+reports ok, no node failure), `pi2 install-service --dry-run` (`ExecStart` contains no
+`node` or `pi2.js`), and clean `SIGTERM` cleanup.
 
 ## 3. Running the daemon
 
@@ -75,10 +106,10 @@ is no detaching mode; that is what the systemd/launchd units below rely on.
 `pi2 daemon --version` prints `pi2 <version>`, and an unknown daemon positional
 exits `2` without starting anything.
 
-Exactly one line goes to **stdout**:
+Exactly one line goes to **stdout** (the host in that line is the configured bind, so a wildcard bind prints `0.0.0.0`):
 
 ```
-pi2 daemon listening on http://127.0.0.1:7676
+pi2 daemon listening on http://0.0.0.0:7676
 ```
 
 Every log record is JSONL on **stderr** (that is what systemd/launchd capture).
@@ -89,7 +120,7 @@ Flags (`pi2 daemon [start] …`):
 | Flag | Meaning |
 |---|---|
 | `--port <n>`, `-p <n>` | TCP port; `0` = ephemeral (the real port lands in `daemon.json`) |
-| `--host <addr>` | bind address (default `127.0.0.1`) |
+| `--host <addr>` | bind address (default `0.0.0.0` (all interfaces)) |
 | `--static-dir <p>` | built web UI directory |
 | `--force`, `-f` | take the lock even if another `pi2 daemon` holds it |
 | `--foreground` | stay attached to the terminal (default; used by unit files) |
@@ -104,6 +135,25 @@ unix socket → listen (with port retry) → write `daemon.json` → print the l
 The token is rotated only by the process that owns the lock, so a rejected
 second daemon cannot invalidate the running one.
 
+### Install shape and asset resolution
+
+`pi2` runs in two shapes (see [ADR 0002](adr/0002-install-and-run.md)):
+1. **npm / Node package**: executed via Node (`node …/dist/cli/pi2.js`), where assets sit
+   next to the source tree.
+2. **Compiled single binary**: compiled via Bun (`bun build --compile`) and installed as
+   `<prefix>/bin/pi2` with assets at `<prefix>/share/pi2d/web/dist`.
+
+How `pi2` discovers its own version and web UI (`src/core/install.ts`):
+- **Version**: build-time define (`PI2_BUILD_VERSION`, injected by `scripts/build-binary.sh`)
+  → on-disk `package.json` (`../../package.json` next to `dist/cli/` for npm/dev checkout)
+  → `0.0.0` (`UNKNOWN_VERSION`).
+- **Static UI directory** (`defaultStaticDir()`): probed in order, first with `index.html` wins:
+  1. `<exe>/../share/pi2d/web/dist` — release layout: `<prefix>/bin/pi2` plus
+     `<prefix>/share/pi2d/web/dist` (what the curl installer, Homebrew tap, and AUR `-bin` package install)
+  2. `<exe>/web/dist` — portable unpacked directory (`pi2` next to its UI)
+  3. `<repo>/web/dist` — npm install or dev checkout relative to module location
+- **Environment override**: `PI2_STATIC_DIR` still wins over all candidate paths when set.
+
 ## 4. Configuration
 
 Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
@@ -114,7 +164,7 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | `PI2_HOST` | `0.0.0.0` | bind address (all interfaces); set `127.0.0.1` for a loopback-only daemon |
 | `PI2_PUBLIC_URL` | – | external base URL, e.g. `https://myhost.tail1234.ts.net` (no trailing slash) |
 | `PI2_ORIGINS` | – | **extra** CORS/Origin allowlist entries (comma separated), added to the derived origins |
-| `PI2_STATIC_DIR` | `<repo>/web/dist` | built web UI |
+| `PI2_STATIC_DIR` | install layout (`<prefix>/share/pi2d/web/dist` for a compiled binary, `web/dist` for an npm/dev checkout), resolved by `src/core/install.ts` | built web UI (`PI2_STATIC_DIR` overrides it) |
 | `PI2_RUNTIME_DIR` | Linux `$XDG_RUNTIME_DIR/pi2`, macOS `~/Library/Caches/pi2/run` | sockets, lock, tokens |
 | `PI2_DATA_DIR` | Linux `$XDG_DATA_HOME/pi2`, macOS `~/Library/Application Support/pi2` | `devices.json`, `workspaces.json` |
 | `PI2_STATE_DIR` | Linux `$XDG_STATE_HOME/pi2`, macOS `~/Library/Logs/pi2` | instance logs |
@@ -127,9 +177,29 @@ Everything is environment-driven (`src/config.ts` + `src/core/paths.ts`):
 | `PI2_PLUGIN_DIR` | `~/.local/share/nvim/lazy/pi2.nvim` | plugin location for `pi2 doctor` |
 | `PI2_NVIM_BIN` | `nvim` | binary used for managed instances |
 | `PI2_NVIM_INIT` | – | extra `-u <init>` for managed instances |
-| `PI2_CODING_AGENT_DIR` | `~/.pi/agent` | pi session storage (discovery) |
+| `PI2_CODING_AGENT_DIR`, falling back to `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi session storage (discovery) |
 
 There is no config file: the environment *is* the configuration.
+
+### Service environment file (`~/.config/pi2/env`)
+
+For background services, the systemd unit automatically includes:
+```ini
+EnvironmentFile=-%h/.config/pi2/env
+```
+The leading `-` instructs systemd to ignore the file if it does not exist (missing is fine).
+
+Example `~/.config/pi2/env`:
+```sh
+PI2_HOST=127.0.0.1
+PI2_PORT=7676
+PI2_PUBLIC_URL=https://myhost.tail1234.ts.net
+PI2_WORKSPACE_ROOTS=/home/user/Workspace,/home/user/Projects
+```
+Set permissions to `0600` (`chmod 0600 ~/.config/pi2/env`) to protect tokens or sensitive paths.
+Note that macOS `launchd` has no direct `EnvironmentFile` equivalent (`ServicePaths.envFile` is
+ignored on Darwin); configure environment variables in `launchd` via the plist's
+`EnvironmentVariables` dictionary or shell environment.
 
 ### Workspace list (noise policy)
 
@@ -224,8 +294,9 @@ overwritten on the next start.
 
 Two token kinds:
 
-1. **Device tokens** (paired phones/laptops): created by `POST /api/v1/pair`
-   (redeem) or `pair.create`; only SHA-256 hashes are stored in
+1. **Device tokens** (paired phones/laptops): created by `POST /api/v1/pair/redeem`
+   (mint is authenticated `POST /api/v1/pair`, redemption is public
+   `POST /api/v1/pair/redeem`) or `pair.create`; only SHA-256 hashes are stored in
    `PI2_DATA_DIR/devices.json`.
 2. **Local CLI token**: `PI2_RUNTIME_DIR/cli.token`, minted by `pi2 daemon` on
    each start. Any request carrying it authenticates as the synthetic device
@@ -321,7 +392,7 @@ object `{daemon, instances, resources, health}`.
 
 | Check | Fails when | Warns when |
 |---|---|---|
-| `node` | < 22 | – |
+| `node` | < 20 (npm/Node install) | – (compiled binary reports `bundled bun <ver> — bundled runtime, no separate node needed`) |
 | `nvim` | missing, or < 0.9 | version unparsable |
 | `pi` | – | not on `PATH` |
 | `curl` | – | missing → `not found on PATH (:PiWeb cannot sign the browser in automatically; pair instead)`; present but unparsable → `could not parse version of <path>` |
@@ -412,7 +483,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now pi2.service
 ```
 
-The unit is rendered with absolute paths:
+The unit is rendered with absolute paths and supports both install shapes:
 
 ```ini
 [Unit]
@@ -421,7 +492,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground
+# For a compiled binary install:
+ExecStart=/home/user/.local/lib/pi2d/bin/pi2 daemon --foreground
+# Or for an npm / Node install:
+# ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground
+EnvironmentFile=-%h/.config/pi2/env
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=2
@@ -432,16 +507,25 @@ TimeoutStopSec=15
 WantedBy=default.target
 ```
 
+The `ExecStart` line adapts automatically to how `pi2` was invoked:
+- **Compiled binary install**: `<prefix>/bin/pi2 daemon --foreground` (invokes the compiled executable directly).
+- **npm / Node install**: `<nodePath> <scriptPath> daemon --foreground` (e.g. `/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground`).
+
+The unit includes `EnvironmentFile=-%h/.config/pi2/env`, where the leading `-` tells systemd that a missing file is completely fine.
+
 `XDG_CONFIG_HOME` is honoured for the target directory. On macOS the same
 command writes `~/Library/LaunchAgents/com.pi2.daemon.plist` (`RunAtLoad`,
-`KeepAlive`, absolute node + script paths, `ProgramArguments`
-`node /repo/dist/cli/pi2.js daemon --foreground`, `StandardOutPath`/
-`StandardErrorPath` under `PI2_STATE_DIR`) and prints:
+`KeepAlive`, absolute binary or node + script paths in `ProgramArguments`,
+`StandardOutPath`/`StandardErrorPath` under `PI2_STATE_DIR`) and prints:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pi2.daemon.plist
 launchctl enable gui/$(id -u)/com.pi2.daemon
 ```
+
+Note: `launchd` on macOS has no direct equivalent for systemd's `EnvironmentFile=`.
+Environment variables on macOS must be set in the plist `EnvironmentVariables` dictionary
+or via shell environment.
 
 `uninstall-service --write` removes the file and prints the disable commands.
 For a login-less service to keep running on Linux enable linger
@@ -503,13 +587,15 @@ debugging.
 | `pi2: another pi2 daemon is running (pid …)` | a live daemon owns this runtime dir. Stop it, or `--force` |
 | `pi2: no running pi2 daemon (…/daemon.json missing)` | daemon not started, or started with a different `PI2_RUNTIME_DIR` |
 | `pi2: missing CLI token (…/cli.token)` | token deleted or daemon restarted; restart `pi2 daemon` |
+| `pi2 --version prints 0.0.0` | compiled binary built without injected version define; rebuild with `scripts/build-binary.sh` (or `pnpm build:binary`) |
 | `401 E_UNAUTHORIZED` from `curl` | send `Authorization: Bearer $(cat $PI2_RUNTIME_DIR/cli.token)` |
 | `EADDRINUSE` on an explicit port | pick another `--port` (only the default port retries) |
 | `403` with the browser console | origin not in `PI2_ORIGINS` (derived from the port) |
 | `pi2 open` → `403 console login is loopback-only` | the request came from a non-loopback address; pair the device instead |
 | `pi2 doctor` → `bind warn` | the daemon listens on a non-loopback address without TLS; that is the default posture — pair each device, or set `PI2_HOST=127.0.0.1` / `PI2_PUBLIC_URL=https://…` |
-| `health: static=FAIL` | `web/dist` missing — build the web UI or set `PI2_STATIC_DIR` |
+| `health: static=FAIL` / UI 404 | web assets not found next to binary (expected at `<exe>/../share/pi2d/web/dist`) or `<repo>/web/dist` missing — reinstall release tarball, build web UI, or set `PI2_STATIC_DIR` |
 | Browser console loads but no workspaces | no nvim with the plugin has connected yet; run `pi2 attach` in a project |
 | `pi2 doctor` → `plugin FAIL` | install pi2.nvim, or point `PI2_PLUGIN_DIR` at the checkout |
 | `pi2 doctor` → `linger warn` | services stop at logout; `loginctl enable-linger $USER` |
+| unit points at a node path that no longer exists | mise/nvm/fnm or system Node upgrade changed the binary path; re-run `pi2 install-service --write && systemctl --user daemon-reload` |
 | Instances gone after a wifi/laptop sleep | daemon restarted: nvim reconnects automatically; check `pi2 status` |

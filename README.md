@@ -16,43 +16,117 @@ Hard rules (see `docs/protocol.md`):
 
 ## Install
 
-Requirements: **Node >= 22**, **Neovim >= 0.9**, the **`pi` CLI** on `PATH`.
+The documented model is **CLI-first** ([ADR 0002](docs/adr/0002-install-and-run.md)): install the `pi2` CLI, optionally run it as a user service, and let the Neovim plugin attach as a client.
 
-You do not normally install this by hand. The pi2.nvim plugin detects a missing daemon,
-offers to install it into its own data directory (no sudo, no global `PATH` edits) and
-starts it lazily. The result is one command inside Neovim:
+Requirements: **Node >= 20** (for the npm channel; the curl installer and system packages ship bundled binaries with no Node dependency), **Neovim >= 0.9**, and the **`pi` CLI** on `PATH`.
 
-```
-:PiWeb
-```
+> **Status.** The daemon CLI, the web console and the standalone installer are ready today (`npm i -g @yuez/pi2d` and `install.sh` work today). `:PiWeb` and `:PiWebInstall` land with the next pi2.nvim release, so today the flow is `pi2 daemon` + `pi2 open` (or running the daemon as a user service).
 
-…which opens your browser already signed in, showing the current workspace.
+### Channel A: Global package manager (Node >= 20)
 
-> **Status.** The npm package, the packaged web console and the lazy-start contract are
-> ready (`npm i -g @yuez/pi2d` works today). `:PiWeb`, `:PiWebInstall` and the access-mode prompt
-> land with the next pi2.nvim release; until then use `:PiWebStart` plus a manual install.
-
-### Package managers (optional, for CLI-first users)
+If your machine has Node >= 20:
 
 ```bash
-npm i -g @yuez/pi2d   # installs the `pi2` binary
+npm i -g @yuez/pi2d
+# or:
 pnpm add -g @yuez/pi2d
 bun add -g @yuez/pi2d
+mise use -g npm:@yuez/pi2d
 ```
 
-Then:
+### Channel B: Standalone curl installer (no Node required)
+
+For machines without Node, with an older distro Node (e.g. Debian 12 ships 18), or where you want a self-contained installation with no global npm or root access:
 
 ```bash
-pi2 daemon                 # foreground; the plugin/browser needs this running
-pi2 stop                   # stop a running daemon (or: pi2 daemon stop)
-pi2 install-service --write   # or run it at login: systemd --user / launchd
-pi2 status                 # daemon + instances + health
-pi2 doctor                 # node/nvim/pi/curl/plugin/runtime/web-dist/protocol checks
+curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh
 ```
 
-`pi2` is the only executable (`@yuez/pi2d` is the npm package name); `pi2 daemon` is a subcommand
-of it, not a separate process. Runtime files, ports, auth, services and troubleshooting:
-[docs/deployment.md](docs/deployment.md).
+Installs the precompiled binary and web console to `~/.local/lib/pi2d` and symlinks the executable to `~/.local/bin/pi2`.
+
+To uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh -s -- --uninstall
+```
+
+### Channel C: System packages (Homebrew & AUR)
+
+*(Available once the release that publishes binaries has shipped)*:
+
+- **macOS / Linux (Homebrew tap):**
+  ```bash
+  brew install zgs225/tap/pi2d
+  ```
+- **Arch Linux / Manjaro / EndeavourOS (AUR):**
+  ```bash
+  paru -S pi2d-bin   # or: yay -S pi2d-bin
+  ```
+
+For full installation options and a situation-based guide, see the [Decision table in docs/install.md](docs/install.md#decision-table).
+
+## Run
+
+`pi2` is the only executable (`@yuez/pi2d` is the npm package name); `pi2 daemon` is a subcommand of it. Choose one of three run modes:
+
+### 1. User service (recommended for an always-on console)
+
+The daemon's value proposition is an always-on URL that stays up across editor restarts and reboots. Generate and write the service unit:
+
+```bash
+pi2 install-service --write
+```
+
+- **Linux (`systemd --user`)**: writes `~/.config/systemd/user/pi2.service` (loads environment variables from `~/.config/pi2/env` if present). Enable and start it:
+  ```bash
+  systemctl --user daemon-reload
+  systemctl --user enable --now pi2.service
+  ```
+  Logs stream to systemd journal:
+  ```bash
+  journalctl --user -u pi2.service -f
+  ```
+  *(To keep the service running across SSH logouts, run `loginctl enable-linger`.)*
+- **macOS (`launchd`)**: writes `~/Library/LaunchAgents/com.pi2.daemon.plist`. Load and start it:
+  ```bash
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pi2.daemon.plist
+  launchctl enable gui/$(id -u)/com.pi2.daemon
+  launchctl kickstart -k gui/$(id -u)/com.pi2.daemon
+  ```
+  Logs go to `~/Library/Logs/pi2/pi2-daemon.log` and `pi2-daemon.err.log`.
+
+To remove the service: `pi2 uninstall-service --write`. Note that in service mode, stopping the daemon must go through your service manager (e.g. `systemctl --user stop pi2.service`), as process kills will trigger service restarts.
+
+### 2. Foreground process
+
+For testing or debugging, run directly in a terminal:
+
+```bash
+pi2 daemon                 # foreground; logs stream to terminal stdout/stderr
+pi2 open                   # open console signed in (local browser)
+pi2 stop                   # stop the running daemon from another terminal (or: pi2 daemon stop)
+```
+
+### 3. Neovim plugin autostart (coming with next pi2.nvim release)
+
+When configured with `web.autostart = "spawn"`, pi2.nvim spawns a detached background `pi2 daemon` when you invoke `:PiWeb`. Logs go to `$PI2_STATE_DIR/daemon.log` (`~/.local/state/pi2/daemon.log` on Linux, `~/Library/Logs/pi2/daemon.log` on macOS).
+
+See the [Decision table in docs/install.md](docs/install.md#decision-table) for how to pick the right mode for your workflow.
+
+### Useful CLI commands
+
+```bash
+pi2 daemon                 # foreground daemon
+pi2 stop                   # stop running daemon (alias: pi2 daemon stop)
+pi2 open                   # open browser console signed in (loopback only)
+pi2 install-service --write   # render and write user service file
+pi2 uninstall-service --write # remove user service file
+pi2 status                 # daemon status, active instances, and health
+pi2 doctor                 # verify node/runtime, nvim, pi, curl, sockets, protocol
+pi2 --version              # print version
+```
+
+Runtime files, ports, auth, services and troubleshooting: [docs/deployment.md](docs/deployment.md).
 
 ### Neovim plugin
 
@@ -64,19 +138,17 @@ of it, not a separate process. Runtime files, ports, auth, services and troubles
 }
 ```
 
-`:PiWeb` is the whole install path: it resolves the daemon binary, installs it if needed,
-spawns it, waits for the socket, and hands the browser a one-time login token. Nothing else
-to configure.
+The plugin acts as a client: it connects to the running daemon or starts one using `pi2` on `$PATH`.
+Once connected, `:PiWeb` opens your browser already signed in to the current workspace.
 
-The plugin looks for the daemon in this order, and `:PiWebStatus` reports which one won:
+The plugin resolves the daemon binary in this order (`:PiWebStatus` reports which one won):
 
 | # | Source | Where |
 |---|---|---|
-| 1 | `web.daemon` / `$PI2_DAEMON_BIN` | explicit path or command name |
-| 2 | `pi2` on `PATH` | a global install |
-| 3 | plugin data dir | `<stdpath("data")>/pi2d/node_modules/.bin/pi2` |
+| 1 | `web.binary` / `$PI2_DAEMON_BIN` | explicit path or command name |
+| 2 | `pi2` on `PATH` | a global CLI install (recommended) |
+| 3 | plugin data dir | `<stdpath("data")>/pi2d/node_modules/.bin/pi2` (only if `:PiWebInstall` ran) |
 | 4 | repo checkout | `node_modules/.bin/pi2` (developing pi2d itself) |
-| 5 | `npx -y @yuez/pi2d@latest` | last resort when nothing is writable |
 
 ## Remote access (phone, LAN, Tailscale)
 

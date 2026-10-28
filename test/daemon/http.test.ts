@@ -281,6 +281,40 @@ describe("HTTP API", () => {
         );
     });
 
+    it("serves the disk-projected recent-session feed for the activity column", async () => {
+        h.workspaces.recentSessionRows = [
+            {
+                sessionId: "s-new",
+                workspaceId: "ws-1",
+                workspaceName: "alpha",
+                cwd: "/work/alpha",
+                sessionFile: "/sessions/a/s-new.jsonl",
+                timestamp: 1_700_000_000_000,
+                modified: 1_700_000_100_000,
+            },
+            {
+                sessionId: "s-old",
+                workspaceId: "ws-1",
+                workspaceName: "alpha",
+                cwd: "/work/alpha",
+                sessionFile: "/sessions/a/s-old.jsonl",
+                timestamp: 1_600_000_000_000,
+                modified: 1_600_000_100_000,
+            },
+        ];
+
+        // It must not relay to (or spawn) an instance — the fake store answers
+        // directly and the connection never sees a command.
+        const res = await fetch(`${h.url}/api/v1/sessions/recent?limit=1`, authed());
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { sessions: { sessionId: string }[] };
+        expect(body.sessions).toEqual([expect.objectContaining({ sessionId: "s-new", workspaceName: "alpha" })]);
+        expect(conn.commands).toHaveLength(0);
+
+        const fallback = await fetch(`${h.url}/api/v1/sessions/recent`, authed());
+        expect(((await fallback.json()) as { sessions: unknown[] }).sessions).toHaveLength(2);
+    });
+
     it("routes a disk-only session's entries through workspaceId but keeps the sid", async () => {
         // A row from disk discovery is not owned by the live instance, so the
         // workspace hint is what routes it -- and the sid must survive that.

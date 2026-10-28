@@ -78,10 +78,10 @@
   .ws-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ws-activity { position: sticky; top: calc(var(--topbar-h) + var(--space-4)); }
 }
-/* <1100：单列，活动列排到网格下方 */
+/* <1100：单列，最近活动放在最上面（手机端先看最近会话） */
 @media (max-width: 1099px) {
-  .ws-main { order: 1; }
-  .ws-activity { order: 2; }
+  .ws-main { order: 2; }
+  .ws-activity { order: 1; }
 }
 
 /* ---------- workspace card（整卡 = 一个链接，无行级 primary 按钮） ---------- */

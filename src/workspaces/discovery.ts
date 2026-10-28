@@ -64,7 +64,7 @@ export interface Discovery {
     /** Scan every `--*--` directory under the sessions root. */
     discover(): DiscoveredWorkspace[];
     /** Session files for a cwd, newest first (header-only, cheap). */
-    listSessions(cwd: string): SessionFile[];
+    listSessions(cwd: string, limit?: number): SessionFile[];
     /** Drop one directory's cache entry, or the whole cache when omitted. */
     invalidate(dir?: string): void;
     /** The encoded directory used for a cwd, when it has been discovered. */
@@ -129,7 +129,7 @@ class DiskDiscovery implements Discovery {
         return out;
     }
 
-    listSessions(cwd: string): SessionFile[] {
+    listSessions(cwd: string, limit?: number): SessionFile[] {
         if (typeof cwd !== "string" || cwd.length === 0 || !isAbsolute(cwd)) return [];
         const workspaceId = workspaceIdForCwd(cwd);
         const dirs = this.discover()
@@ -137,15 +137,21 @@ class DiskDiscovery implements Discovery {
             .map((entry) => entry.dir);
         if (dirs.length === 0) return [];
 
-        const sessions: SessionFile[] = [];
+        // Sort the raw file descriptors first so a `limit` reads only the headers
+        // of the newest files instead of every session in the workspace.
+        const infos: SessionFileInfo[] = [];
         const seen = new Set<string>();
         for (const dir of dirs) {
             for (const info of this.sessionFiles(dir)) {
                 if (seen.has(info.file)) continue;
                 seen.add(info.file);
-                sessions.push(this.describeSession(info));
+                infos.push(info);
             }
         }
+        infos.sort((a, b) => b.mtimeMs - a.mtimeMs || b.size - a.size);
+        const selected = limit !== undefined && limit > 0 ? infos.slice(0, limit) : infos;
+
+        const sessions = selected.map((info) => this.describeSession(info));
         sessions.sort((a, b) => b.modified - a.modified || b.timestamp - a.timestamp || a.id.localeCompare(b.id));
         return sessions;
     }
@@ -336,8 +342,8 @@ export function discoverWorkspaces(options: DiscoveryOptions = {}): DiscoveredWo
     return sharedDiscovery(options.root, options.logger).discover();
 }
 
-export function listSessions(cwd: string, options: DiscoveryOptions = {}): SessionFile[] {
-    return sharedDiscovery(options.root, options.logger).listSessions(cwd);
+export function listSessions(cwd: string, options: DiscoveryOptions = {}, limit?: number): SessionFile[] {
+    return sharedDiscovery(options.root, options.logger).listSessions(cwd, limit);
 }
 
 /** Drop cached discovery results for every root (or one directory). */

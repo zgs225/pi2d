@@ -14,7 +14,7 @@
  * is actually reachable on, so it always matches the pairing link.
  */
 import type { NetworkInterfaceInfo } from "node:os";
-import { fileURLToPath } from "node:url";
+import { defaultStaticDir } from "./core/install.js";
 import { isLoopbackHost, isWildcardHost, localOrigins } from "./core/network.js";
 import { daemonTokenPath, dataDir } from "./core/paths.js";
 
@@ -36,7 +36,7 @@ export interface Config {
     host: string;
     /** TCP port; `0` asks the OS for an ephemeral port (tests). */
     port: number;
-    /** Built web UI (`<repo>/web/dist` by default). */
+    /** built web UI — PI2_STATIC_DIR wins, else the install layout (<prefix>/share/pi2d/web/dist for the compiled binary, web/dist for an npm/dev checkout). */
     staticDir: string;
     corsOrigins: string[];
     limits: Limits;
@@ -53,11 +53,7 @@ export interface ConfigOptions {
     interfaces?: NodeJS.Dict<NetworkInterfaceInfo[]>;
 }
 
-function defaultStaticDir(): string {
-    return fileURLToPath(new URL("../web/dist", import.meta.url));
-}
-
-function parsePort(raw: string | undefined): number {
+export function parsePort(raw: string | undefined): number {
     if (raw === undefined || raw.trim() === "") return DEFAULT_PORT;
     if (!/^\d+$/.test(raw.trim())) throw new Error(`PI2_PORT must be an integer, got "${raw}"`);
     const port = Number(raw);
@@ -73,7 +69,7 @@ function normalizeOrigin(raw: string): string | null {
     return value === "" ? null : value;
 }
 
-function normalizePublicUrl(raw: string | undefined): string | null {
+export function normalizePublicUrl(raw: string | undefined): string | null {
     if (raw === undefined) return null;
     return normalizeOrigin(raw);
 }

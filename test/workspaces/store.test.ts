@@ -53,14 +53,38 @@ describe("workspace store", () => {
         for (const dir of [sessions, allowRoot, projectA, projectB, projectGhost]) mkdirSync(dir, { recursive: true });
 
         writeSessionDir(sessions, encodedDirName(projectA), [
-            { name: "2026-10-10T06-40-33-032Z_a1.jsonl", cwd: projectA, id: "a1" },
-            { name: "2026-10-11T06-40-33-032Z_a2.jsonl", cwd: projectA, id: "a2" },
+            {
+                name: "2026-10-10T06-40-33-032Z_a1.jsonl",
+                cwd: projectA,
+                id: "a1",
+                timestamp: "2026-10-10T06:40:33.032Z",
+                mtime: new Date("2026-10-10T06:40:33.032Z"),
+            },
+            {
+                name: "2026-10-11T06-40-33-032Z_a2.jsonl",
+                cwd: projectA,
+                id: "a2",
+                timestamp: "2026-10-11T06:40:33.032Z",
+                mtime: new Date("2026-10-11T06:40:33.032Z"),
+            },
         ]);
         writeSessionDir(sessions, encodedDirName(projectB), [
-            { name: "2026-10-12T06-40-33-032Z_b1.jsonl", cwd: projectB, id: "b1" },
+            {
+                name: "2026-10-12T06-40-33-032Z_b1.jsonl",
+                cwd: projectB,
+                id: "b1",
+                timestamp: "2026-10-12T06:40:33.032Z",
+                mtime: new Date("2026-10-12T06:40:33.032Z"),
+            },
         ]);
         writeSessionDir(sessions, encodedDirName(projectGhost), [
-            { name: "2026-10-13T06-40-33-032Z_g1.jsonl", cwd: projectGhost, id: "g1" },
+            {
+                name: "2026-10-13T06-40-33-032Z_g1.jsonl",
+                cwd: projectGhost,
+                id: "g1",
+                timestamp: "2026-10-13T06:40:33.032Z",
+                mtime: new Date("2026-10-13T06:40:33.032Z"),
+            },
         ]);
         rmSync(projectGhost, { recursive: true, force: true });
     });
@@ -114,6 +138,29 @@ describe("workspace store", () => {
 
         const ghost = store.get(workspaceIdForCwd(projectGhost));
         expect(ghost).toMatchObject({ exists: false, sessionCount: 1, lastActiveAt: expect.any(Number) });
+    });
+
+    it("lists the newest session files across workspaces for the activity feed", () => {
+        const { store } = setup();
+
+        const rows = store.recentSessions(3);
+        expect(rows.map((row) => row.sessionId)).toEqual(["g1", "b1", "a2"]);
+        expect(rows.map((row) => row.workspaceId)).toEqual([
+            workspaceIdForCwd(projectGhost),
+            workspaceIdForCwd(projectB),
+            workspaceIdForCwd(projectA),
+        ]);
+        expect(rows[0]).toMatchObject({
+            workspaceName: "ghost",
+            cwd: projectGhost,
+            timestamp: Date.parse("2026-10-13T06:40:33.032Z"),
+            modified: Date.parse("2026-10-13T06:40:33.032Z"),
+            sessionFile: expect.stringContaining("g1"),
+        });
+        // The default (no limit) still returns every discovered session, and an
+        // out-of-range limit is clamped instead of exploding the header scan.
+        expect(store.recentSessions()).toHaveLength(4);
+        expect(store.recentSessions(0)).toHaveLength(4);
     });
 
     it("keeps hidden entries in list(); the UI decides ordering", async () => {

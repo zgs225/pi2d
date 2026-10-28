@@ -5,14 +5,11 @@ import { Icon } from "@/components/icons";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { Empty } from "@/components/ui/empty";
 import { StatusDot } from "@/components/ui/status-dot";
-import { plural } from "@/lib/i18n";
+import { sessionDot, sessionStatusKey } from "@/features/chat/session-state";
+import { sessionTitle } from "@/features/chat/session-title";
 import type { WorkspaceInfo } from "@/lib/protocol";
 
-import { workspaceName, workspaceSessionCount } from "./commands";
-import { instanceState } from "./workspace-card";
-
-/** The design lists the newest 5 entries. */
-export const ACTIVITY_LIMIT = 5;
+import { useRecentSessions, type RecentSessionRow } from "./recent-sessions";
 
 export interface ActivityColumnProps {
     workspaces: readonly WorkspaceInfo[];
@@ -20,57 +17,68 @@ export interface ActivityColumnProps {
 
 /**
  * "Recent activity" column (pi2-web-ui-design v0.1.1 §5.1): the newest
- * `ACTIVITY_LIMIT` entries by `lastActiveAt`, dot + name + meta + relative
- * time, each row linking into the chat UI.
+ * `RECENT_SESSION_LIMIT` sessions across every visible workspace, dot + title +
+ * owning-workspace + relative time, each row linking into the chat UI.
  *
- * The prototype derives it from `MOCK.sessions`; the daemon exposes no
- * cross-workspace session feed (only `/workspaces/<id>/sessions`), so the rows
- * are workspace-level and the meta slot carries the session count instead of
- * the owning workspace name.
+ * Two read-only sources feed it (`features/workspaces/recent-sessions.ts`): the
+ * daemon's disk feed (survives restarts, never spawns an instance) and the
+ * per-workspace session list for live instances (adds names and live status).
  */
 export function ActivityColumn({ workspaces }: ActivityColumnProps) {
     const { t } = useTranslation();
-    const recent = [...workspaces]
-        .filter((workspace) => typeof workspace.lastActiveAt === "number" && Number.isFinite(workspace.lastActiveAt))
-        .sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))
-        .slice(0, ACTIVITY_LIMIT);
+    const sessions = useRecentSessions(workspaces, workspaces.length > 0);
+    const phrases = {
+        unnamed: t("chat.sessionUnnamed"),
+        subagentUnnamed: t("chat.subagentUnnamed"),
+    };
 
     return (
         <aside className="ws-activity" aria-label={t("workspaces.activity")} data-testid="workspaces-activity">
             <div className="ws-activity__head">
                 <span className="section-label ws-activity__label">{t("workspaces.activity")}</span>
-                {recent.length > 0 ? <span className="ws-activity__count tabular">{recent.length}</span> : null}
+                {sessions.length > 0 ? <span className="ws-activity__count tabular">{sessions.length}</span> : null}
             </div>
-            {recent.length > 0 ? (
+            {sessions.length > 0 ? (
                 <div className="ws-activity__list">
-                    {recent.map((workspace) => {
-                        const state = instanceState(workspace);
-                        return (
-                            <Link
-                                key={workspace.workspaceId}
-                                to="/chat"
-                                search={{ workspace: workspace.workspaceId }}
-                                className="ws-activity__row"
-                                data-workspace-id={workspace.workspaceId}
-                                data-testid="workspace-activity-row"
-                            >
-                                <StatusDot status={state.status} title={t(state.labelKey)} />
-                                <span className="ws-activity__main">
-                                    <span className="ws-activity__name">
-                                        {workspaceName(workspace, t("workspaces.unnamed"))}
-                                    </span>
-                                    <span className="ws-activity__ws">
-                                        {plural("workspaces.sessionCount", workspaceSessionCount(workspace))}
-                                    </span>
-                                </span>
-                                <RelativeTime ts={workspace.lastActiveAt} className="ws-activity__rel" />
-                            </Link>
-                        );
-                    })}
+                    {sessions.map((session) => (
+                        <ActivityRow key={session.sessionId} session={session} phrases={phrases} />
+                    ))}
                 </div>
             ) : (
                 <Empty icon={<Icon name="clock" size={22} />} title={t("workspaces.activityEmpty")} />
             )}
         </aside>
+    );
+}
+
+type Phrases = { unnamed: string; subagentUnnamed: string };
+
+function ActivityRow({ session, phrases }: { session: RecentSessionRow; phrases: Phrases }) {
+    const { t } = useTranslation();
+    // A disk-only row has no live state; the session title contract then falls
+    // back to `(unnamed)` (never an id), and the dot is the hollow "exited".
+    const title = session.state
+        ? sessionTitle(session.state, phrases)
+        : { text: phrases.unnamed, provisional: true, spinner: false };
+    const dot = session.state ? sessionDot(session.state) : { status: "exited" as const };
+    const label = session.state ? t(`state.${sessionStatusKey(session.state)}`) : t("state.exited");
+
+    return (
+        <Link
+            to="/chat/$sessionId"
+            params={{ sessionId: session.sessionId }}
+            search={{ workspace: session.workspaceId }}
+            className="ws-activity__row"
+            data-session-id={session.sessionId}
+            data-workspace-id={session.workspaceId}
+            data-testid="workspace-activity-row"
+        >
+            <StatusDot status={dot.status} blink={dot.blink} title={label} />
+            <span className="ws-activity__main">
+                <span className="ws-activity__name">{title.text}</span>
+                <span className="ws-activity__ws">{session.workspaceName}</span>
+            </span>
+            <RelativeTime ts={session.ts || null} className="ws-activity__rel" />
+        </Link>
     );
 }

@@ -708,6 +708,9 @@ html[data-pi-blink-slow="dim"] .dot--blink-slow { opacity: .35; }
 .page-head--lg .page-head__sub { margin-top: 2px; }
 @media (max-width: 599px) {
   .page-head { align-items: center; }
+  /* Column direction turns `flex-basis: 14rem` into a 224px-tall header block,
+     which reads as a blank band under the title. Fall back to content height. */
+  .page-head__text { flex: 0 1 auto; }
   .page-head__actions { margin-left: 0; }
 }
 

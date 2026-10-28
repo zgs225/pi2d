@@ -11,7 +11,7 @@
  * Do not change these shapes without updating `docs/protocol.md`.
  */
 
-import type { InstanceState, SessionState, WorkspaceInfo } from "../protocol/types.js";
+import type { InstanceState, RecentSessionInfo, SessionState, WorkspaceInfo } from "../protocol/types.js";
 
 /** One connected plugin (an nvim process running pi2.nvim). */
 export interface PluginConnection {
@@ -86,6 +86,12 @@ export interface WorkspaceStore {
     refresh(workspaceId?: string): Promise<void>;
     /** Ensure a workspace exists for a cwd (used when an instance connects). */
     ensureForCwd(cwd: string): Promise<WorkspaceInfo>;
+    /**
+     * Newest session files across every known workspace, newest first. Disk
+     * projection only: ids/timestamps from the JSONL header plus file mtime, no
+     * entry parsing, no instance spawn (see docs/protocol.md §3.1).
+     */
+    recentSessions(limit?: number): RecentSessionInfo[];
 }
 
 /** Minimal event bus used by the daemon to fan plugin records out to browsers. */

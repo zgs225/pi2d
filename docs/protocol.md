@@ -85,6 +85,7 @@ Plugin obligations:
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
+| `GET /api/v1/sessions/recent?limit=` | disk-projected recent sessions across every workspace (below); never spawns an instance |
 | `GET /api/v1/sessions/:sid/entries?before=&limit=&workspaceId=&sessionFile=` | relayed `workspace.query{kind:"entries"}`; plugin paginates |
 | `GET /api/v1/attention?workspaceId=` | pending attention for one workspace |
 | `GET /api/v1/devices` | paired devices (daemon-owned; `{id, name, kind, createdAt, lastSeenAt, revokedAt}`) |
@@ -155,6 +156,23 @@ The classification is advisory and client-side only (precedence, first match win
 A client that lets the user *choose* a workspace should list only `default` rows by
 default; `secondary` rows belong behind a “show hidden” toggle. Lookups by
 `workspaceId` must ignore `visibility` entirely.
+
+Recent session row (`GET /api/v1/sessions/recent?limit=`): a **disk projection**, not
+session state. The daemon scans each known workspace's session directory, reads only
+session headers (id, timestamp, cwd), and sorts by file mtime. It never parses
+entries, never spawns an instance and never claims ownership of a live session. The
+console layers live names/statuses over these rows from
+`GET /api/v1/workspaces/:id/sessions` when that workspace has a connected instance.
+
+| Field | Notes |
+|---|---|
+| `sessionId`, `sessionFile`, `cwd` | identity + path |
+| `workspaceId`, `workspaceName` | owning workspace, resolved from the daemon's registry/discovery |
+| `timestamp` | session start from the JSONL header (file-name fallback), epoch ms |
+| `modified` | file mtime, epoch ms — the recency sort key |
+
+The `limit` defaults to 20 and is clamped to 1–200. Rows are deduped by `sessionId`
+(two encoded directories can resolve to the same cwd) and returned newest first.
 
 Session row (`GET /api/v1/workspaces/:id/sessions`) — a subset of `SessionState` plus list metadata (`usage`, `flags`, `entries` and `attention` arrive via snapshot/events, not on this row):
 

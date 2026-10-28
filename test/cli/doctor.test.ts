@@ -9,6 +9,7 @@ import {
     checkNvim,
     checkNode,
     checkProtocol,
+    checkUnit,
     collectContext,
     defaultProbes,
     formatReport,
@@ -73,6 +74,7 @@ describe("doctor checks (all passing)", () => {
             "bind",
             "service-manager",
             "linger",
+            "unit",
             "web-dist",
             "protocol",
         ]);
@@ -88,6 +90,12 @@ describe("doctor checks (all passing)", () => {
         });
         expect(statusOf(report, "linger")).toBeUndefined();
         expect(report.ok).toBe(true);
+    });
+
+    it("accepts bundled node runtime even when node version is low or unparsable", async () => {
+        const report = await checks({ nodeVersion: "v18.0.0", bundled: true });
+        expect(statusOf(report, "node")).toBe("ok");
+        expect(report.checks.find((check) => check.name === "node")?.detail).toContain("bundled runtime, no separate node needed");
     });
 });
 
@@ -184,12 +192,230 @@ describe("doctor curl check", () => {
     });
 });
 
+describe("doctor unit check", () => {
+    it("reports ok when no unit file exists", () => {
+        const check = checkUnit({ path: "/home/u/.config/systemd/user/pi2.service", exists: false });
+        expect(check).toEqual({
+            name: "unit",
+            status: "ok",
+            detail: "no service unit installed (run `pi2 install-service --write` to keep the daemon running)",
+        });
+        expect(checkUnit(undefined).status).toBe("ok");
+    });
+
+    it("warns with the fix hint when unit points at a missing binary path", async () => {
+        const content = [
+            "[Unit]",
+            "Description=pi2 daemon",
+            "",
+            "[Service]",
+            "ExecStart=/home/u/.local/share/mise/installs/node/22.1.0/bin/node /repo/dist/cli/pi2.js daemon --foreground",
+            "",
+        ].join("\n");
+
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: (p) => p !== "/home/u/.local/share/mise/installs/node/22.1.0/bin/node",
+            },
+            false,
+            "linux",
+        );
+        expect(check.status).toBe("warn");
+        expect(check.detail).toContain("/home/u/.local/share/mise/installs/node/22.1.0/bin/node");
+        expect(check.detail).toContain("re-run `pi2 install-service --write`");
+
+        const report = await checks({
+            unit: {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: () => false,
+            },
+        });
+        expect(statusOf(report, "unit")).toBe("warn");
+        expect(report.ok).toBe(true);
+    });
+
+    it("warns with the fix hint when unit points at a missing script path", () => {
+        const content = "ExecStart=/usr/bin/node /missing/dist/cli/pi2.js daemon --foreground\n";
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: (p) => p === "/usr/bin/node",
+            },
+            false,
+            "linux",
+        );
+        expect(check.status).toBe("warn");
+        expect(check.detail).toContain("/missing/dist/cli/pi2.js");
+        expect(check.detail).toContain("re-run `pi2 install-service --write`");
+    });
+
+    it("warns with the fix hint when plist points at a missing executable", () => {
+        const content = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<plist version="1.0">',
+            "<dict>",
+            "    <key>ProgramArguments</key>",
+            "    <array>",
+            "        <string>/missing/node</string>",
+            "        <string>daemon</string>",
+            "    </array>",
+            "</dict>",
+            "</plist>",
+        ].join("\n");
+
+        const check = checkUnit(
+            {
+                path: "/Users/u/Library/LaunchAgents/com.pi2.daemon.plist",
+                exists: true,
+                content,
+                pathExists: () => false,
+            },
+            false,
+            "darwin",
+        );
+        expect(check.status).toBe("warn");
+        expect(check.detail).toContain("/missing/node");
+        expect(check.detail).toContain("re-run `pi2 install-service --write`");
+    });
+
+    it("reports ok when unit points at an existing path of the current shape (node)", () => {
+        const content = "ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground\n";
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: () => true,
+            },
+            false,
+            "linux",
+        );
+        expect(check).toEqual({
+            name: "unit",
+            status: "ok",
+            detail: "/usr/bin/node",
+        });
+    });
+
+    it("reports ok when unit points at an existing path of the current shape (bundled)", () => {
+        const content = 'ExecStart="/usr/local/bin/pi2" daemon --foreground\n';
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: () => true,
+            },
+            true,
+            "linux",
+        );
+        expect(check).toEqual({
+            name: "unit",
+            status: "ok",
+            detail: "/usr/local/bin/pi2",
+        });
+    });
+
+    it("reports ok for launchd plist with existing path of current shape", () => {
+        const content = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<plist version="1.0">',
+            "<dict>",
+            "    <key>ProgramArguments</key>",
+            "    <array>",
+            "        <string>/opt/homebrew/bin/node</string>",
+            "        <string>/repo/dist/cli/pi2.js</string>",
+            "        <string>daemon</string>",
+            "    </array>",
+            "</dict>",
+            "</plist>",
+        ].join("\n");
+
+        const check = checkUnit(
+            {
+                path: "/Users/u/Library/LaunchAgents/com.pi2.daemon.plist",
+                exists: true,
+                content,
+                pathExists: () => true,
+            },
+            false,
+            "darwin",
+        );
+        expect(check).toEqual({
+            name: "unit",
+            status: "ok",
+            detail: "/opt/homebrew/bin/node",
+        });
+    });
+
+    it("warns on shape mismatch when recorded executable is node while running bundled", () => {
+        const content = "ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground\n";
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: () => true,
+            },
+            true, // bundled runtime
+            "linux",
+        );
+        expect(check.status).toBe("warn");
+        expect(check.detail).toBe("unit was rendered for a different install shape; re-run pi2 install-service --write");
+    });
+
+    it("warns on shape mismatch when recorded executable is bundled while running under node", () => {
+        const content = "ExecStart=/usr/local/bin/pi2 daemon --foreground\n";
+        const check = checkUnit(
+            {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content,
+                pathExists: () => true,
+            },
+            false, // node runtime
+            "linux",
+        );
+        expect(check.status).toBe("warn");
+        expect(check.detail).toBe("unit was rendered for a different install shape; re-run pi2 install-service --write");
+    });
+
+    it("appears in the doctor table output", async () => {
+        const report = await checks({
+            unit: {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: true,
+                content: "ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground\n",
+                pathExists: () => true,
+            },
+        });
+        const text = formatReport(report);
+        expect(text).toMatch(/ok\s+unit\s+\/usr\/bin\/node/);
+
+        const noUnitReport = await checks({
+            unit: {
+                path: "/home/u/.config/systemd/user/pi2.service",
+                exists: false,
+            },
+        });
+        const noUnitText = formatReport(noUnitReport);
+        expect(noUnitText).toMatch(/ok\s+unit\s+no service unit installed/);
+    });
+});
+
 describe("doctor failure cases", () => {
-    it("fails on node < 22", async () => {
-        const report = await checks({ nodeVersion: "v20.11.0" });
+    it("fails on node < 20", async () => {
+        const report = await checks({ nodeVersion: "v18.19.0" });
         expect(report.ok).toBe(false);
         expect(statusOf(report, "node")).toBe("fail");
-        expect(report.checks.find((check) => check.name === "node")?.detail).toContain("< 22.0.0");
+        expect(report.checks.find((check) => check.name === "node")?.detail).toContain("< 20.0.0");
     });
 
     it("fails when nvim is missing", async () => {
@@ -312,7 +538,11 @@ describe("version helpers", () => {
         expect(parseNvimVersion("NVIM v0.9.5")).toBe("0.9.5");
         expect(parseNvimVersion("garbage")).toBeUndefined();
         expect(checkNode("v22.0.0").status).toBe("ok");
+        expect(checkNode("v20.0.0").status).toBe("ok");
+        expect(checkNode("v18.0.0").status).toBe("fail");
         expect(checkNode("garbage").status).toBe("fail");
+        expect(checkNode("v18.0.0", true).status).toBe("ok");
+        expect(checkNode("v18.0.0", true).detail).toMatch(/bundled runtime, no separate node needed$/);
         expect(checkNvim({ found: true, path: "/n", version: "v0.10.0" }).status).toBe("ok");
         expect(checkLinger({ checked: false }).status).toBe("ok");
     });

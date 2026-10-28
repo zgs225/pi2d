@@ -318,6 +318,26 @@ export type WorkspaceVisibility = "default" | "secondary";
 
 export type WorkspaceVisibilityReason = "hidden" | "ghost" | "temp" | "outside-roots" | "stale";
 
+/**
+ * One disk-projected session row for the cross-workspace recent-activity feed.
+ *
+ * This is file metadata only (header id/timestamp + mtime); the daemon never
+ * parses entries or owns session state (docs/protocol.md §3.1). Live names and
+ * statuses are layered on by the client through `/workspaces/:id/sessions`.
+ */
+export interface RecentSessionInfo {
+    sessionId: string;
+    workspaceId: string;
+    /** Workspace display name (alias → basename), for the row's meta line. */
+    workspaceName: string;
+    cwd: string;
+    sessionFile: string;
+    /** Session start, from the JSONL header (or the file name), epoch ms. */
+    timestamp: number;
+    /** File mtime, epoch ms — the recency sort key. */
+    modified: number;
+}
+
 export type DaemonCommandMethod =
     | "instance.ensure"
     | "instance.shutdown"

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import {
+    DEFAULT_SYSTEMD_ENV_FILE,
     defaultScriptPath,
+    defaultServicePaths,
     launchAgentDir,
     renderLaunchAgent,
     renderService,
@@ -20,6 +22,15 @@ const paths: ServicePaths = {
     pathEnv: "/opt/node/bin:/usr/bin:/bin",
 };
 
+const bundledPaths: ServicePaths = {
+    bundled: true,
+    execPath: "/usr/local/bin/pi2",
+    envFile: "-%h/.config/pi2/env",
+    stateDir: "/home/u/.local/state/pi2",
+    homeDir: "/home/u",
+    pathEnv: "/usr/local/bin:/usr/bin:/bin",
+};
+
 const LINUX_UNIT = `[Unit]
 Description=pi2 daemon
 After=network.target
@@ -28,6 +39,24 @@ After=network.target
 Type=simple
 ExecStart=/opt/node/bin/node /repo/dist/cli/pi2.js daemon --foreground
 Environment=PATH=/opt/node/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
+`;
+
+const BUNDLED_LINUX_UNIT = `[Unit]
+Description=pi2 daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pi2 daemon --foreground
+EnvironmentFile=-%h/.config/pi2/env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGTERM
@@ -67,6 +96,35 @@ const MAC_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
+const BUNDLED_MAC_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pi2.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/pi2</string>
+        <string>daemon</string>
+        <string>--foreground</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/home/u/.local/state/pi2/pi2-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/home/u/.local/state/pi2/pi2-daemon.err.log</string>
+</dict>
+</plist>
+`;
+
 describe("systemd user unit", () => {
     it("renders the unit (snapshot)", () => {
         expect(renderSystemdUnit(paths)).toBe(LINUX_UNIT);
@@ -83,6 +141,33 @@ describe("systemd user unit", () => {
     it("quotes values with spaces", () => {
         const unit = renderSystemdUnit({ ...paths, scriptPath: "/repo dir/cli/pi2.js" });
         expect(unit).toContain('ExecStart=/opt/node/bin/node "/repo dir/cli/pi2.js" daemon --foreground');
+    });
+
+    it("renders the bundled unit (snapshot)", () => {
+        expect(renderSystemdUnit(bundledPaths)).toBe(BUNDLED_LINUX_UNIT);
+    });
+
+    it("renders bundled ExecStart with binary alone, no node or script path, and contains EnvironmentFile", () => {
+        const unit = renderSystemdUnit(bundledPaths);
+        expect(unit).toContain("ExecStart=/usr/local/bin/pi2 daemon --foreground");
+        expect(unit).not.toContain("/opt/node/bin/node");
+        expect(unit).not.toContain("dist/cli/pi2.js");
+        expect(unit).toContain("EnvironmentFile=-%h/.config/pi2/env");
+        expect(unit.indexOf("EnvironmentFile=")).toBeGreaterThan(unit.indexOf("ExecStart="));
+        expect(unit.indexOf("Environment=PATH")).toBeGreaterThan(unit.indexOf("EnvironmentFile="));
+    });
+
+    it("omits EnvironmentFile when envFile is empty string", () => {
+        const bundledUnit = renderSystemdUnit({ ...bundledPaths, envFile: "" });
+        expect(bundledUnit).not.toContain("EnvironmentFile=");
+
+        const nodeUnit = renderSystemdUnit({ ...paths, envFile: "" });
+        expect(nodeUnit).not.toContain("EnvironmentFile=");
+    });
+
+    it("quotes bundled executable with spaces", () => {
+        const unit = renderSystemdUnit({ ...bundledPaths, execPath: "/opt/custom bin/pi2" });
+        expect(unit).toContain('ExecStart="/opt/custom bin/pi2" daemon --foreground');
     });
 
     it("targets ~/.config/systemd/user and honours XDG_CONFIG_HOME", () => {
@@ -110,6 +195,31 @@ describe("LaunchAgent plist", () => {
         expect(plist).toContain("<string>/opt/a&amp;b/node</string>");
     });
 
+    it("renders the bundled plist (snapshot)", () => {
+        expect(renderLaunchAgent(bundledPaths)).toBe(BUNDLED_MAC_PLIST);
+    });
+
+    it("renders bundled ProgramArguments with exactly [exe, daemon, --foreground]", () => {
+        const plist = renderLaunchAgent(bundledPaths);
+        const argsBlock = [
+            "    <key>ProgramArguments</key>",
+            "    <array>",
+            "        <string>/usr/local/bin/pi2</string>",
+            "        <string>daemon</string>",
+            "        <string>--foreground</string>",
+            "    </array>",
+        ].join("\n");
+        expect(plist).toContain(argsBlock);
+        expect(plist).not.toContain("/opt/node/bin/node");
+        expect(plist).not.toContain("dist/cli/pi2.js");
+        expect(plist).not.toContain("EnvironmentFile");
+    });
+
+    it("escapes XML in bundled execPath", () => {
+        const plist = renderLaunchAgent({ ...bundledPaths, execPath: "/opt/a&b/pi2" });
+        expect(plist).toContain("<string>/opt/a&amp;b/pi2</string>");
+    });
+
     it("targets ~/Library/LaunchAgents", () => {
         expect(launchAgentDir(paths)).toBe("/home/u/Library/LaunchAgents");
         const service = renderService("darwin", paths);
@@ -121,6 +231,15 @@ describe("LaunchAgent plist", () => {
 
     it("resolves dist/cli/pi2.js next to the built CLI", () => {
         expect(defaultScriptPath()).toMatch(/dist\/cli\/pi2\.js$/);
+    });
+
+    it("populates bundled, execPath, and default envFile in defaultServicePaths", () => {
+        const defaults = defaultServicePaths();
+        expect(typeof defaults.bundled).toBe("boolean");
+        expect(typeof defaults.execPath).toBe("string");
+        expect(defaults.envFile).toBe(DEFAULT_SYSTEMD_ENV_FILE);
+        expect(defaults.nodePath).toBe(process.execPath);
+        expect(defaults.scriptPath).toMatch(/dist\/cli\/pi2\.js$/);
     });
 });
 
@@ -156,6 +275,23 @@ describe("install-service / uninstall-service commands", () => {
         expect(writes).toEqual([{ path: join("/home/u/.config/systemd/user", "pi2.service"), content: LINUX_UNIT }]);
         expect(lines[0]).toBe("wrote /home/u/.config/systemd/user/pi2.service (mode 0644)");
         expect(lines.join("\n")).toContain("systemctl --user daemon-reload");
+    });
+
+    it("writes bundled systemd unit on linux with --write", () => {
+        const lines: string[] = [];
+        const writes: { path: string; content: string }[] = [];
+        const code = runInstallService({
+            platform: "linux",
+            paths: bundledPaths,
+            write: true,
+            print: (line) => lines.push(line),
+            writeFile: (path, content) => writes.push({ path, content }),
+        });
+        expect(code).toBe(0);
+        expect(writes).toEqual([
+            { path: join("/home/u/.config/systemd/user", "pi2.service"), content: BUNDLED_LINUX_UNIT },
+        ]);
+        expect(lines[0]).toBe("wrote /home/u/.config/systemd/user/pi2.service (mode 0644)");
     });
 
     it("uninstall removes the unit only with --write", () => {

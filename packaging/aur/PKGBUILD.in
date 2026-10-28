@@ -1,0 +1,41 @@
+# Maintainer: zgs225 <zgs225@gmail.com>
+pkgname=pi2d-bin
+pkgver=@@VERSION@@
+pkgrel=1
+pkgdesc="Web console daemon for pi2.nvim"
+arch=('x86_64' 'aarch64')
+url="https://github.com/zgs225/pi2d"
+license=('MIT')
+provides=('pi2d')
+conflicts=('pi2d')
+
+# Prebuilt binary compiled by Bun; stripping the executable can corrupt internal
+# bundle offsets, embedded resources, and runtime metadata.
+options=('!strip')
+
+# Note on musl: upstream also publishes linux-x64-musl and linux-arm64-musl targets
+# for musl-based distributions such as Alpine Linux. Arch Linux is glibc-based,
+# so the standard glibc tarballs (linux-x64 and linux-arm64) are used here.
+
+source_x86_64=("https://github.com/zgs225/pi2d/releases/download/v${pkgver}/pi2d-${pkgver}-linux-x64.tar.gz")
+sha256sums_x86_64=('@@SHA256_LINUX_X64@@')
+
+source_aarch64=("https://github.com/zgs225/pi2d/releases/download/v${pkgver}/pi2d-${pkgver}-linux-arm64.tar.gz")
+sha256sums_aarch64=('@@SHA256_LINUX_ARM64@@')
+
+# No .install script needed: pi2d runs as an unprivileged user process or user
+# service. Systemd user service units can be generated via `pi2 install-service --write`.
+
+package() {
+    # Daemon CLI binary (0755)
+    install -Dm755 "${srcdir}/bin/pi2" "${pkgdir}/usr/bin/pi2"
+
+    # Static web UI assets: /usr/share/pi2d/web/dist (0644 tree)
+    install -dm755 "${pkgdir}/usr/share/pi2d"
+    cp -r --no-preserve=ownership "${srcdir}/share/pi2d/web" "${pkgdir}/usr/share/pi2d/"
+    find "${pkgdir}/usr/share/pi2d/web" -type d -exec chmod 0755 {} +
+    find "${pkgdir}/usr/share/pi2d/web" -type f -exec chmod 0644 {} +
+
+    # Upstream license
+    install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

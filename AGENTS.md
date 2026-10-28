@@ -15,8 +15,8 @@ Adding bulk to this file is a mistake, not a contribution.
 | Install | `pnpm install && pnpm --dir web install` |
 | Typecheck | `pnpm typecheck && pnpm --dir web typecheck` |
 | Unit tests | `pnpm test` (daemon) · `pnpm --dir web exec vitest run` (web) |
-| Build | `pnpm build` → `dist/` · `pnpm build:web` → `web/dist/` |
-| Smoke | `bash scripts/smoke.sh` — isolated tmp dirs, asserts HTTP, static UI, tokens, clean SIGTERM |
+| Build | `pnpm build` → `dist/` · `pnpm build:web` → `web/dist/` · `pnpm build:binary` → `dist-bin/` |
+| Smoke | `bash scripts/smoke.sh` (Node) · `bash scripts/smoke-binary.sh` (compiled binary) |
 | E2E | `bash scripts/e2e/run-all.sh` — API suite then Playwright; needs a real `pi`, `nvim`, `curl` |
 | Dev loop | `pnpm dev` (:7676) · `pnpm --dir web dev` (:5173, proxies `/api` + `/ws`) |
 | Release | skill `.agents/skills/release/` |
@@ -34,9 +34,10 @@ Adding bulk to this file is a mistake, not a contribution.
 | `src/core/network.ts` | reachable addresses: kind classification, `bases[]` order, CORS origins |
 | `src/core/qr.ts` | zero-dependency QR encoder (pairing links; rows, no quiet zone) |
 | `web/` | React console (own lockfile + workspace); built into `web/dist` and served by the daemon |
+| `packaging/` | Homebrew formula & Arch AUR PKGBUILD templates, generator script |
 | `fixtures/` | golden event streams + expected state, shared with pi2.nvim conformance tests |
 | `test/` | vitest, hermetic, injectable I/O |
-| `scripts/` | `smoke.sh`, `e2e/` drivers, `gen-expected.ts` |
+| `scripts/` | `install.sh`, `build-binary.sh`, `smoke*.sh`, `e2e/` drivers, `gen-expected.ts` |
 
 ## Hard rules
 
@@ -67,6 +68,7 @@ owner/repo/workflow filename, not the npm name).
 | Doc | Contents |
 |---|---|
 | `docs/protocol.md` | the browser ↔ daemon ↔ plugin wire contract |
+| `docs/install.md` | canonical CLI-first install guide, channels, run modes, services |
 | `docs/session-dot.md` | the session-list status dot: the `:PiSessions` matrix, the unread flags, the one blink clock |
 | `docs/deployment.md` | env vars, runtime files, ports, auth, services, troubleshooting |
 | `docs/e2e.md` | scenario ids, isolation, skip conditions, report paths |

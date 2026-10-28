@@ -47,13 +47,28 @@ export function instanceSocketPath(workspaceId: string, instanceId: string): str
     return join(instanceDir(), `${hash}.sock`);
 }
 
-/** `~/.pi/agent` or `$PI_CODING_AGENT_DIR`; where pi keeps `sessions/--<cwd>--/`. */
-export function piAgentDir(): string {
-    return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+export type PathEnv = NodeJS.ProcessEnv | Record<string, string | undefined>;
+
+/**
+ * Pi session storage directory; where pi keeps `sessions/--<cwd>--/`.
+ *
+ * Resolution order:
+ *   1. `PI2_CODING_AGENT_DIR` — pi2's documented override
+ *   2. `PI_CODING_AGENT_DIR` — pi's own variable (injected by pi when it runs a child)
+ *   3. `~/.pi/agent` — default location
+ *
+ * Empty strings are ignored (fall through to the next candidate).
+ */
+export function piAgentDir(env: PathEnv = process.env): string {
+    const pi2 = env.PI2_CODING_AGENT_DIR;
+    if (pi2 !== undefined && pi2 !== "") return pi2;
+    const pi = env.PI_CODING_AGENT_DIR;
+    if (pi !== undefined && pi !== "") return pi;
+    return join(homedir(), ".pi", "agent");
 }
 
-export function sessionsRoot(): string {
-    return join(piAgentDir(), "sessions");
+export function sessionsRoot(env: PathEnv = process.env): string {
+    return join(piAgentDir(env), "sessions");
 }
 
 export function readToken(): string | undefined {

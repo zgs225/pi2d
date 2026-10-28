@@ -2,7 +2,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname as osHostname, platform as osPlatform, release as osRelease } from "node:os";
-import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import type { HttpBindings } from "@hono/node-server";
 import type { Bus, InstanceManager, Logger, WorkspaceStore } from "../core/interfaces.js";
@@ -11,6 +10,7 @@ import { PROTOCOL_VERSION, type CommandRequest } from "../protocol/types.js";
 import type { Config } from "../config.js";
 import type { SysinfoSampler } from "../core/sysinfo.js";
 import { networkBases } from "../core/network.js";
+import { version } from "../core/install.js";
 import { encodeQr, fitsQr } from "../core/qr.js";
 import type { AuthStore, DevicePublic } from "./auth.js";
 import { isAllowedOrigin, LOCAL_CLI_DEVICE_ID } from "./auth.js";
@@ -69,15 +69,15 @@ function normalizeBase(raw: string): string {
     return raw.trim().replace(/\/+$/, "");
 }
 
-/** Daemon package version; falls back to the v1 baseline when package.json is unavailable. */
+/**
+ * Daemon version, from the shared install probe.
+ *
+ * A compiled binary has no `package.json` on disk, so the version comes from the
+ * build-time define (`core/install`); reading the file here would silently report
+ * a stale baseline instead of the version that was built.
+ */
 function daemonVersion(): string {
-    try {
-        const file = fileURLToPath(new URL("../../package.json", import.meta.url));
-        const parsed = JSON.parse(readFileSync(file, "utf8")) as { version?: unknown };
-        return typeof parsed.version === "string" && parsed.version.trim() !== "" ? parsed.version : "0.1.0";
-    } catch {
-        return "0.1.0";
-    }
+    return version();
 }
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -289,6 +289,16 @@ export function createApp(deps: AppDeps): Hono<Env> {
         if (!workspaces.get(workspaceId)) throw DaemonError.notFound(`unknown workspace ${workspaceId}`);
         const ack = await router.relayWorkspaceQuery(workspaceId, "sessions");
         return json(200, ack);
+    });
+
+    // Cross-workspace recent-activity feed. Disk projection only: header ids and
+    // mtimes, no entry parsing and no `instances.ensure()` (that would spawn an
+    // nvim for every idle workspace). The client layers live names/status over
+    // these rows through `/workspaces/:id/sessions` when an instance is connected.
+    app.get("/api/v1/sessions/recent", (c) => {
+        const raw = Number(c.req.query("limit"));
+        const limit = Number.isFinite(raw) && raw > 0 ? Math.min(200, Math.floor(raw)) : 20;
+        return c.json({ sessions: workspaces.recentSessions(limit) });
     });
 
     app.get("/api/v1/sessions/:sid/entries", async (c) => {

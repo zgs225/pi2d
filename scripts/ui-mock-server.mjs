@@ -337,6 +337,27 @@ async function handleApi(req, res, url) {
     if (pathname === "/api/v1/workspaces" && method === "GET") {
         return sendJson(res, 200, FIXTURES.workspaces);
     }
+    // Disk-projected recent sessions (see docs/protocol.md §3.1). The mock has
+    // no live/disk split, so it projects the fixture rows and lets the browser
+    // merge the `/sessions` relay over them, exactly like the real console.
+    if (pathname === "/api/v1/sessions/recent" && method === "GET") {
+        const raw = Number(url.searchParams.get("limit"));
+        const limit = Number.isFinite(raw) && raw > 0 ? Math.min(200, Math.floor(raw)) : 20;
+        const nameById = new Map(FIXTURES.workspaces.map((workspace) => [workspace.workspaceId, workspace.name]));
+        const rows = FIXTURES.sessions
+            .map((session) => ({
+                sessionId: session.sessionId,
+                workspaceId: session.workspaceId,
+                workspaceName: nameById.get(session.workspaceId) ?? session.workspaceId,
+                cwd: session.cwd ?? "",
+                sessionFile: `/sessions/${session.sessionId}.jsonl`,
+                timestamp: session.createdAt ?? session.lastActiveAt ?? 0,
+                modified: session.lastActiveAt ?? session.modified ?? 0,
+            }))
+            .sort((a, b) => b.modified - a.modified || a.sessionId.localeCompare(b.sessionId))
+            .slice(0, limit);
+        return sendJson(res, 200, { v: 1, sessions: rows });
+    }
     let match = /^\/api\/v1\/workspaces\/([^/]+)\/sessions$/.exec(pathname);
     if (match && method === "GET") {
         const workspaceId = decodeURIComponent(match[1]);

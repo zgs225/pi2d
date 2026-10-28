@@ -169,6 +169,7 @@ Everything the console calls is answered from `scripts/ui-fixtures.mjs`:
 | `POST /api/v1/pair` | `pairCode` | redeem (`{code}` → token+device) and mint (`{accepted,code,url,…}`) |
 | `GET /api/v1/workspaces` | `workspaces` | 6 rows covering staged/hidden/ghost/tmp/degraded/untrusted |
 | `GET /api/v1/workspaces/:id/sessions` | `sessions` | `{v,sessions,cursor}`; 6 sessions incl. child, attention, legacy, idle |
+| `GET /api/v1/sessions/recent` | `sessions` (disk projection) | `{v,sessions}` newest-first, used by the workspaces activity column |
 | `GET /api/v1/sessions/:sid/entries` | `entriesBySession` | raw pi entries, `before`/`limit` paging with a cursor |
 | `GET /api/v1/attention` | `attentionByWorkspace` | flattened per workspace |
 | `GET /api/v1/models` | `modelProviders` | `{providers:[…]}`, 3 providers |
