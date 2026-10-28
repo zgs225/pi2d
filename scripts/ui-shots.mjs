@@ -333,6 +333,20 @@ async function collect(page) {
             dots: count(".dot"),
             modals: count(".modal-backdrop"),
             hasRoot: root !== null,
+            // Smallest visible text-entry control. Mobile Safari zooms the page
+            // in when one of these is under 16px and never zooms back out.
+            minControlFont: (() => {
+                const skip = new Set(["checkbox", "radio", "range", "file", "color", "hidden", "submit", "button", "reset"]);
+                const sizes = [...document.querySelectorAll("input, select, textarea, [contenteditable='true']")]
+                    .filter((element) => {
+                        const rect = element.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) return false;
+                        return !(element.tagName === "INPUT" && skip.has(element.type));
+                    })
+                    .map((element) => parseFloat(getComputedStyle(element).fontSize))
+                    .filter((size) => Number.isFinite(size));
+                return sizes.length ? Math.min(...sizes) : null;
+            })(),
         };
     });
 }
@@ -452,6 +466,18 @@ async function shootPage(browser, { base, origin, page: spec, viewport, theme, i
             }),
         );
         checks.push(assert("no-tabbar", metrics.tabbar === 0, 0, metrics.tabbar));
+        // Phone-width shots must keep every text control at ≥16px, otherwise
+        // Mobile Safari scales the whole page on focus (app.css owns the floor).
+        if (viewport.width < 600) {
+            checks.push(
+                assert(
+                    "control-font-size",
+                    metrics.minControlFont === null || metrics.minControlFont >= 16,
+                    ">=16px",
+                    metrics.minControlFont,
+                ),
+            );
+        }
         // A stray overlay hides the page under a modal: the screenshots must show
         // the page, not a dialog nobody asked for.
         checks.push(assert("no-unexpected-modal", metrics.modals === 0, 0, metrics.modals));

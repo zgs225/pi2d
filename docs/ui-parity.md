@@ -104,6 +104,7 @@ Per shot, all must pass:
 | `page-errors` | `0` | uncaught exceptions (`pageerror`) |
 | `api-errors` | `0` | no `/api/v1/*` response ≥ 400 — the fixture contract is complete |
 | `no-horizontal-overflow` | `scrollWidth ≤ clientWidth + 1` | no sideways scroll; the report lists the overflowing elements |
+| `control-font-size` | `≥16px` (380 px shots only) | a text control under 16px makes Mobile Safari zoom the page in on focus, and it never zooms back out; `app.css` owns the floor (`@media (hover: none), (max-width: 599px)`), `web/tests/mobile-controls.test.ts` pins it |
 | `no-tabbar` | `0 × .tabbar` | CHG-04/08: the bottom bar is gone, replaced by the rail + page pill |
 | `no-unexpected-modal` | `0 × .modal-backdrop` | the shot shows the page, not a dialog. Pending attention deliberately hangs off `s-attention`, not the session the matrix opens, because the attention modal is blocking and Escape-proof |
 | `connect-no-page-pill` / `connect-no-nav-item` | `0` each | `/connect` has no navigation chrome at all |
@@ -245,6 +246,12 @@ state (`/sessions`) and the WS snapshot — so no web code calls them.
 
 外壳：`<600` 顶栏胶囊 + sheet，`600–839` 图标 rail，`≥840` 图标 sidebar（均为 56px）。
 Chat：`≥1100` 树 280px + 流，`1000–1099` 树 240px，`<1000` 单栏 + 树抽屉。阅读列 `--reading-max: 52rem`。
+
+输入控件另有一条**不随断点走的最低字号**：`app.css` 在 `@media (hover: none), (max-width: 599px)` 里
+把所有 `input/select/textarea/[contenteditable]` 压到 16px。手机 Safari 的聚焦缩放由“控件字号 <16px”
+触发且不会自动退出，而设计里 `input` 继承 `--fs-body`(14px)、`.composer__ta` 是 15px，所以这条
+`!important` 兜底必须存在；`hover: none` 让横屏（宽于 600px）也被覆盖。桌面鼠标环境不受影响。
+`html { text-size-adjust: 100% }` 同时关掉旋转后的文字膨胀。
 
 ### 9.3 已知缺口
 

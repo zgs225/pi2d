@@ -53,6 +53,8 @@
 * { margin: 0; }
 
 html, body, #root { height: 100%; }
+/* No browser-side text inflation: rotating the phone must not resize the page. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   font-family: var(--font-sans);
   font-size: var(--fs-body);
@@ -466,6 +468,19 @@ html[data-pi-blink-slow="dim"] .dot--blink-slow { opacity: .35; }
 .field .hint { font-size: .75rem; color: var(--muted-foreground); margin-top: 4px; }
 .field .hint.is-err { color: var(--err); }
 .field--invalid .input, .field--invalid .textarea, .field--invalid .select { border-color: var(--err); }
+
+/* ---------- touch: keep every text control at 16px ----------
+   Focusing a text control smaller than 16px makes Mobile Safari zoom the visual
+   viewport in, and it does not zoom back out when the keyboard closes — the
+   page stays scaled for the rest of the session. Every control here is
+   deliberately smaller (`input/select/textarea` inherit `--fs-body` 14px,
+   `.composer__ta` is 15px), so the floor lives here once instead of in each
+   component. `!important` because a bare element selector would lose the
+   cascade to the one-class utilities that style those controls, and the rule
+   keys on `hover: none` so landscape phones (well past 600px) are covered too. */
+@media (hover: none), (max-width: 599px) {
+  input, select, textarea, [contenteditable="true"] { font-size: 16px !important; }
+}
 
 /* ---------- tabs / progress / kv / misc ---------- */
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border-subtle); }
