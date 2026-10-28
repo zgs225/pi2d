@@ -96,8 +96,13 @@ export function WorkspacesPage() {
 
     async function createWorkspace(input: NewWorkspaceInput) {
         const workspaceId = await openWorkspace(input);
+        await finishOpen(workspaceId, input.name?.trim() || basename(input.cwd));
+    }
+
+    /** Shared tail of a successful open: refresh the grid, toast, enter chat. */
+    async function finishOpen(workspaceId: string, label: string) {
         await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-        toast.success(t("workspaces.opened", { name: input.name?.trim() || basename(input.cwd) }));
+        toast.success(t("workspaces.opened", { name: label }));
         navigate({ href: `/chat?workspace=${encodeURIComponent(workspaceId)}` });
     }
 
@@ -228,7 +233,16 @@ export function WorkspacesPage() {
                 <ActivityColumn workspaces={items} />
             </div>
 
-            <NewWorkspaceDialog open={dialogOpen} onOpenChange={setDialogOpen} onCreate={createWorkspace} />
+            <NewWorkspaceDialog
+                open={dialogOpen}
+                onOpenChange={setDialogOpen}
+                onCreate={createWorkspace}
+                onRetryOpen={(workspaceId) => {
+                    // The workspace already exists; the name is settled server-side.
+                    const row = all.find((item) => item.workspaceId === workspaceId);
+                    return finishOpen(workspaceId, row?.name?.trim() || (row ? basename(row.cwd) : workspaceId));
+                }}
+            />
         </div>
     );
 }

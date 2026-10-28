@@ -10,7 +10,44 @@
  * The auth frame is the first frame on every socket, before any subscribe.
  */
 
+import type { QueryClient } from "@tanstack/react-query";
+
 export type WsConnectionState = "idle" | "connecting" | "authenticating" | "open" | "reconnecting" | "closed";
+
+/**
+ * Query keys a live `instance_state` makes stale. A workspace card renders
+ * `WorkspaceInfo.instance`, which the frame does not carry, so refetching the row
+ * is the only honest update.
+ */
+const INSTANCE_STATE_QUERY_KEYS: readonly (readonly string[])[] = [["workspaces"], ["health"]];
+
+/** Burst window: `starting → ready` lands inside one startup step. */
+export const INSTANCE_STATE_COALESCE_MS = 250;
+
+let invalidationTimer: ReturnType<typeof setTimeout> | null = null;
+let invalidationClient: QueryClient | null = null;
+
+/**
+ * Coalesce `instance_state` bursts into a single invalidation round. Module-level
+ * on purpose: the console opens more than one socket (shell probe + chat), and a
+ * per-client timer would refetch twice per state change.
+ */
+export function scheduleInstanceStateInvalidation(
+    queryClient: QueryClient,
+    delayMs: number = INSTANCE_STATE_COALESCE_MS,
+): void {
+    invalidationClient = queryClient;
+    if (invalidationTimer !== null) return;
+    invalidationTimer = setTimeout(() => {
+        const client = invalidationClient;
+        invalidationTimer = null;
+        invalidationClient = null;
+        if (!client) return;
+        for (const queryKey of INSTANCE_STATE_QUERY_KEYS) {
+            void client.invalidateQueries({ queryKey: [...queryKey] });
+        }
+    }, delayMs);
+}
 
 export interface WsFrame {
     v?: number;
@@ -72,6 +109,13 @@ export interface PiWsOptions {
     authTimeoutMs?: number;
     /** 0 disables the keep-alive ping. */
     heartbeatMs?: number;
+    /**
+     * Optional cache handle: an `instance_state` frame invalidates `['workspaces']`
+     * and `['health']` through it (coalesced) instead of being dropped.
+     */
+    queryClient?: QueryClient | null;
+    /** Override for the `instance_state` coalescing window (tests). */
+    instanceStateCoalesceMs?: number;
     handlers?: WsHandlers;
 }
 
@@ -118,6 +162,8 @@ export class PiWsClient {
     private socket: WebSocketLike | null = null;
     private state: WsConnectionState = "idle";
     private token: string | null;
+    private queryClient: QueryClient | null;
+    private readonly instanceStateCoalesceMs: number;
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private authTimer: ReturnType<typeof setTimeout> | null = null;
@@ -136,6 +182,8 @@ export class PiWsClient {
         this.backoffMultiplier = options.backoffMultiplier ?? 2;
         this.authTimeoutMs = options.authTimeoutMs ?? 8_000;
         this.heartbeatMs = options.heartbeatMs ?? 25_000;
+        this.queryClient = options.queryClient ?? null;
+        this.instanceStateCoalesceMs = options.instanceStateCoalesceMs ?? INSTANCE_STATE_COALESCE_MS;
         this.handlers = options.handlers ?? {};
     }
 
@@ -157,6 +205,11 @@ export class PiWsClient {
 
     setToken(token: string | null): void {
         this.token = token;
+    }
+
+    /** Late-bound cache handle (the app mounts the provider after the client). */
+    setQueryClient(queryClient: QueryClient | null): void {
+        this.queryClient = queryClient;
     }
 
     connect(): void {
@@ -430,6 +483,15 @@ export class PiWsClient {
                     this.manuallyClosed = true;
                     this.clearReconnectTimer();
                     this.close();
+                }
+                break;
+            }
+            case "instance_state": {
+                // The frame carries the instance status (and its sessions), but the
+                // workspace row itself lives in `['workspaces']`; patch-free updates
+                // mean a refetch rather than a guess. Unknown frames stay ignored.
+                if (this.queryClient) {
+                    scheduleInstanceStateInvalidation(this.queryClient, this.instanceStateCoalesceMs);
                 }
                 break;
             }

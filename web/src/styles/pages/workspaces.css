@@ -118,6 +118,13 @@
   font-size: var(--fs-xs); line-height: 1.45;
   color: var(--muted-foreground);
 }
+/* 实例自己给出的原因（degraded/stopped/unmanaged）：单行截断，完整文本在 title 里 */
+.ws-card__note {
+  min-width: 0;
+  font-size: var(--fs-2xs); line-height: 1.45;
+  color: var(--destructive);
+  font-family: var(--font-mono);
+}
 .ws-card__last {
   display: flex; align-items: baseline; gap: 6px;
   min-width: 0;
@@ -244,12 +251,31 @@
 .ws-form .field { margin-bottom: 0; }
 .ws-form__error {
   display: flex; align-items: flex-start; gap: var(--space-2);
+  flex-wrap: wrap;
   padding: var(--space-1) 0 var(--space-1) var(--space-3);
   border-left: 2px solid var(--destructive);
   color: var(--destructive);
   font-size: var(--fs-sm);
 }
 .ws-form__error svg { flex: none; margin-top: 2px; }
+.ws-form__error .ws-form__message { min-width: 0; }
+/* 守护进程的原文：等宽 + 换行，绝不二次截断成一行 */
+.ws-form__error--reason .ws-form__message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.ws-form__detail {
+  flex: 1 1 100%;
+  margin-top: 2px;
+  padding-left: calc(var(--space-2) + 12px);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-2xs);
+  color: var(--muted-foreground);
+}
 .ws-modal-example {
   margin-top: calc(-1 * var(--space-2));
   padding: 6px 9px;

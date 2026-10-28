@@ -379,8 +379,199 @@ describe("WorkspacesPage", () => {
 
         const commands = commandCalls(fetchMock);
         expect(commands.map((command) => command.method)).toEqual(["workspace.add", "instance.ensure"]);
+        // The daemon persists the display name as `alias` (`name` is not a param).
+        expect(commands[0]?.params).toEqual({ cwd: "/work/new", alias: "New project" });
         expect(commands[1]?.params).toEqual({ workspaceId: "ws-new" });
         expect(await screen.findByText("Chat destination")).toBeInTheDocument();
+    });
+
+    it("rejects a relative path inline instead of round-tripping to the daemon", async () => {
+        const fetchMock = mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            {
+                path: "/api/v1/workspaces",
+                handler: () => ({ body: [workspace({ workspaceId: "ws-old", cwd: "/work/old", name: "Old project" })] }),
+            },
+            recentRoute(),
+        ]);
+
+        await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Open new workspace" }));
+        const dialog = await screen.findByRole("dialog");
+        fireEvent.change(within(dialog).getByLabelText("Path"), { target: { value: "work/relative" } });
+        fireEvent.click(within(dialog).getByRole("button", { name: "Open" }));
+
+        expect(
+            await within(dialog).findByText("Enter an absolute path, or a path that starts with ~/"),
+        ).toBeInTheDocument();
+        expect(commandCalls(fetchMock)).toHaveLength(0);
+        // Stays open so the path can be corrected in place.
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("sends a ~ path verbatim and lets the daemon expand it", async () => {
+        const fetchMock = mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            {
+                path: "/api/v1/workspaces",
+                handler: () => ({ body: [workspace({ workspaceId: "ws-old", cwd: "/work/old", name: "Old project" })] }),
+            },
+            recentRoute(),
+            {
+                method: "POST",
+                path: "/api/v1/cmd",
+                handler: ({ body }) => {
+                    const command = body as { method?: string };
+                    if (command.method === "workspace.add") return { body: { accepted: true, workspaceId: "ws-home" } };
+                    return { body: { accepted: true } };
+                },
+            },
+        ]);
+
+        const { router } = await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Open new workspace" }));
+        const dialog = await screen.findByRole("dialog");
+        fireEvent.change(within(dialog).getByLabelText("Path"), { target: { value: "~/Workspace/Misc/my-project" } });
+        fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "My project" } });
+        fireEvent.click(within(dialog).getByRole("button", { name: "Open" }));
+
+        await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+        const commands = commandCalls(fetchMock);
+        expect(commands.map((command) => command.method)).toEqual(["workspace.add", "instance.ensure"]);
+        // Verbatim `~`: the daemon owns home expansion, the browser must not guess.
+        expect(commands[0]?.params).toEqual({ cwd: "~/Workspace/Misc/my-project", alias: "My project" });
+        expect(commands[1]?.params).toEqual({ workspaceId: "ws-home" });
+    });
+
+    it("keeps the dialog open with the daemon reason, then retries only instance.ensure", async () => {
+        let ensures = 0;
+        let items = [workspace({ workspaceId: "ws-old", cwd: "/work/old", name: "Old project" })];
+        const fetchMock = mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute(),
+            {
+                method: "POST",
+                path: "/api/v1/cmd",
+                handler: ({ body }) => {
+                    const command = body as { method?: string };
+                    if (command.method === "workspace.add") {
+                        items = [...items, workspace({ workspaceId: "ws-new", cwd: "/work/new", name: "New project" })];
+                        return { body: { accepted: true, workspaceId: "ws-new" } };
+                    }
+                    ensures += 1;
+                    if (ensures === 1) {
+                        return {
+                            status: 503,
+                            body: {
+                                error: {
+                                    code: "E_INSTANCE_UNAVAILABLE",
+                                    message: "nvim exited during startup (code 1)",
+                                    retryable: true,
+                                },
+                            },
+                        };
+                    }
+                    return { body: { accepted: true } };
+                },
+            },
+        ]);
+
+        const { router } = await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Open new workspace" }));
+        const dialog = await screen.findByRole("dialog");
+        fireEvent.change(within(dialog).getByLabelText("Path"), { target: { value: "/work/new" } });
+        fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "New project" } });
+        fireEvent.click(within(dialog).getByRole("button", { name: "Open" }));
+
+        const alert = await within(dialog).findByTestId("workspace-form-error");
+        // The reason the user can act on, not a code and never a JSON blob.
+        expect(alert).toHaveTextContent("nvim exited during startup (code 1)");
+        expect(alert.textContent ?? "").not.toContain("E_INSTANCE_UNAVAILABLE");
+        expect(alert.textContent ?? "").not.toContain("{");
+        expect(alert.className).toContain("ws-form__error--reason");
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        expect(router.state.location.pathname).toBe("/workspaces");
+
+        fireEvent.click(within(dialog).getByRole("button", { name: "Retry starting Neovim" }));
+
+        await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+        expect(router.state.location.href).toContain("workspace=ws-new");
+        const commands = commandCalls(fetchMock);
+        // One extra instance.ensure only: the workspace was not added a second time.
+        expect(commands.map((command) => command.method)).toEqual(["workspace.add", "instance.ensure", "instance.ensure"]);
+        expect(commands[2]?.params).toEqual({ workspaceId: "ws-new" });
+    });
+
+    it("renders a not-yet-started workspace as idle and explains a degraded instance", async () => {
+        const items = [
+            workspace({ workspaceId: "ws-new", cwd: "/work/new", name: "Not started" }),
+            workspace({
+                workspaceId: "ws-bad",
+                cwd: "/work/bad",
+                name: "Degraded",
+                instance: {
+                    workspaceId: "ws-bad",
+                    instanceId: "inst-bad",
+                    status: "degraded",
+                    nvimPid: 42,
+                    pluginVersion: null,
+                    hasUI: false,
+                    attachedClients: 0,
+                    listenAddr: null,
+                    startedAt: 1_000,
+                    reason: "plugin handshake timed out after 1500ms",
+                },
+            }),
+            workspace({
+                workspaceId: "ws-busy",
+                cwd: "/work/busy",
+                name: "Running",
+                instance: {
+                    workspaceId: "ws-busy",
+                    instanceId: "inst-busy",
+                    status: "ready",
+                    nvimPid: 43,
+                    pluginVersion: "0.1.1",
+                    hasUI: true,
+                    attachedClients: 1,
+                    listenAddr: "127.0.0.1:7779",
+                    startedAt: 2_000,
+                    reason: "stale startup note",
+                },
+            }),
+        ];
+        mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute(),
+        ]);
+
+        await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(3);
+
+        const rows = screen.getAllByTestId("workspace-row");
+        const [notStarted, degraded, ready] = rows;
+        // No instance row means "opens on demand", not "stopped".
+        expect(notStarted?.querySelector(".ws-card__state .dot")).toHaveClass("dot--idle");
+        expect(notStarted?.querySelector(".ws-card__state")).toHaveTextContent("Not started · opens on demand");
+        expect(notStarted?.querySelector(".ws-card__state")).not.toHaveTextContent("Instance stopped");
+        expect(notStarted?.querySelector('[data-testid="workspace-instance-reason"]')).toBeNull();
+
+        const reason = degraded?.querySelector('[data-testid="workspace-instance-reason"]');
+        expect(reason).toHaveTextContent("plugin handshake timed out after 1500ms");
+        expect(reason).toHaveAttribute("title", "plugin handshake timed out after 1500ms");
+        expect(degraded?.querySelector(".ws-card__state")).toHaveTextContent("Instance degraded");
+
+        // A healthy instance keeps its plain label (a stale reason is not news).
+        expect(ready?.querySelector(".ws-card__state")).toHaveTextContent("Instance ready");
+        expect(ready?.querySelector('[data-testid="workspace-instance-reason"]')).toBeNull();
     });
 
     it("redirects /workspace/:workspaceId deep links into chat", async () => {

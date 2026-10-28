@@ -19,7 +19,10 @@ import { isSecondary, reasonLabelKey } from "./visibility";
  */
 export function instanceState(workspace: WorkspaceInfo): { status: DotStatus; labelKey: string } {
     if (!workspace.exists) return { status: "err", labelKey: "workspaces.instanceMissing" };
-    switch (workspace.instance?.status) {
+    // No instance row at all means "not started yet": this daemon starts one on
+    // demand (opening the workspace), so "stopped" would be a lie.
+    if (!workspace.instance) return { status: "idle", labelKey: "workspaces.instanceNotStarted" };
+    switch (workspace.instance.status) {
         case "ready":
             return { status: "ok", labelKey: "workspaces.instanceReady" };
         case "starting":
@@ -34,6 +37,20 @@ export function instanceState(workspace: WorkspaceInfo): { status: DotStatus; la
         default:
             return { status: "exited", labelKey: "workspaces.instanceStopped" };
     }
+}
+
+/** Statuses where the daemon's `instance.reason` explains the label below it. */
+const REASON_STATUSES: ReadonlySet<string> = new Set(["degraded", "stopped", "unmanaged"]);
+
+/**
+ * The instance's own explanation, but only for the states where it adds
+ * information (a `ready` instance can still carry a stale reason).
+ */
+export function instanceReason(workspace: WorkspaceInfo): string | undefined {
+    const instance = workspace.instance;
+    const reason = instance?.reason?.trim();
+    if (!instance || !reason) return undefined;
+    return REASON_STATUSES.has(instance.status) ? reason : undefined;
 }
 
 export interface WorkspaceCardProps {
@@ -56,6 +73,7 @@ export function WorkspaceCard({ workspace }: WorkspaceCardProps) {
     // *whether* they render at all (see features/workspaces/visibility.ts).
     const secondary = isSecondary(workspace);
     const reasonKey = secondary ? reasonLabelKey(workspace) : null;
+    const detail = instanceReason(workspace);
 
     return (
         <Link
@@ -80,6 +98,12 @@ export function WorkspaceCard({ workspace }: WorkspaceCardProps) {
                 </span>
             </div>
             <div className="ws-card__cwd mono truncate">{workspace.cwd}</div>
+            {detail ? (
+                // Full text stays in `title`; the line itself is ellipsized by CSS.
+                <div className="ws-card__note truncate" title={detail} data-testid="workspace-instance-reason">
+                    {detail}
+                </div>
+            ) : null}
             <div className="ws-card__last">
                 {count > 0 ? (
                     <>

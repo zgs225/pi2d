@@ -17,7 +17,7 @@ import { useConnectionStore } from "@/stores/connection";
 import { useSessionsStore } from "@/stores/sessions";
 import { useWorkspacesStore } from "@/stores/workspaces";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 function RouteTitle({ pathname }: { pathname: string }) {
     const { t } = useTranslation();
@@ -105,6 +105,7 @@ export function AppShell() {
     const wsState = useConnectionStore((state) => state.wsState);
     const setWsState = useConnectionStore((state) => state.setWsState);
     const disconnect = useConnectionStore((state) => state.disconnect);
+    const queryClient = useQueryClient();
     const isConnect = pathname.startsWith("/connect");
     // The chat page owns its own socket and already publishes wsState.
     const ownsSocket = !pathname.startsWith("/chat");
@@ -173,6 +174,9 @@ export function AppShell() {
         const client = new PiWsClient({
             url: defaultWsUrl(),
             token: getDeviceToken(),
+            // `instance_state` frames otherwise go nowhere on these pages: the card
+            // grid reads the workspace row, so invalidate it (coalesced in ws.ts).
+            queryClient,
             handlers: {
                 onState: (state: WsConnectionState) => {
                     if (active) setWsState(state);
@@ -192,7 +196,7 @@ export function AppShell() {
             active = false;
             client.close();
         };
-    }, [disconnect, href, isConnect, navigate, ownsSocket, paired, setWsState]);
+    }, [disconnect, href, isConnect, navigate, ownsSocket, paired, queryClient, setWsState]);
 
     /** ⌘K / Ctrl-K opens the palette on every navigation page (never on /connect). */
     useEffect(() => {
