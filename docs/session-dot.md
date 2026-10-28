@@ -3,72 +3,134 @@
 The Chat page's session list draws one small circle per row. Its meaning is **owned by
 pi2.nvim**, not by this daemon: the browser mirrors `:PiSessions`
 (`lua/pi/ui/sessions.lua` — `M.dot_hl`, `child_dot_hl`, `refresh_current_markers`,
-`format_line`, `lua/pi/ui/highlights.lua`). Change one side and the other must follow.
+`format_line`, `lua/pi/ui/highlights.lua`, `lua/pi/ui/tasks.lua`). Change one side and the
+other must follow.
 
 Everything below is computed in `web/src/features/chat/session-state.ts`
-(`sessionDot` / `childSessionDot` / `subagentDot`, all returning a `DotView`) and rendered
-by `<StatusDot>` (`web/src/components/ui/status-dot.tsx`). The wire is untouched — the dot
-is a pure view of `SessionState`.
+(`sessionDot` / `childSessionDot` / `subagentDot`) and rendered by `<StatusDot>`
+(`web/src/components/ui/status-dot.tsx`). Each returns a `DotView`,
+`{ status: DotStatus; blink?: "fast" | "slow"; current?: boolean }`. The wire is untouched —
+the dot is a pure view of `SessionState`.
+
+## Where the blink is decided
+
+**Blinking is a property of the view (`DotView.blink`), never of the colour class and never
+of the DOM location.** Omitting `blink` means solid.
+
+That rule exists because breaking it was the bug: keying the animation off the colour class
+plus a component scope (`html[data-pi-blink-fast="dim"] .tree-row .dot--ok`) made green blink
+only inside the session tree and sit steady elsewhere, `.dot--busy`/`.dot--err` blazed
+globally, `dot--steady` could not opt an `ok` dot out, and a failed task's `dot--err` blinked
+forever with nothing to acknowledge it.
+
+The renderer adds `dot--blink-fast` or `dot--blink-slow` only when `blink` is set, and
+`app.css` has exactly two dim rules, with no colour or component scoping:
+
+```css
+html[data-pi-blink-fast="dim"] .dot--blink-fast,
+html[data-pi-blink-slow="dim"] .dot--blink-slow { opacity: .35; }
+```
+
+CSS therefore never decides *whether* a dot blinks, only *when* the shared clock dims it. A
+dot without `dot--blink-*` never animates. `dot--steady` is gone: to make a dot solid, omit
+`blink`. `DOT_CLASS` is colour-only. Server and health dots (topbar chip, nav rail, status
+page, workspace cards) carry no blink class at all.
 
 ## Parent rows (`sessionDot`)
 
 Priority order, highest first:
 
-| # | condition | class | visual |
-|---|---|---|---|
-| 1 | `status === "exited"` or `"interrupted"` | `dot--dead` | solid red, steady |
-| 2 | `flags.error` | `dot--err` | red, fast blink |
-| 3 | `flags.attention` or `attention.length > 0` | `dot--attention` | amber + ring, steady |
-| 4 | `flags.done` | `dot--ok` | green, fast blink |
-| 5 | `status === "busy"` | `dot--busy` | amber, fast blink |
-| 6 | `status === "compacting"` | `dot--compacting` | violet, slow blink |
-| 7 | anything else (`idle`, `starting`) | `dot--idle` | grey, steady |
+| # | condition | class | blink | visual |
+|---|---|---|---|---|
+| 1 | `status === "exited"` or `"interrupted"` | `dot--dead` | — | solid red |
+| 2 | `flags.error` | `dot--err` | fast | red |
+| 3 | `flags.attention` or `attention.length > 0` | `dot--attention` | — | amber + ring |
+| 4 | `flags.done` | `dot--ok` | fast | green |
+| 5 | `status === "busy"` | `dot--busy` | fast | amber |
+| 6 | `status === "compacting"` | `dot--compacting` | slow | violet |
+| 7 | anything else (`idle`, `starting`) | `dot--idle` | — | grey |
 
 `interrupted` and `exited` share the top slot because the plugin has no `interrupted`: any
 non-running row is `exited`, and a dead row outranks its own unread flags.
+
+## The "you are here" marker (`withCurrent`)
+
+The row the console has open gets `dot--current` (blue) — the browser analogue of the
+plugin's current-tab marker (`refresh_current_markers`), which repaints the focused dot in the
+agent colour. It is suppressed whenever a notification colour applies (error / done /
+attention); idle and busy rows keep their rate and gain the class, a focused `compacting` row
+is painted `busy` + fast instead of half speed. `sessionStatusKey()` keeps the *text* label
+separate: `interrupted` reads "interrupted" even though its dot is the dead red.
 
 ## Sub-session rows (`childSessionDot`)
 
 A separate matrix (`child_dot_hl`), not the parent's:
 
-| condition | class |
-|---|---|
-| `status === "exited"` (the wire folds `dormant` into it) | `dot--exited` — hollow ring (the plugin's `◌`) |
-| `status === "interrupted"` | `dot--dead` |
-| `flags.error` | `dot--err`, plus `dot--steady` **while the row is viewed** |
-| `busy` or `compacting` | `dot--busy` (the plugin blinks both at the busy rate) |
-| anything else | `dot--idle` |
+| condition | class | blink |
+|---|---|---|
+| `status === "exited"` (the wire folds `dormant` into it) | `dot--exited` — hollow ring (the plugin's `◌`) | — |
+| `status === "interrupted"` | `dot--dead` | — |
+| `flags.error` | `dot--err` | solid **while viewed**, fast otherwise |
+| `busy` or `compacting` | `dot--busy` (the plugin blinks both at the busy rate) | fast |
+| anything else | `dot--idle` | — |
 
 A child never shows `ok` or `attention`: the plugin forces `done = false` and
 `attention = 0` for children and surfaces completion/failure in the parent chat.
 
 ## Manifest-only subagents (`subagentDot`)
 
-`active` → busy, `completed`/`dormant` → hollow, `failed` → err (steady when viewed),
-`interrupted` → dead, unknown → idle. A finished subagent is **hollow, not green** — the
-plugin shows a finished child as dormant `◌`.
+| status | class | blink |
+|---|---|---|
+| `active` | `dot--busy` | — |
+| `completed` / `dormant` | `dot--exited` (hollow) | — |
+| `failed` | `dot--err` | solid **when viewed**, fast otherwise |
+| `interrupted` | `dot--dead` | — |
+| unknown | `dot--idle` | — |
 
-## The "you are here" marker
+A finished subagent is **hollow, not green** — the plugin shows a finished child as dormant
+`◌`. An `active` manifest row is amber but **solid**: a manifest entry that still has a live
+session is rendered as that session's row (which blinks while busy), so a manifest-only row is
+either a spawn in flight or stale, and nvim blinks neither — nothing would acknowledge it.
 
-The row the console has open gets `dot--current` (blue) — the browser analogue of the
-plugin's current-tab marker, which repaints the focused dot in the agent colour. It is
-suppressed whenever a notification colour applies, and a focused `compacting` row blinks at
-the busy rate instead of half speed. `sessionStatusKey()` keeps the *text* label separate:
-`interrupted` reads "interrupted" even though its dot is the dead red.
+
+## Task dots (`:PiTasks` parity)
+
+`taskDotView` (exported by `session-tray.tsx`, reused by the task-output modal) is the one
+task matrix for the chat surfaces; the `/status` task card renders the same colours solid.
+Nothing ever acknowledges a task, so its terminal states are always solid — a failure must not
+blink forever.
+
+| task status | class | blink |
+|---|---|---|
+| `running` | `dot--busy` | fast |
+| `completed` | `dot--ok` | — |
+| `failed` | `dot--err` | — |
+| `stopped` | `dot--attention` | — |
+
+## The head dot agrees with its row
+
+The stream-head dot renders the same `DotView` as the selected tree row —
+`sessionDot(active, { viewed: true })` — so one session can never show two different blink
+rates at once.
 
 ## `done` / `error` are unread markers, not states
 
 The plugin raises `done` only for a session the user is **not** looking at, and
 `clear_flags` wipes `done`/`error` on `TabEnter`. `useSessionsStore.markSeen(sessionId)` is
-the browser's TabEnter: `pages/chat.tsx` calls it when the routed session carries either
-flag, so the session you open stops being green or red. The canonical reducer
-(`src/protocol/reducer.ts`) and `fixtures/` are deliberately untouched — this is a
-client-side view concern.
+the browser's TabEnter: `pages/chat.tsx` calls it when the routed session carries either flag,
+so the session you open stops being green or red — which is why a viewed child or subagent
+failure is solid while an unviewed one blinks. The canonical reducer (`src/protocol/reducer.ts`)
+and `fixtures/` are deliberately untouched: this is a client-side view concern.
 
 ## One clock for every dot
 
-No dot animates itself. `web/src/lib/blink.ts` owns a single ref-counted 500ms interval
-that writes `data-pi-blink-fast` (`tick % 2`) and `data-pi-blink-slow`
-(`floor(tick / 2) % 2`) on `<html>`; `app.css` derives the dim phase from those attributes,
-so every dot in the app blinks in lockstep instead of drifting. `dot--steady` opts a dot
-out, and `prefers-reduced-motion: reduce` pins them all solid (the timer is never started).
+No dot animates itself. `web/src/lib/blink.ts` owns a single ref-counted 500ms interval that
+writes `data-pi-blink-fast` (`tick % 2`) and `data-pi-blink-slow` (`floor(tick / 2) % 2`) on
+`<html>`, so every blinking dot is in lockstep instead of drifting.
+`prefers-reduced-motion: reduce` pins both attributes `on` and never starts the timer.
+
+## The contract is pinned
+
+`web/tests/status-dot.blink-css.test.ts` loads the real stylesheets into jsdom and asserts that
+a colour-only dot stays solid in both clock phases and that placement (inside versus outside
+`.tree-row`) changes nothing. Add a case there before changing any blink behaviour.
