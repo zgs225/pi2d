@@ -425,6 +425,32 @@ describe("HTTP API", () => {
         expect(res.status).toBe(401);
     });
 
+    it("includes injected system stats in resources", async () => {
+        const custom = await createHarness({ sysinfo: (await import("./harness.js")).makeFakeSysinfoSampler({ cpuPercent: 42 }) });
+        try {
+            const customToken = custom.createToken();
+            const response = await fetch(`${custom.url}/api/v1/resources`, {
+                headers: { Authorization: `Bearer ${customToken}` },
+            });
+            expect(response.status).toBe(200);
+            expect((await response.json()).system).toEqual(expect.objectContaining({ cpuPercent: 42 }));
+        } finally {
+            await custom.cleanup();
+        }
+    });
+
+    it("includes system stats in info", async () => {
+        const response = await fetch(`${h.url}/api/v1/info`);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(expect.objectContaining({
+            cpuCores: 4,
+            loadAvg: [1.5, 1.2, 0.9],
+            cpu: 42,
+            mem: 25,
+            disk: 25,
+        }));
+    });
+
     it("redirects a scanned /pair/<code> link to the zero-input connect page", async () => {
         const res = await fetch(`${h.url}/pair/abcd2345`, { redirect: "manual" });
         expect(res.status).toBe(302);

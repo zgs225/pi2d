@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { loadConfig, type Config, type ConfigEnv } from "../config.js";
 import { dataDir, daemonSocketPath, daemonTokenPath, runtimeDir, stateDir } from "../core/paths.js";
 import type { Logger } from "../core/interfaces.js";
+import { createSysinfo } from "../core/sysinfo.js";
 import { AuthStore } from "../daemon/auth.js";
 import { InMemoryBus } from "../daemon/hub.js";
 import { startServer, type ServerDeps, type StartedServer } from "../daemon/server.js";
@@ -144,6 +145,7 @@ export async function wireDaemon(options: WireOptions = {}): Promise<WiredDaemon
         machineId: options.machineId ?? machineIdFor(env.HOSTNAME ?? process.env.HOSTNAME ?? "localhost"),
         startedAt,
         now,
+        sysinfo: createSysinfo({ now }),
         ...(options.server?.heartbeatMs === undefined ? {} : { heartbeatMs: options.server.heartbeatMs }),
         ...(options.server?.ws === undefined ? {} : { ws: options.server.ws }),
     };

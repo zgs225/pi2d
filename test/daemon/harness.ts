@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AuthStore } from "../../src/daemon/auth.js";
 import { startServer, type StartedServer } from "../../src/daemon/server.js";
 import type { Config, Limits } from "../../src/config.js";
+import type { SysinfoSampler, SystemStats } from "../../src/core/sysinfo.js";
 import type { WorkspaceInfo } from "../../src/protocol/types.js";
 import { FakeBus, FakeInstanceManager, FakeWorkspaceStore } from "./fakes.js";
 
@@ -31,6 +32,26 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     return { ...base, ...overrides, limits: { ...base.limits, ...(overrides.limits ?? {}) } };
 }
 
+/** Deterministic fake sampler returned when no override is provided. */
+export const FAKE_SYSTEM_STATS: SystemStats = {
+    sampledAt: 1_700_000_000_000,
+    cpuPercent: 42,
+    cpuCores: 4,
+    loadAvg: [1.5, 1.2, 0.9],
+    memUsedBytes: 4 * 1024 ** 3,
+    memTotalBytes: 16 * 1024 ** 3,
+    memPercent: 25,
+    diskPath: "/tmp/pi2-test",
+    diskUsedBytes: 50 * 1024 ** 3,
+    diskTotalBytes: 200 * 1024 ** 3,
+    diskPercent: 25,
+};
+
+export function makeFakeSysinfoSampler(stats: Partial<SystemStats> = {}): SysinfoSampler {
+    const merged: SystemStats = { ...FAKE_SYSTEM_STATS, ...stats };
+    return { sample: async () => merged };
+}
+
 export interface HarnessOptions {
     workspaces?: WorkspaceInfo[];
     seedInstances?: string[];
@@ -45,6 +66,8 @@ export interface HarnessOptions {
         snapshotWaitMs?: number;
         measureBufferedAmount?: (socket: unknown) => number;
     };
+    /** Override the sysinfo sampler; defaults to a deterministic fake (no real OS I/O). */
+    sysinfo?: SysinfoSampler;
 }
 
 export interface Harness {
@@ -107,6 +130,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
         startedAt: Date.now(),
         heartbeatMs: options.heartbeatMs,
         ws: options.wsOverrides,
+        sysinfo: options.sysinfo ?? makeFakeSysinfoSampler(),
     });
 
     return {

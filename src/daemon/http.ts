@@ -8,6 +8,7 @@ import type { Bus, InstanceManager, Logger, WorkspaceStore } from "../core/inter
 import { ERROR_CODES, errorBody } from "../protocol/errors.js";
 import { PROTOCOL_VERSION, type CommandRequest } from "../protocol/types.js";
 import type { Config } from "../config.js";
+import type { SysinfoSampler } from "../core/sysinfo.js";
 import { networkBases } from "../core/network.js";
 import { encodeQr, fitsQr } from "../core/qr.js";
 import type { AuthStore, DevicePublic } from "./auth.js";
@@ -39,6 +40,7 @@ export interface AppDeps {
     startedAt?: number;
     now?: () => number;
     metrics?: () => DaemonMetrics;
+    sysinfo?: SysinfoSampler;
     /** Redeem budget; injectable so tests can advance the clock. */
     pairLimiter?: PairRateLimiter;
 }
@@ -191,8 +193,9 @@ export function createApp(deps: AppDeps): Hono<Env> {
         await next();
     });
 
-    app.get("/api/v1/info", (c) =>
-        c.json({
+    app.get("/api/v1/info", async (c) => {
+        const system = await deps.sysinfo?.sample();
+        return c.json({
             v: PROTOCOL_VERSION,
             daemonId: deps.daemonId,
             machineId: deps.machineId ?? deps.daemonId,
@@ -207,8 +210,13 @@ export function createApp(deps: AppDeps): Hono<Env> {
             limits: config.limits,
             host: config.host,
             publicUrl: config.publicUrl,
-        }),
-    );
+            cpuCores: system?.cpuCores,
+            loadAvg: system?.loadAvg ?? null,
+            ...(typeof system?.cpuPercent === "number" ? { cpu: system.cpuPercent } : {}),
+            ...(typeof system?.memPercent === "number" ? { mem: system.memPercent } : {}),
+            ...(typeof system?.diskPercent === "number" ? { disk: system.diskPercent } : {}),
+        });
+    });
 
     /**
      * Local-browser login handshake: loopback + the local CLI token only.
@@ -324,7 +332,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
         return c.body(null, 204);
     });
 
-    app.get("/api/v1/resources", async (c) => c.json(await instances.resources()));
+    app.get("/api/v1/resources", async (c) => {
+        const [snapshot, system] = await Promise.all([instances.resources(), deps.sysinfo?.sample()]);
+        return c.json(system === undefined ? snapshot : { ...snapshot, system });
+    });
 
     app.get("/api/v1/diagnostics", (c) => {
         const metrics = deps.metrics?.() ?? { connections: 0 };

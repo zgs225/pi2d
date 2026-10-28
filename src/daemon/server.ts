@@ -102,6 +102,7 @@ export async function startServer(config: Config, deps: ServerDeps): Promise<Sta
         startedAt: deps.startedAt,
         now: deps.now,
         metrics: () => ({ connections: ws.connections(), eventsSent: ws.eventsSent() }),
+        sysinfo: deps.sysinfo,
     });
 
     let closing: Promise<void> | undefined;
