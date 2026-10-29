@@ -10,6 +10,7 @@
  *   pi2 pairing            create a pairing code for another device
  *   pi2 install-service    render/install a systemd user unit or LaunchAgent
  *   pi2 uninstall-service  remove it again
+ *   pi2 service …          status/start/stop/enable/disable that unit
  *
  * Everything is discovered from the runtime dir: `daemon.json` carries the
  * bound port, `cli.token` the local admin token (see docs/deployment.md).
@@ -48,10 +49,27 @@ import {
 import { diagnose, formatReport, reportToJson, type DoctorReport } from "./doctor.js";
 import { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
 import { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
+import {
+    parseServiceArgs,
+    runServiceCommand,
+    SERVICE_USAGE,
+    type ExecResult as ServiceExecResult,
+    type ServiceAction,
+} from "./service-control.js";
 
 export { CliError } from "./util.js";
 export { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
 export { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
+export {
+    SERVICE_ACTIONS,
+    SERVICE_USAGE,
+    parseServiceArgs,
+    runServiceCommand,
+    serviceArgv,
+    serviceStatus,
+    type ServiceStatus,
+    type ServiceAction,
+} from "./service-control.js";
 
 export const USAGE = `pi2 — pi2 client
 
@@ -67,6 +85,7 @@ Usage:
   pi2 pairing [--base <url>]         create a pairing code (URL + code + QR)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
+  pi2 service status|start|stop|enable|disable  control that unit (status [--json])
   pi2 --version | --help
 
 \`pi2 stop\` / \`pi2 daemon stop\` flags: -f, --force sends SIGKILL if the daemon
@@ -699,6 +718,12 @@ export interface Pi2Options {
     isPidAlive?: (pid: number) => boolean;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     sleep?: (ms: number) => Promise<void>;
+    /** Injected service manager runner (defaults to `spawnSync`). */
+    serviceExec?: (argv: string[]) => ServiceExecResult;
+    /** Injected unit-file existence probe (defaults to `fs.existsSync`). */
+    serviceExists?: (path: string) => boolean;
+    serviceUid?: number;
+    serviceUser?: string;
 }
 
 export async function main(argv: readonly string[], options: Pi2Options = {}): Promise<number> {
@@ -844,6 +869,26 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                     ...(options.removeFile === undefined ? {} : { removeFile: options.removeFile }),
                 };
                 return command === "install-service" ? runInstallService(serviceOptions) : runUninstallService(serviceOptions);
+            }
+            case "service": {
+                const parsed = parseServiceArgs(rest);
+                if (parsed.help) {
+                    out(SERVICE_USAGE);
+                    return 0;
+                }
+                const platform = options.platform ?? (osPlatform() === "darwin" ? "darwin" : "linux");
+                const paths = options.servicePaths ?? defaultServicePaths();
+                return await runServiceCommand(parsed.action as ServiceAction, {
+                    platform,
+                    paths,
+                    print: out,
+                    json: parsed.json,
+                    ...(options.env === undefined ? {} : { env: options.env }),
+                    ...(options.serviceExec === undefined ? {} : { exec: options.serviceExec }),
+                    ...(options.serviceExists === undefined ? {} : { exists: options.serviceExists }),
+                    ...(options.serviceUid === undefined ? {} : { uid: options.serviceUid }),
+                    ...(options.serviceUser === undefined ? {} : { user: options.serviceUser }),
+                });
             }
             default:
                 err(`pi2: unknown command "${command}"`);
