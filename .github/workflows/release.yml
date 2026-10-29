@@ -3,6 +3,16 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Backfill (or rebuild) the release assets for a tag that already exists,
+  # without touching npm, Homebrew or the AUR: `gh workflow run release.yml -f
+  # tag=v0.1.6`. Publishing stays a tag-push-only operation (see the `publish`
+  # job's `if`).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build assets for (e.g. v0.1.6)"
+        required: true
+        type: string
 
 # Authentication is npm Trusted Publishing (OIDC): the npm CLI picks up the
 # GitHub Actions OIDC token and exchanges it for a short-lived publish token.
@@ -10,13 +20,24 @@ on:
 # See docs/releasing.md.
 permissions:
   contents: write # create GitHub release and upload binary assets
-  id-token: write # mint the OIDC token npm exchanges for publish rights
+  id-token: write # mint the OIDC token npm exchanges for publish rights, and the one `attest-build-provenance` signs with
+  attestations: write # SLSA build provenance for the binary tarballs
+
+# `github.event.inputs` (not `inputs`) so this also evaluates on `push`, where
+# the `inputs` context is not populated.
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   publish:
+    # A dispatch run only (re)builds assets for an existing tag; npm publishing
+    # must stay on the tag-push path so it never re-publishes a version.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -33,10 +54,10 @@ jobs:
 
       - name: Tag must match package.json version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           pkg="$(node -p 'require("./package.json").version')"
           if [ "$tag" != "$pkg" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package.json $pkg" >&2
+            echo "tag $TAG does not match package.json $pkg" >&2
             exit 1
           fi
 
@@ -125,8 +146,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          tag_name: ${{ env.TAG }}
           body: |
-            `npm i -g @yuez/pi2d@${{ github.ref_name }}`
+            `npm i -g @yuez/pi2d@${{ env.TAG }}`
 
             Compatible pi2.nvim: protocol v1 (see `docs/protocol.md`).
 
@@ -138,6 +160,11 @@ jobs:
         # ubuntu-24.04-arm is GA for public repositories. Running linux-arm64 and
         # linux-arm64-musl on native ARM64 runners lets us actually execute and
         # boot-check the artifact before publishing it (all six legs are host-native).
+        #
+        # macOS labels are pinned to images that are neither retired nor
+        # deprecated (`macos-13` was retired and left `darwin-x64` queued for
+        # 21h+; `macos-14` is deprecated). `macos-15-intel` is the x64 image and
+        # `macos-15` the arm64 one — see actions/runner-images#README.
         include:
           - target: linux-x64
             runner: ubuntu-latest
@@ -148,11 +175,13 @@ jobs:
           - target: linux-arm64-musl
             runner: ubuntu-24.04-arm
           - target: darwin-x64
-            runner: macos-13
+            runner: macos-15-intel
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -178,7 +207,7 @@ jobs:
 
       - name: Boot check (host-native)
         if: ${{ !contains(matrix.target, 'musl') }}
-        run: sh scripts/boot-check.sh dist-bin/bin/pi2 "${GITHUB_REF_NAME#v}"
+        run: sh scripts/boot-check.sh dist-bin/bin/pi2 "${TAG#v}"
 
       - name: Boot check (Alpine, musl artifact)
         # Bun's musl binaries link against musl's libstdc++; the glibc runner
@@ -189,7 +218,7 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}/scripts:/s:ro" \
             -v "${{ github.workspace }}/dist-bin:/b:ro" \
-            alpine:3.20 sh -c 'apk add --no-cache libstdc++ curl >/dev/null 2>&1 && sh /s/boot-check.sh /b/bin/pi2 "${GITHUB_REF_NAME#v}"'
+            alpine:3.20 sh -c 'apk add --no-cache libstdc++ curl >/dev/null 2>&1 && sh /s/boot-check.sh /b/bin/pi2 "${TAG#v}"'
 
       - name: Upload binary tarball artifact
         uses: actions/upload-artifact@v4
@@ -200,9 +229,14 @@ jobs:
 
   checksums:
     needs: [publish, binaries]
+    # `always()` keeps a dispatch run alive after the skipped `publish` job; the
+    # upload itself still requires a fully green `binaries` matrix.
+    if: always() && needs.binaries.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
@@ -218,11 +252,28 @@ jobs:
           echo "Generated SHA256SUMS:"
           cat SHA256SUMS
           sha256sum -c SHA256SUMS
-          COUNT="$(wc -l < SHA256SUMS)"
-          if [ "$COUNT" -ne 6 ]; then
-            echo "Expected 6 checksums, got $COUNT" >&2
+          # Assert the exact platform set instead of a line count: a bare `-ne 6`
+          # passed while a dropped leg (say darwin-x64) was silently missing.
+          version="${TAG#v}"
+          missing=0
+          for target in linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
+            asset="pi2d-${version}-${target}.tar.gz"
+            if ! grep -q " ${asset}$" SHA256SUMS; then
+              echo "::error::missing asset for ${target}: ${asset}"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
             exit 1
           fi
+          echo "all 6 platform assets present"
+
+      - name: Attest build provenance (SLSA)
+        # `pi2 update` verifies these with `gh attestation verify`; a checksum
+        # shipped in the same release only proves the download was intact.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist-bin/*.tar.gz
 
       - name: Upload SHA256SUMS artifact
         uses: actions/upload-artifact@v4
@@ -234,13 +285,16 @@ jobs:
       - name: Append artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
           files: |
             dist-bin/*.tar.gz
             dist-bin/SHA256SUMS
 
   packaging:
     needs: checksums
+    # Homebrew/AUR point at the assets this run just uploaded, so they stay on
+    # the tag-push path; a dispatch backfill must not bump a tap formula.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # The two release credentials live in job-level env because GitHub does not
     # expose the `secrets` context inside `if:` expressions (a step-level
