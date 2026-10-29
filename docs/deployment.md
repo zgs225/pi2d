@@ -472,8 +472,9 @@ raw module matrix without a quiet zone (`size` strings of `size` `1`/`0` charact
 HTTP mint response carries the same matrix, so the console and a terminal draw the same
 symbol. A URL too long for version 10 is printed without a QR, with a note.
 
-Machines call `POST /api/v1/pair` directly — that is what `:PiWebPair` does — so the CLI
-keeps only this human report; there is no `--json`.
+Machines and editor plugins use `--json`, which prints the normalised mint payload
+(`{url, code, expiresAt?, qr?, bases[]}`) instead of the human report. `:PiWebPair` in
+pi2.nvim renders exactly that payload, so it no longer speaks HTTP itself.
 
 ### 8.6 `pi2 install-service` / `pi2 service`
 
