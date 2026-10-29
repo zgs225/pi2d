@@ -121,6 +121,8 @@ pi2 daemon                 # foreground daemon
 pi2 stop                   # stop running daemon (alias: pi2 daemon stop)
 pi2 open                   # open browser console signed in (loopback only)
 pi2 install-service --write   # render and write user service file
+pi2 service status            # unit, enabled, active, linger (--json for machines)
+pi2 service enable            # daemon-reload + enable --now (start|stop|disable too)
 pi2 uninstall-service --write # remove user service file
 pi2 status                 # daemon status, active instances, and health
 pi2 doctor                 # verify node/runtime, nvim, pi, curl, sockets, protocol

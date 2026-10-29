@@ -475,17 +475,36 @@ symbol. A URL too long for version 10 is printed without a QR, with a note.
 Machines call `POST /api/v1/pair` directly — that is what `:PiWebPair` does — so the CLI
 keeps only this human report; there is no `--json`.
 
-### 8.6 `pi2 install-service` / `pi2 uninstall-service`
+### 8.6 `pi2 install-service` / `pi2 service`
 
-See [§9](#9-services-systemd--launchd). `--dry-run` (default) prints the file
-and the follow-up commands; `--write` writes the file (`0644`) and prints the
-commands. The CLI never executes `systemctl`/`launchctl`.
+See [§9](#9-services-systemd--launchd). `install-service --dry-run` (default)
+prints the file and the follow-up commands; `--write` writes the file (`0644`)
+and prints the commands — it never executes `systemctl`/`launchctl`.
+
+`pi2 service …` is the explicit control surface the editor plugin calls, so the
+plugin never talks to a service manager itself:
+
+```bash
+pi2 service status [--json]   # manager, unit path, installed/enabled/active, linger
+pi2 service start             # systemctl --user start pi2.service / launchctl kickstart -k
+pi2 service stop              # systemctl --user stop pi2.service  / launchctl kill TERM
+pi2 service enable            # … enable --now                      / launchctl bootstrap + enable
+pi2 service disable           # … disable --now                     / launchctl bootout
+```
+
+`service status` always exits `0` and reports the world as it is (no manager,
+no unit and a dead service are reports, not errors). The four mutating actions
+exit `1` with the manager's first stderr line when it refuses; they refuse to
+run at all when the unit file is missing (run `pi2 install-service --write`
+first).
 
 ## 9. Services (systemd / launchd)
 
 ```bash
 pi2 install-service --dry-run     # inspect, nothing written
 pi2 install-service --write       # ~/.config/systemd/user/pi2.service
+pi2 service enable                # daemon-reload + enable --now (one explicit command)
+# or, by hand:
 systemctl --user daemon-reload
 systemctl --user enable --now pi2.service
 ```
@@ -534,9 +553,11 @@ Note: `launchd` on macOS has no direct equivalent for systemd's `EnvironmentFile
 Environment variables on macOS must be set in the plist `EnvironmentVariables` dictionary
 or via shell environment.
 
-`uninstall-service --write` removes the file and prints the disable commands.
-For a login-less service to keep running on Linux enable linger
-(`loginctl enable-linger $USER`, `pi2 doctor` warns when it is off).
+`uninstall-service --write` removes the file and prints the disable commands
+(`pi2 service disable` runs the `--now` variant when you want the daemon stopped
+too). For a login-less service to keep running on Linux enable linger
+(`loginctl enable-linger $USER`, `pi2 doctor` warns when it is off;
+`pi2 service status --json` reports `linger`).
 
 ## 10. Logs and health
 

@@ -173,7 +173,7 @@ The CLI inspects how it was installed:
    systemctl --user stop pi2.service     # stop daemon
    ```
 
-> **Important**: When running under systemd with `Restart=on-failure`, do **not** use `:PiWebStop` inside Neovim or process kill signals to shut down the daemon. Always use `systemctl --user stop pi2.service` so systemd does not interpret the shutdown as a failure and immediately restart it.
+> **Important**: When running under systemd with `Restart=on-failure`, stop the daemon with `pi2 service stop` (or `systemctl --user stop pi2.service`), never by signalling the process directly. `:PiWebStop` in Neovim only detaches the editor-side bridge and deliberately leaves the daemon alone.
 
 #### macOS (`launchd`)
 
@@ -241,9 +241,12 @@ require("pi").setup({
 })
 ```
 
-When you run `:PiWeb`, the plugin discovers `pi2` on `$PATH`, spawns a detached `pi2 daemon` process, and monitors its health.
+When you run `:PiWeb`, the plugin attaches to a running daemon, otherwise starts
+the installed user service (`pi2 service start`), otherwise spawns a detached
+`pi2 daemon` process — the three steps of `web.autostart = "auto"`.
 - Logs are written to `$PI2_STATE_DIR/daemon.log` (`~/.local/state/pi2/daemon.log` on Linux, `~/Library/Logs/pi2/daemon.log` on macOS).
-- Stop the spawned daemon with `:PiWebStop` in Neovim or `pi2 stop` from your terminal.
+- `:PiWebStop` stops only the editor-side bridge; the daemon keeps running. Stop it with `pi2 service stop` (service mode) or `pi2 stop` (any mode).
+- `:PiWebService` reports the unit and runs `pi2 service enable|disable|start|stop`; `:PiWebLog` shows the service manager's log or `daemon.log`.
 
 ---
 

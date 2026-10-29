@@ -105,34 +105,40 @@ Using `npx @yuez/pi2d@latest` or `npx` auto-execution is explicitly rejected:
    daemon versions simultaneously, corrupting singleton socket expectations.
 
 The plugin's `:PiWebInstall` becomes an explicit convenience command that prompts for
-confirmation before installing a pinned version matching the plugin into
-`<stdpath("data")>/pi2d`. It never runs `npx`.
+confirmation before installing `@yuez/pi2d@latest` (an optional `<version>` argument
+pins one) into `<stdpath("data")>/pi2d`. It never runs `npx`.
 
 ### 2.2 Run: the daemon owns its own lifecycle
 
 | Mode | Who starts it | When to use |
 |---|---|---|
-| **user service (default)** | `pi2 install-service --write` → `systemctl --user` / `launchd`; `:PiWeb` only *uses* it | daily use, especially phone/another-browser access — the console has to be up when nvim is not |
+| **user service (default)** | `pi2 install-service --write` + `pi2 service enable`; `:PiWeb` only *uses* it (`pi2 service start`) | daily use, especially phone/another-browser access — the console has to be up when nvim is not |
 | **plugin spawn** | `:PiWeb` spawns a detached `pi2 daemon` if nothing runs (`web.autostart = "spawn"`) | a machine where the user does not want a service; logs to `PI2_STATE_DIR/daemon.log` |
 | **foreground** | the user, in a terminal | debugging, `pi2 daemon --foreground` |
+
+Service-manager commands belong to the CLI, not the editor: `pi2 service
+status|start|stop|enable|disable` is the only thing that talks to
+`systemctl`/`launchd` (and only when the user asks for it). `install-service`
+stays pure file rendering.
 
 #### `web.autostart = "auto"` semantics
 
 The plugin setting `web.autostart = "auto"` follows strict three-step semantics:
-1. **Attach if running**: Check if a daemon is already active (via `daemon.json` / `d.sock`).
-   If running, connect immediately — **never** spawn a second daemon.
-2. **Start user service**: If an installed user service unit is found (`systemctl --user` or
-   `launchctl`), trigger unit start (`systemctl --user start pi2.service` or `launchctl kickstart`).
-3. **Spawn detached**: If no service is installed, spawn a detached `pi2 daemon` process and
-   notify the user once in the editor.
+1. **Attach if running**: Check if a daemon is already active (`daemon.json`).
+   If running, connect immediately — **never** spawn a second daemon, and never
+   require a resolvable `pi2` binary just to use one.
+2. **Start user service**: If an installed user service unit is found (via
+   `pi2 service status`), run `pi2 service start`.
+3. **Spawn detached**: If no service is installed, spawn a detached `pi2 daemon`
+   process and notify the user once in the editor.
 
 #### `:PiWebStop` behavior in service mode
 
-When the daemon is managed by a service manager (`systemd` or `launchd`), `:PiWebStop`
-**must refuse** to stop the process. If a client terminates a service-managed daemon directly
-via SIGTERM, `Restart=on-failure` (systemd) or `KeepAlive` (launchd) will immediately
-attempt to restart it or enter an inconsistent state. The plugin must advise the user to
-use `systemctl --user stop pi2` or `:PiWebService disable`.
+`:PiWebStop` **only stops the editor-side bridge** (the WebSocket to the daemon);
+it never signals the daemon process, so a service-managed daemon is not restarted
+by `Restart=on-failure`/`KeepAlive` and an in-flight browser session is not broken.
+Stopping the daemon is an explicit CLI action: `pi2 service stop`, `pi2 service
+disable`, or `pi2 stop`.
 
 ### 2.3 The plugin is a client
 
@@ -144,7 +150,6 @@ winner:
 3. `<stdpath("data")>/pi2d/node_modules/.bin/pi2` (only if `:PiWebInstall` created it)
 4. repo checkout `dist/cli/pi2.js` / `node_modules/.bin/pi2` (developing pi2d)
 5. **nothing** → one-line error with the install command, no `npx` fallback
-
 Commands: `:PiWeb` (ensure + open), `:PiWebStatus`, `:PiWebStart`, `:PiWebStop`,
 `:PiWebPair`, `:PiWebInstall`, `:PiWebService`, `:PiWebLog`. `:checkhealth pi` grows a
 `web` section: binary source, version, daemon reachability, protocol match, service
@@ -300,7 +305,8 @@ The following items are deferred to future revisions:
 - **Documentation rewrite**: `README.md`, `docs/deployment.md`, and `docs/install.md` are
   rewritten to emphasize the CLI-first model and the compiled binary options.
 - **Explicit `:PiWebInstall`**: `:PiWebInstall` remains available as an explicit fallback,
-  installing a pinned version strictly matching the plugin release after user confirmation.
+  installing `@yuez/pi2d@latest` (optionally pinned with a `<version>` argument) after user
+  confirmation.
 - **Node floor lowered to >= 20**: broader compatibility for npm users without compromising
   runtime stability.
 - **Standalone binaries eliminate Node dependencies**: users of curl, Homebrew, and AUR
