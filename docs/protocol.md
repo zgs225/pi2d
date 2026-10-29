@@ -56,6 +56,8 @@ The plugin dials the daemon (`<runtime>/d.sock`), sends `hello` first.
 {"v":1,"type":"event","sessionId":"s1","epoch":"e1","seq":11,"ts":1733234400123,"payload":{"event":{ /* SessionEvent */ }}}
 {"v":1,"type":"ack","id":"req-1","seq":12,"payload":{"disposition":"started"}}
 {"v":1,"type":"error","id":"req-1","payload":{"code":"E_LEASE","message":"session is owned by instance i-2","retryable":false}}
+// deliberate disconnect: sent once before the socket closes (`:PiWebStop`, VimLeavePre)
+{"v":1,"type":"bye","payload":{"reason":"stopped"}}
 
 // daemon → plugin
 {"v":1,"type":"cmd","id":"req-1","sessionId":"s1","payload":{"method":"prompt.send","params":{"text":"hi"},"clientRequestId":"c-9"}}
@@ -68,6 +70,12 @@ The plugin dials the daemon (`<runtime>/d.sock`), sends `hello` first.
 ```
 
 Plugin obligations:
+
+- **Say `bye` when leaving on purpose.** A plugin that stops the bridge (`:PiWebStop`, `VimLeavePre`)
+  writes one framed `bye` (`payload.reason`) before closing the socket, and only when the connection
+  was live. The daemon records it as the instance's close reason (`plugin said bye`) instead of a
+  generic `socket closed`, so a deliberate disconnect is distinguishable from a crash; a plugin that
+  simply disappears stays a socket close.
 
 - **`hello` requires `lua/pi/host.lua`.** A daemon-spawned instance is started as
   `nvim --headless … -u <init> -c 'lua require("pi.host").start()'`, so the host module is what
