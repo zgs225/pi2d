@@ -398,6 +398,48 @@ describe("pi2 pairing", () => {
         expect(lines.some((line) => /[█▀▄]/.test(line))).toBe(false);
     });
 
+    it("emits the normalised mint payload with --json (no terminal art)", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: minted() });
+
+        const code = await runPairing({ client, print: (line) => lines.push(line), json: true });
+
+        expect(code).toBe(0);
+        const payload = JSON.parse(lines.join("\n")) as Record<string, unknown>;
+        expect(payload.url).toBe("http://192.168.2.10:7712/pair/ABCD2345");
+        expect(payload.code).toBe("ABCD2345");
+        expect(typeof payload.expiresAt).toBe("number");
+        expect(payload.qr).toMatchObject({ version: 2, size: 25 });
+        expect((payload.qr as { rows: string[] }).rows).toHaveLength(25);
+        expect(payload.bases).toEqual([
+            { kind: "lan", name: "wlan0", address: "192.168.2.10", url: "http://192.168.2.10:7712" },
+            { kind: "loopback", name: "loopback", address: "127.0.0.1", url: "http://127.0.0.1:7712" },
+        ]);
+        expect(lines.some((line) => /[█▀▄]/.test(line))).toBe(false);
+    });
+
+    it("omits qr/expiresAt from --json when the daemon sent none", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: minted({ qr: null, expiresAt: undefined }) });
+
+        await runPairing({ client, print: (line) => lines.push(line), json: true });
+
+        const payload = JSON.parse(lines.join("\n")) as Record<string, unknown>;
+        expect(payload).not.toHaveProperty("qr");
+        expect(payload).not.toHaveProperty("expiresAt");
+        expect(payload.code).toBe("ABCD2345");
+    });
+
+    it("reaches --json through the dispatcher", async () => {
+        const lines: string[] = [];
+        const client = fakeClient({ pair: minted() });
+
+        const code = await main(["pairing", "--json"], { out: (line) => lines.push(line), client: () => client });
+
+        expect(code).toBe(0);
+        expect(JSON.parse(lines.join("\n"))).toMatchObject({ code: "ABCD2345" });
+    });
+
     it("exits non-zero when the daemon rejects the request", async () => {
         await expect(
             runPairing({ client: fakeClient({ postError: new CliError("pair failed: E_UNAUTHORIZED") }) }),

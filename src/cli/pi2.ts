@@ -82,7 +82,7 @@ Usage:
   pi2 open [--print] [--no-browser]  open the web console signed in (local only)
   pi2 config [--json]                resolved configuration and sources
   pi2 doctor [--json]                environment checks
-  pi2 pairing [--base <url>]         create a pairing code (URL + code + QR)
+  pi2 pairing [--base <url>] [--json]   create a pairing code (URL + code + QR)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
   pi2 service status|start|stop|enable|disable  control that unit (status [--json])
@@ -93,7 +93,9 @@ does not exit in time; -t, --timeout <sec> configures the wait timeout (default 
 \`pi2 open\` flags: --print prints the URL only; --no-browser prints it instead
 of launching a browser (--print implies --no-browser).
 \`pi2 pairing\` flags: --base <url> pins the link to one of the addresses the
-daemon advertises (it prints the alternatives; anything else is rejected).
+daemon advertises (it prints the alternatives; anything else is rejected);
+--json prints the normalised mint payload ({url, code, expiresAt, qr, bases})
+for tools and editor plugins instead of the human report.
 The link prefers a phone-reachable address: the public URL when one is
 configured, the primary LAN address, and loopback otherwise.
 
@@ -389,6 +391,8 @@ export interface PairingOptions {
     print?: (line: string) => void;
     /** `--base <url>`: pin the link to one of the addresses the daemon advertises. */
     base?: string | null;
+    /** `--json`: emit the mint payload (url/code/expiry/QR matrix/bases) instead of a report. */
+    json?: boolean;
 }
 
 /** One address the daemon says it is reachable on (`bases[]` in the mint response). */
@@ -507,6 +511,25 @@ export async function runPairing(options: PairingOptions): Promise<number> {
     const expiresAt = typeof response.body.expiresAt === "number" ? response.body.expiresAt : undefined;
     const qr = pairingQrOf(response.body.qr);
     const bases = pairingBasesOf(response.body.bases);
+
+    if (options.json === true) {
+        // The same payload the HTTP mint returned, normalised: `:PiWebPair` in
+        // pi2.nvim renders this instead of talking HTTP itself.
+        print(
+            JSON.stringify(
+                {
+                    url,
+                    code,
+                    ...(expiresAt === undefined ? {} : { expiresAt }),
+                    ...(qr === undefined ? {} : { qr }),
+                    bases,
+                },
+                null,
+                2,
+            ),
+        );
+        return 0;
+    }
 
     print(`url     ${url}`);
     print(`code    ${code}`);
@@ -837,7 +860,7 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
             case "pair": {
                 const parsed = parseArgs(rest, {
                     values: ["--base"],
-                    booleans: ["--help"],
+                    booleans: ["--json", "--help"],
                     aliases: { "-h": "--help" },
                 });
                 if (boolFlag(parsed.flags, "--help")) {
@@ -849,6 +872,7 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                     client,
                     print: out,
                     base: stringFlag(parsed.flags, "--base"),
+                    json: boolFlag(parsed.flags, "--json"),
                 });
             }
             case "install-service":
