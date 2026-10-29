@@ -13,8 +13,8 @@
  * needs to answer "what am I, where are my files" lives here, so that no other
  * module has to guess from `import.meta.url` alone.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -23,6 +23,15 @@ import { fileURLToPath } from "node:url";
  * through to the on-disk `package.json`.
  */
 declare const PI2_BUILD_VERSION: string | undefined;
+
+/**
+ * Replaced textually by `scripts/build-binary.sh`: the release asset suffix of
+ * this artifact (`linux-x64`, `linux-arm64-musl`, `darwin-arm64`, …).
+ *
+ * `pi2 update` downloads the asset its *own* build target names instead of
+ * re-probing libc at runtime — the binary already knows what it was built for.
+ */
+declare const PI2_BUILD_TARGET: string | undefined;
 
 /** Fallback when neither the build-time define nor `package.json` is readable. */
 export const UNKNOWN_VERSION = "0.0.0";
@@ -60,7 +69,84 @@ export function executablePath(): string {
     return process.execPath;
 }
 
-/** `<repo>/package.json` next to `dist/cli/`. Absent inside a compiled binary. */
+/** `linux-x64`, `darwin-arm64`, `linux-x64-musl` — the release asset suffix. */
+export function buildTarget(): string | undefined {
+    return typeof PI2_BUILD_TARGET === "string" && PI2_BUILD_TARGET !== "" ? PI2_BUILD_TARGET : undefined;
+}
+
+/**
+ * Asset suffix for a runtime that has no `PI2_BUILD_TARGET` (a Node/npm run, or
+ * a binary built before the define existed). Only a fallback: a musl build is
+ * indistinguishable from a glibc one by `process.platform` alone, so every
+ * release artifact carries the define.
+ */
+export function inferBuildTarget(
+    platform: string = process.platform,
+    arch: string = process.arch,
+    musl = false,
+): string {
+    const os = platform === "darwin" ? "darwin" : "linux";
+    const cpu = arch === "arm64" ? "arm64" : "x64";
+    return os === "linux" && musl ? `linux-${cpu}-musl` : `${os}-${cpu}`;
+}
+
+/**
+ * A curl-channel install: one immutable tree per version under `<prefix>/versions`
+ * with `<prefix>/current` pointing at the live one (see `docs/adr/0003-self-update.md`).
+ */
+export interface VersionedLayout {
+    /** `<prefix>` — `~/.local/lib/pi2d` by default. */
+    prefix: string;
+    versionsDir: string;
+    versionDir: string;
+    /** `<prefix>/current`, a relative symlink to `versions/<version>`. */
+    current: string;
+    version: string;
+}
+
+/** Resolve symlinks so `~/.local/bin/pi2` and `current/bin/pi2` all answer for themselves. */
+function realpathOrSelf(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return resolve(path);
+    }
+}
+
+/**
+ * Recognise `<prefix>/versions/<version>/bin/pi2`, or `undefined` for the flat
+ * layout, a package-manager install or an npm checkout.
+ */
+export function versionedLayoutFor(execPath: string = executablePath()): VersionedLayout | undefined {
+    const exe = realpathOrSelf(execPath);
+    const versionDir = dirname(dirname(exe));
+    const versionsDir = dirname(versionDir);
+    if (basename(versionsDir) !== "versions") return undefined;
+    if (basename(exe) !== "pi2") return undefined;
+    const version = basename(versionDir);
+    if (version === "" || version.startsWith(".")) return undefined;
+    return {
+        prefix: dirname(versionsDir),
+        versionsDir,
+        versionDir,
+        current: join(dirname(versionsDir), "current"),
+        version,
+    };
+}
+
+/**
+ * The path a service unit and a symlink should point at: the `current/bin/pi2`
+ * indirection when this is a versioned install, otherwise the executable itself.
+ *
+ * Rendering `<prefix>/versions/<v>/bin/pi2` into `ExecStart` would break the
+ * unit on every update, so `pi2 install-service` must go through this.
+ */
+export function stableExecutablePath(execPath: string = executablePath()): string {
+    const layout = versionedLayoutFor(execPath);
+    return layout === undefined ? execPath : join(layout.current, "bin", "pi2");
+}
+
+/** `package.json` next to `dist/cli/`. Absent inside a compiled binary. */
 function packageJsonVersion(): string | undefined {
     try {
         const file = fileURLToPath(new URL("../../package.json", import.meta.url));

@@ -49,6 +49,7 @@ import {
 import { diagnose, formatReport, reportToJson, type DoctorReport } from "./doctor.js";
 import { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
 import { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
+import { runUpdate, UPDATE_USAGE } from "./update.js";
 import {
     parseServiceArgs,
     runServiceCommand,
@@ -86,6 +87,7 @@ Usage:
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
   pi2 service status|start|stop|enable|disable  control that unit (status [--json])
+  pi2 update [--check|--dry-run]     upgrade a standalone (curl installer) pi2 in place
   pi2 --version | --help
 
 \`pi2 stop\` / \`pi2 daemon stop\` flags: -f, --force sends SIGKILL if the daemon
@@ -893,6 +895,37 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                     ...(options.removeFile === undefined ? {} : { removeFile: options.removeFile }),
                 };
                 return command === "install-service" ? runInstallService(serviceOptions) : runUninstallService(serviceOptions);
+            }
+            case "update": {
+                let parsed;
+                try {
+                    parsed = parseArgs(rest, {
+                        values: ["--version"],
+                        booleans: [
+                            "--check",
+                            "--dry-run",
+                            "--force",
+                            "--json",
+                            "--require-attestation",
+                            "--skip-attestation",
+                            "--help",
+                        ],
+                        aliases: { "-h": "--help" },
+                    });
+                } catch (error) {
+                    if (error instanceof UsageError) throw new UsageError(error.message, UPDATE_USAGE);
+                    throw error;
+                }
+                if (boolFlag(parsed.flags, "--help")) {
+                    out(UPDATE_USAGE);
+                    return 0;
+                }
+                return await runUpdate({
+                    argv: rest,
+                    print: out,
+                    warn: err,
+                    ...(options.env === undefined ? {} : { env: options.env }),
+                });
             }
             case "service": {
                 const parsed = parseServiceArgs(rest);

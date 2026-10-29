@@ -141,15 +141,19 @@ second daemon cannot invalidate the running one.
 1. **npm / Node package**: executed via Node (`node …/dist/cli/pi2.js`), where assets sit
    next to the source tree.
 2. **Compiled single binary**: compiled via Bun (`bun build --compile`) and installed as
-   `<prefix>/bin/pi2` with assets at `<prefix>/share/pi2d/web/dist`.
+   `<prefix>/versions/<version>/bin/pi2` with assets in
+   `<prefix>/versions/<version>/share/pi2d/web/dist`; `<prefix>/current` points at the live
+   version (see [ADR 0003](adr/0003-self-update.md), `pi2 update`).
 
 How `pi2` discovers its own version and web UI (`src/core/install.ts`):
 - **Version**: build-time define (`PI2_BUILD_VERSION`, injected by `scripts/build-binary.sh`)
   → on-disk `package.json` (`../../package.json` next to `dist/cli/` for npm/dev checkout)
   → `0.0.0` (`UNKNOWN_VERSION`).
 - **Static UI directory** (`defaultStaticDir()`): probed in order, first with `index.html` wins:
-  1. `<exe>/../share/pi2d/web/dist` — release layout: `<prefix>/bin/pi2` plus
-     `<prefix>/share/pi2d/web/dist` (what the curl installer, Homebrew tap, and AUR `-bin` package install)
+  1. `<exe>/../share/pi2d/web/dist` — release layout: `<prefix>/versions/<v>/bin/pi2` plus
+     `<prefix>/versions/<v>/share/pi2d/web/dist` (what the curl installer writes; Homebrew and
+     the AUR `-bin` package use the flat `<prefix>/bin/pi2` + `<prefix>/share/pi2d/web/dist`,
+     which resolves to the same relative path)
   2. `<exe>/web/dist` — portable unpacked directory (`pi2` next to its UI)
   3. `<repo>/web/dist` — npm install or dev checkout relative to module location
 - **Environment override**: `PI2_STATIC_DIR` still wins over all candidate paths when set.
@@ -519,8 +523,8 @@ After=network.target
 
 [Service]
 Type=simple
-# For a compiled binary install:
-ExecStart=/home/user/.local/lib/pi2d/bin/pi2 daemon --foreground
+# For a compiled binary install (the `current` indirection survives `pi2 update`):
+ExecStart=/home/user/.local/lib/pi2d/current/bin/pi2 daemon --foreground
 # Or for an npm / Node install:
 # ExecStart=/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground
 EnvironmentFile=-%h/.config/pi2/env
@@ -535,7 +539,7 @@ WantedBy=default.target
 ```
 
 The `ExecStart` line adapts automatically to how `pi2` was invoked:
-- **Compiled binary install**: `<prefix>/bin/pi2 daemon --foreground` (invokes the compiled executable directly).
+- **Compiled binary install**: `<prefix>/current/bin/pi2 daemon --foreground` (invokes the compiled executable through the stable symlink, so an update does not break the unit; a flat Homebrew/AUR install renders its own binary path).
 - **npm / Node install**: `<nodePath> <scriptPath> daemon --foreground` (e.g. `/usr/bin/node /repo/dist/cli/pi2.js daemon --foreground`).
 
 The unit includes `EnvironmentFile=-%h/.config/pi2/env`, where the leading `-` tells systemd that a missing file is completely fine.

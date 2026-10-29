@@ -29,7 +29,7 @@ Adding bulk to this file is a mistake, not a contribution.
 | `src/daemon/` | HTTP/WS/SSE, auth, static assets, routing, event relay |
 | `src/instances/` | discovery, lazy spawn, one-instance-per-workspace, crash handling |
 | `src/workspaces/` | registry, disk discovery, aliases/trust, visibility policy |
-| `src/cli/` | `pi2` — `daemon`, `open`, `attach`, `status`, `doctor`, `pairing`, `install-service` |
+| `src/cli/` | `pi2` — `daemon`, `open`, `attach`, `status`, `doctor`, `pairing`, `install-service`, `update` |
 | `src/config.ts` | env-only configuration (`PI2_*`, `PI2_HOST`, `PI2_WORKSPACE_*`) |
 | `src/core/network.ts` | reachable addresses: kind classification, `bases[]` order, CORS origins |
 | `src/core/qr.ts` | zero-dependency QR encoder (pairing links; rows, no quiet zone) |
@@ -68,7 +68,7 @@ owner/repo/workflow filename, not the npm name).
 | Doc | Contents |
 |---|---|
 | `docs/protocol.md` | the browser ↔ daemon ↔ plugin wire contract |
-| `docs/install.md` | canonical CLI-first install guide, channels, run modes, services |
+| `docs/install.md` | canonical CLI-first install guide, channels, run modes, services, `pi2 update` |
 | `docs/session-dot.md` | the session-list status dot: the `:PiSessions` matrix, the unread flags, the one blink clock |
 | `docs/deployment.md` | env vars, runtime files, ports, auth, services, troubleshooting |
 | `docs/e2e.md` | scenario ids, isolation, skip conditions, report paths |

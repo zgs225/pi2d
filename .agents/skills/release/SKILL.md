@@ -70,6 +70,31 @@ only for a package that already exists, so the first publish is manual:
    configuration expires.
 3. Bump to a **higher** version for the first CI release — npm rejects republishing a version.
 
+## Release assets (the curl channel)
+
+`release.yml` also publishes six `pi2d-<version>-<target>.tar.gz` assets plus `SHA256SUMS` and
+SLSA provenance (`actions/attest-build-provenance`), which `pi2 update` consumes. Two things to
+know before debugging a missing asset:
+
+- **Backfill an existing tag without re-publishing npm:**
+  `gh workflow run release.yml -f tag=v0.1.6` — `publish` and `packaging` are gated on
+  `github.event_name == 'push'`, so a dispatch run only rebuilds and re-attaches assets.
+  This is the repair path for "the release has no tarballs" (it happened to v0.1.6: the
+  `darwin-x64` leg sat queued on the retired `macos-13` image for 21 h and `checksums` never ran).
+- **Runner labels matter more than the build.** `darwin-x64` needs `macos-15-intel` and
+  `darwin-arm64` needs `macos-15`; a retired or deprecated label leaves the leg queued forever
+  and the whole asset job blocked. Verify with
+  `gh api repos/zgs225/pi2d/actions/runs/<id>/jobs --jq '.jobs[] | "\(.name) \(.status)"'`.
+
+Verify what actually landed, not that the run was green:
+
+```bash
+gh release view "v<x.y.z>" --repo zgs225/pi2d --json assets --jq '.assets[].name'
+gh attestation verify pi2d-<x.y.z>-linux-x64.tar.gz --repo zgs225/pi2d
+PI2_VERSION=<x.y.z> PI2_INSTALL_DIR=/tmp/pi2-check/lib PI2_BIN_DIR=/tmp/pi2-check/bin \
+  sh scripts/install.sh && sh scripts/boot-check.sh /tmp/pi2-check/bin/pi2 <x.y.z>
+```
+
 ## Failure playbook
 
 | Symptom | Cause / action |

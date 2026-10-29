@@ -13,7 +13,7 @@ Find your situation in the table below to choose the right installation command 
 | Situation | Recommended Command | What it gives you |
 |---|---|---|
 | **I have Node 20+** | `npm i -g @yuez/pi2d`<br>*(or `pnpm add -g`, `bun add -g`, `mise use -g npm:@yuez/pi2d`)* | The `pi2` CLI running directly on your existing Node.js environment, updated via standard package manager commands. |
-| **no Node / old Node** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` | Standalone compiled binary in `~/.local/lib/pi2d` symlinked to `~/.local/bin/pi2`. Requires zero Node/npm dependencies and no root access. |
+| **no Node / old Node** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` | Standalone compiled binary in `~/.local/lib/pi2d` symlinked to `~/.local/bin/pi2`, upgraded in place with `pi2 update`. Requires zero Node/npm dependencies and no root access. |
 | **macOS** | `brew install zgs225/tap/pi2d`<br>*(or the curl installer)* | Native Homebrew formula. Places `pi2` in `$(brew --prefix)/bin` and web assets in `$(brew --prefix)/share/pi2d/web/dist`. |
 | **Arch / EndeavourOS / Manjaro** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(AUR `pi2d-bin` once AUR registration reopens)* | Standalone binary in `~/.local/lib/pi2d` + `~/.local/bin/pi2`. Package-manager channels are paused: the AUR is not accepting accounts, so the curl installer is the working path today. |
 | **NixOS** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(or dev checkout)* | Standalone binary in user home (`~/.local/bin/pi2`). Bun's `-musl` binaries are dynamically linked against the musl loader, so running a prebuilt binary on NixOS needs `nix-ld` (or an FHS env / `steam-run`-style wrapper). |
@@ -61,12 +61,20 @@ curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh
 
 The script automatically detects OS (`linux`, `darwin`), architecture (`x64`, `arm64`), and C library (`glibc`, `musl`). It downloads the corresponding precompiled standalone archive from GitHub Releases, verifies its SHA256 checksum, and extracts it with zero root privileges needed.
 
-**Where files land**:
-- Base directory: `~/.local/lib/pi2d/`
-  - `~/.local/lib/pi2d/bin/pi2` (the compiled binary)
-  - `~/.local/lib/pi2d/share/pi2d/web/dist/` (the web console UI assets)
-  - `~/.local/lib/pi2d/LICENSE`
-- Symlink: `~/.local/bin/pi2` points to `~/.local/lib/pi2d/bin/pi2`
+**Where files land** (the versioned layout, see [ADR 0003](adr/0003-self-update.md)):
+- Base directory (`<prefix>`): `~/.local/lib/pi2d/`
+  - `~/.local/lib/pi2d/versions/0.1.7/bin/pi2` (one immutable tree per version)
+  - `~/.local/lib/pi2d/versions/0.1.7/share/pi2d/web/dist/` (the web console UI assets)
+  - `~/.local/lib/pi2d/versions/0.1.7/LICENSE`
+  - `~/.local/lib/pi2d/current` → `versions/0.1.7` (the only thing an update moves)
+  - `~/.local/lib/pi2d/install.json` (the install receipt: installer, version, asset, SHA256)
+- Symlink: `~/.local/bin/pi2` → `~/.local/lib/pi2d/current/bin/pi2`
+
+Keeping one tree per version means `bin/` and `share/` can never disagree, an update is a
+single symlink switch, and the previous version stays behind for one-step rollback (`pi2
+update --version <old>`). The receipt is what authorises `pi2 update`: without one (npm,
+Homebrew, AUR, or a flat install from before 0.1.7) it refuses and points at the command that
+owns the tree.
 
 Ensure `~/.local/bin` is in your `$PATH` (e.g. in your `~/.bashrc` or `~/.zshrc`):
 ```bash
@@ -141,7 +149,7 @@ pi2 install-service --write
 ```
 
 The CLI inspects how it was installed:
-- If running as a standalone compiled binary, `ExecStart` directly executes the binary (e.g. `/home/user/.local/lib/pi2d/bin/pi2 daemon --foreground`).
+- If running as a standalone compiled binary, `ExecStart` directly executes the binary through the stable `current` symlink (e.g. `/home/user/.local/lib/pi2d/current/bin/pi2 daemon --foreground`), so `pi2 update` does not invalidate the unit.
 - If running via Node, `ExecStart` points to `<node> <scriptPath> daemon --foreground`.
 
 #### Linux (`systemd --user`)
@@ -313,10 +321,29 @@ systemctl --user restart pi2.service
   ```
 
 - **Channel B (Standalone curl installer)**:
-  Re-run the installer. It replaces the binary and assets cleanly in `~/.local/lib/pi2d`:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh
+  pi2 update
   ```
+  It downloads the release asset for this platform, checks it against the release's
+  `SHA256SUMS`, verifies its SLSA build provenance with `gh attestation verify` when the
+  GitHub CLI is installed, runs the new binary once, then switches
+  `~/.local/lib/pi2d/current` and rewrites the install receipt. The previous version is kept
+  for one-step rollback.
+
+  | Command | What it does |
+  |---|---|
+  | `pi2 update` | Upgrade to the latest release, then print the command to restart the daemon |
+  | `pi2 update --check` | Report the latest version and exit (24 h cached, one GitHub API call at most) |
+  | `pi2 update --dry-run` | Print the asset, URL and prefix it would use, change nothing |
+  | `pi2 update --version 0.1.6` | Pin a version (a downgrade also needs `--force`) |
+  | `pi2 update --force` | Reinstall even when already on that version |
+  | `pi2 update --require-attestation` | Fail unless the SLSA provenance verifies |
+  | `pi2 update --skip-attestation` | Never call `gh` (offline machines, no GitHub CLI) |
+  | `pi2 update --json` | Machine-readable result (stdout is pure JSON; progress goes to stderr) |
+
+  Setting `PI2_BASE_URL` points the download at a mirror (`PI2_UPDATE_CACHE_TTL` changes the
+  version-lookup cache, default 86400 s). Re-running the installer still works and stays the
+  recovery path when the tree is damaged.
 
 - **Channel C (Homebrew)**:
   ```bash

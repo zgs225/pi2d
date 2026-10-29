@@ -166,6 +166,9 @@ BUN_CMD=(
     --compile
     --outfile "$OUTPUT_DIR/bin/pi2"
     --define "PI2_BUILD_VERSION=\"$VERSION\""
+    # `pi2 update` picks the release asset named after what this binary was
+    # built for, instead of re-probing libc at runtime.
+    --define "PI2_BUILD_TARGET=\"$OS_ARCH\""
 )
 if [[ -n "$BUN_TARGET" ]]; then
     BUN_CMD+=("--target=$BUN_TARGET")

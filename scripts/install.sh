@@ -460,12 +460,27 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Unpack & Atomic Install
+# Unpack & Atomic Install (versioned layout)
 # -----------------------------------------------------------------------------
+#
+#   <prefix>/versions/<version>/{bin,share,LICENSE}
+#   <prefix>/current -> versions/<version>     (the only thing an update moves)
+#   <prefix>/install.json                      (the receipt, see docs/adr/0003)
+#   <bin dir>/pi2 -> <prefix>/current/bin/pi2
+#
+# A version tree is immutable once moved into place, so `bin/` and `share/` can
+# never disagree and rolling back is one symlink write.
 
 printf 'Installing pi2 to %s...\n' "$PI2_INSTALL_DIR"
-mkdir -p "$PI2_INSTALL_DIR"
-staging="$PI2_INSTALL_DIR/.staging.$$"
+
+version_dir_name="$(printf '%s' "$version" | tr -cd '0-9A-Za-z._-')"
+[ -n "$version_dir_name" ] || version_dir_name="custom"
+
+versions_dir="$PI2_INSTALL_DIR/versions"
+version_tree="$versions_dir/$version_dir_name"
+staging="$versions_dir/.staging.$$"
+
+mkdir -p "$versions_dir"
 rm -rf "$staging"
 mkdir -p "$staging"
 
@@ -491,27 +506,106 @@ if [ ! -x "$staging/bin/pi2" ]; then
     exit 1
 fi
 
-# Atomic swap: move existing directories aside before moving staged directories
-rm -rf "$PI2_INSTALL_DIR/bin.old.$$" "$PI2_INSTALL_DIR/share.old.$$" "$PI2_INSTALL_DIR/LICENSE.old.$$"
-[ -d "$PI2_INSTALL_DIR/bin" ] && mv "$PI2_INSTALL_DIR/bin" "$PI2_INSTALL_DIR/bin.old.$$"
-[ -d "$PI2_INSTALL_DIR/share" ] && mv "$PI2_INSTALL_DIR/share" "$PI2_INSTALL_DIR/share.old.$$"
-[ -f "$PI2_INSTALL_DIR/LICENSE" ] && mv "$PI2_INSTALL_DIR/LICENSE" "$PI2_INSTALL_DIR/LICENSE.old.$$"
-
-mv "$staging/bin" "$PI2_INSTALL_DIR/bin"
-if [ -d "$staging/share" ]; then
-    mv "$staging/share" "$PI2_INSTALL_DIR/share"
+# Move the staged tree into place under its version. Reinstalling the same
+# version replaces that tree; every other version is left alone.
+rm -rf "$version_tree.old.$$"
+if [ -d "$version_tree" ]; then
+    mv "$version_tree" "$version_tree.old.$$"
 fi
-if [ -f "$staging/LICENSE" ]; then
-    mv "$staging/LICENSE" "$PI2_INSTALL_DIR/LICENSE"
+if ! mv "$staging" "$version_tree"; then
+    [ -d "$version_tree.old.$$" ] && mv "$version_tree.old.$$" "$version_tree"
+    printf 'Error: Failed to move the staged tree into %s\n' "$version_tree" >&2
+    exit 1
 fi
-
-rm -rf "$PI2_INSTALL_DIR/bin.old.$$" "$PI2_INSTALL_DIR/share.old.$$" "$PI2_INSTALL_DIR/LICENSE.old.$$" "$staging"
 staging=""
+rm -rf "$version_tree.old.$$"
 
-# Symlink executable into PI2_BIN_DIR
+previous_tree=""
+if [ -L "$PI2_INSTALL_DIR/current" ]; then
+    previous_tree="$(readlink "$PI2_INSTALL_DIR/current" 2>/dev/null || true)"
+fi
+
+# `rename(2)` replaces the symlink atomically; `-T` (GNU) and `-h` (BSD) both
+# stop `mv` from moving into the directory an existing symlink points at.
+switch_symlink() {
+    target="$1"
+    link="$2"
+    tmp="$link.tmp.$$"
+    rm -f "$tmp"
+    ln -s "$target" "$tmp" || return 1
+    if mv -T "$tmp" "$link" 2>/dev/null; then return 0; fi
+    if mv -h "$tmp" "$link" 2>/dev/null; then return 0; fi
+    rm -f "$link"
+    mv "$tmp" "$link"
+}
+
+if ! switch_symlink "versions/$version_dir_name" "$PI2_INSTALL_DIR/current"; then
+    if [ -n "$previous_tree" ]; then
+        switch_symlink "$previous_tree" "$PI2_INSTALL_DIR/current" || true
+    fi
+    printf 'Error: Failed to point %s/current at versions/%s\n' "$PI2_INSTALL_DIR" "$version_dir_name" >&2
+    exit 1
+fi
+
+# The receipt authorises `pi2 update`; write it atomically *after* the switch,
+# so it always describes the tree `current` resolves to.
+archive_sha256="${archive_sha256:-$(compute_sha256 "$archive_path")}"
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+receipt="$PI2_INSTALL_DIR/install.json"
+receipt_tmp="$PI2_INSTALL_DIR/.install.json.$$"
+cat > "$receipt_tmp" <<EOF_RECEIPT
+{
+  "schema": 1,
+  "installer": "curl",
+  "layout": "versioned",
+  "prefix": "$(json_escape "$PI2_INSTALL_DIR")",
+  "current": "$(json_escape "$PI2_INSTALL_DIR/current")",
+  "version": "$(json_escape "$version")",
+  "bin": "$(json_escape "$version_tree/bin/pi2")",
+  "asset": "$(json_escape "$archive_name")",
+  "sha256": "$(json_escape "$archive_sha256")",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF_RECEIPT
+if ! mv -f "$receipt_tmp" "$receipt"; then
+    rm -f "$receipt_tmp"
+    printf 'Error: Failed to write %s\n' "$receipt" >&2
+    exit 1
+fi
+
+# Migrate away from the pre-0.1.7 flat layout (<prefix>/bin, <prefix>/share).
+legacy="$PI2_INSTALL_DIR/.legacy.$$"
+for entry in bin share LICENSE; do
+    if [ -e "$PI2_INSTALL_DIR/$entry" ]; then
+        mkdir -p "$legacy"
+        mv "$PI2_INSTALL_DIR/$entry" "$legacy/"
+    fi
+done
+if [ -d "$legacy" ]; then
+    rm -rf "$legacy"
+    printf 'info: migrated the previous flat layout to %s\n' "$versions_dir"
+fi
+
+# Prune: keep `current` plus one previous tree (a one-step rollback), drop the rest.
+keep_previous=""
+if [ -n "$previous_tree" ]; then
+    keep_previous="$(basename "$previous_tree")"
+fi
+for dir in "$versions_dir"/*; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    case "$name" in .*) continue ;; esac
+    if [ "$name" != "$version_dir_name" ] && [ "$name" != "$keep_previous" ]; then
+        rm -rf "$dir"
+    fi
+done
+
+# Symlink executable into PI2_BIN_DIR, through `current` so it never goes stale.
 mkdir -p "$PI2_BIN_DIR"
 symlink="$PI2_BIN_DIR/pi2"
-binary_target="$PI2_INSTALL_DIR/bin/pi2"
+binary_target="$PI2_INSTALL_DIR/current/bin/pi2"
 
 rm -f "$symlink"
 ln -s "$binary_target" "$symlink"
@@ -522,7 +616,10 @@ ln -s "$binary_target" "$symlink"
 
 printf '\npi2 %s (%s) installed successfully!\n\n' "$version" "$target"
 printf 'Install location:\n'
-printf '  - Directory:  %s\n' "$PI2_INSTALL_DIR"
+printf '  - Prefix:     %s\n' "$PI2_INSTALL_DIR"
+printf '  - Version:    %s\n' "$version_tree"
+printf '  - Current:    %s -> %s\n' "$PI2_INSTALL_DIR/current" "versions/$version_dir_name"
+printf '  - Receipt:    %s\n' "$receipt"
 printf '  - Executable: %s -> %s\n\n' "$symlink" "$binary_target"
 
 printf 'Next steps:\n'
@@ -530,6 +627,8 @@ printf '  - Run in foreground:\n'
 printf '      pi2 daemon\n'
 printf '  - Run as background service (systemd user unit or macOS LaunchAgent):\n'
 printf '      pi2 install-service --write\n'
+printf '  - Upgrade later in place:\n'
+printf '      pi2 update\n'
 
 in_path=0
 case ":$PATH:" in

@@ -42,7 +42,10 @@ For machines without Node, with an older distro Node (e.g. Debian 12 ships 18), 
 curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh
 ```
 
-Installs the precompiled binary and web console to `~/.local/lib/pi2d` and symlinks the executable to `~/.local/bin/pi2`.
+Installs the precompiled binary and web console into `~/.local/lib/pi2d/versions/<version>/`,
+points `~/.local/lib/pi2d/current` at it, writes an install receipt and symlinks the executable to
+`~/.local/bin/pi2`. After that, `pi2 update` upgrades it in place (verified download, SLSA
+provenance check, atomic `current` switch, one-step rollback).
 
 To uninstall:
 

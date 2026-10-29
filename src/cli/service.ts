@@ -8,6 +8,8 @@
  * Supports two install shapes:
  * 1. Bundled binary (`bun build --compile`): invokes the compiled executable directly
  *    (`ExecStart=<execPath> daemon --foreground` or `ProgramArguments = [execPath, "daemon", "--foreground"]`).
+ *    For a curl-channel install `defaultServicePaths()` passes `<prefix>/current/bin/pi2`,
+ *    so the unit survives `pi2 update`.
  * 2. Node / script: invokes node with the CLI entrypoint script
  *    (`ExecStart=<nodePath> <scriptPath> daemon --foreground`).
  *
@@ -21,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { stateDir } from "../core/paths.js";
-import { executablePath, isBundledRuntime } from "../core/install.js";
+import { executablePath, isBundledRuntime, stableExecutablePath } from "../core/install.js";
 
 export type ServicePlatform = "linux" | "darwin";
 
@@ -76,7 +78,10 @@ export function defaultScriptPath(): string {
 export function defaultServicePaths(overrides: Partial<ServicePaths> = {}): ServicePaths {
     return {
         bundled: isBundledRuntime(),
-        execPath: executablePath(),
+        // The versioned layout's `<prefix>/current/bin/pi2`, so an update does
+        // not leave `ExecStart` pointing at a version directory that the pruner
+        // deletes two releases later. Flat installs resolve to the binary itself.
+        execPath: stableExecutablePath(),
         nodePath: process.execPath,
         scriptPath: defaultScriptPath(),
         envFile: DEFAULT_SYSTEMD_ENV_FILE,
