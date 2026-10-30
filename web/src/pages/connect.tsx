@@ -25,7 +25,8 @@ import {
     type PairMeta,
     type PairTarget,
 } from "@/features/connect/pairing";
-import { deriveServerIdentity, formatUptime, type InfoExtras } from "@/features/status/server";
+import { deriveServerIdentity, type InfoExtras } from "@/features/status/server";
+import { LiveUptime } from "@/features/status/uptime";
 import { useInfoQuery } from "@/features/status/queries";
 import { getDeviceToken, setDeviceToken } from "@/lib/api";
 import { useConnectionStore } from "@/stores/connection";
@@ -104,8 +105,14 @@ export function ConnectPage() {
     });
     const defaultDeviceName = t("connect.defaultDeviceName");
     const osLabel = info.data?.os || info.data?.platform || server.os || "—";
-    const uptimeSeconds =
-        typeof info.data?.uptimeMs === "number" ? info.data.uptimeMs / 1000 : server.uptimeSec;
+    // Host uptime: this row labels it "uptime", and pinning it to the daemon
+    // process made a five-day-old box read "3m" after a restart.
+    const uptimeMs =
+        typeof info.data?.hostUptimeMs === "number"
+            ? info.data.hostUptimeMs
+            : server.hostUptimeSec != null
+              ? server.hostUptimeSec * 1000
+              : null;
     const defaultPort = defaultPortFor(info.data?.port ?? server.port);
 
     /**
@@ -286,7 +293,9 @@ export function ConnectPage() {
                             {info.data?.pluginVersion || meta?.server?.pluginVersion || "—"}
                         </KV>
                         <KV label={t("connect.os")}>{osLabel}</KV>
-                        <KV label={t("connect.uptime")}>{formatUptime(uptimeSeconds)}</KV>
+                        <KV label={t("connect.uptime")}>
+                            <LiveUptime ms={uptimeMs} />
+                        </KV>
                         <p className="cn-note">
                             <span className="cn-ico">
                                 <Icon name="alert" />

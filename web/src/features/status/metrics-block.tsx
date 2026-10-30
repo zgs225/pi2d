@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Icon } from "@/components/icons";
 import { RelativeTime } from "@/components/shared/relative-time";
 import type { DiskUsage, ResourcesResponse } from "@/lib/api";
-import { formatBytes, formatUptime, type ServerIdentity } from "@/features/status/server";
+import { formatBytes, type ServerIdentity } from "@/features/status/server";
+import { LiveUptime } from "@/features/status/uptime";
 
 import { ErrorBlock } from "./card-parts";
 
@@ -115,6 +116,10 @@ export function MetricsBlock({
     // `disks` is worst-first, so `[0]` is the number worth showing; the scalars are
     // the same row on new daemons and the only source on old ones.
     const disk = percent(disks[0]?.percent ?? system?.diskPercent ?? server.disk);
+    // Host uptime, not the daemon's: this tile answers "how long has the box been
+    // up", and the polled `/resources` sample keeps it fresh.
+    const hostUptimeMs =
+        system?.hostUptimeSec != null ? system.hostUptimeSec * 1000 : server.hostUptimeSec != null ? server.hostUptimeSec * 1000 : null;
     const live = t("status.live", { defaultValue: "Live" });
     const cpuMeta = system
         ? `${system.cpuCores} ${t("status.cores")}${system.loadAvg ? ` · ${t("status.load")} ${system.loadAvg[0].toFixed(2)}` : ""}`
@@ -171,7 +176,9 @@ export function MetricsBlock({
 
                 <div className="tile status-tile" data-res="uptime">
                     <div className="tile__label">{t("status.uptime")}</div>
-                    <div className="tile__value">{formatUptime(server.uptimeSec)}</div>
+                    <div className="tile__value">
+                        <LiveUptime ms={hostUptimeMs} />
+                    </div>
                     <div className="tile__meta">
                         <span>{t("status.lastHeartbeat")}</span>
                         <RelativeTime ts={server.lastHeartbeatAt} live={false} />

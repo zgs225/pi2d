@@ -256,7 +256,10 @@ export interface InfoResponse {
     port?: number;
     /** Additive identity fields (daemon ≥ 0.2): OS label and process uptime. */
     os?: string;
+    /** **Daemon process** age; `hostUptimeMs` is the host figure. */
     uptimeMs?: number;
+    /** Host uptime (daemon ≥ 0.1.8); absent on older builds. */
+    hostUptimeMs?: number;
     /** Resource percentages from newer daemons (0..100). */
     cpu?: number;
     mem?: number;
@@ -315,6 +318,8 @@ export interface DiskUsage {
 
 export interface SystemStats {
     sampledAt: number;
+    /** Host uptime in whole seconds; `null`/absent on daemons < 0.1.8. */
+    hostUptimeSec?: number | null;
     cpuPercent: number | null;
     cpuCores: number;
     loadAvg: [number, number, number] | null;

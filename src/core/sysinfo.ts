@@ -46,6 +46,8 @@ export interface DiskUsage {
 
 export interface SystemStats {
     sampledAt: number;
+    /** Host uptime in whole seconds (`os.uptime()`), `null` when the OS has none. */
+    hostUptimeSec: number | null;
     cpuPercent: number | null;
     cpuCores: number;
     loadAvg: [number, number, number] | null;
@@ -74,6 +76,7 @@ export interface SysinfoDeps {
     cpus?: () => Array<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>;
     totalmem?: () => number;
     freemem?: () => number;
+    uptime?: () => number;
     loadavg?: () => number[];
     platform?: NodeJS.Platform;
     /** Primary disk candidate; defaults to `/` (the home volume on macOS). */
@@ -279,6 +282,7 @@ export function createSysinfo(deps: SysinfoDeps = {}): SysinfoSampler {
     const cpus = deps.cpus ?? (() => nodeOs.cpus());
     const totalmem = deps.totalmem ?? (() => nodeOs.totalmem());
     const freemem = deps.freemem ?? (() => nodeOs.freemem());
+    const uptime = deps.uptime ?? (() => nodeOs.uptime());
     const loadavg = deps.loadavg ?? (() => nodeOs.loadavg());
 
     /**
@@ -394,6 +398,17 @@ export function createSysinfo(deps: SysinfoDeps = {}): SysinfoSampler {
             }
         }
 
+        // ── Host uptime ──────────────────────────────────────────────
+        // The daemon's own process age lives on `/info.uptimeMs`; this is the
+        // figure a user reads as "how long has this box been up".
+        let hostUptimeSec: number | null = null;
+        try {
+            const raw = uptime();
+            if (Number.isFinite(raw) && raw >= 0) hostUptimeSec = Math.round(raw);
+        } catch {
+            hostUptimeSec = null;
+        }
+
         // ── Memory ───────────────────────────────────────────────────
         let memTotalBytes: number;
         let memUsedBytes: number;
@@ -442,6 +457,7 @@ export function createSysinfo(deps: SysinfoDeps = {}): SysinfoSampler {
 
         return {
             sampledAt,
+            hostUptimeSec,
             cpuPercent,
             cpuCores,
             loadAvg: loadAvgResult,

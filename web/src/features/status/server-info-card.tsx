@@ -5,7 +5,8 @@ import { StatusDot } from "@/components/ui/status-dot";
 import { KV, KVList } from "@/components/ui/kv";
 import type { ResourcesResponse } from "@/lib/api";
 import type { ServerIdentity } from "@/features/status/server";
-import { formatBytes, formatUptime } from "@/features/status/server";
+import { formatBytes } from "@/features/status/server";
+import { LiveUptime } from "@/features/status/uptime";
 
 import { ErrorBlock, LoadingBlock, StatusCard } from "./card-parts";
 
@@ -49,7 +50,11 @@ export function ServerInfoCard({ server, resources, loading, error, onRetry }: S
                         {server.platform}
                     </KV>
                     <KV label={t("status.piVersion")}>{server.piVersion}</KV>
-                    <KV label={t("status.uptime")}>{formatUptime(server.uptimeSec)}</KV>
+                    {/* This card is the daemon's own identity (pid, daemonId): its uptime
+                        is the *process* age, which resets on every restart. */}
+                    <KV label={t("status.daemonUptime")}>
+                        <LiveUptime ms={server.uptimeMs ?? (server.uptimeSec != null ? server.uptimeSec * 1000 : null)} />
+                    </KV>
                     <KV label="daemonId" mono>
                         {server.daemonId}
                     </KV>

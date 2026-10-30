@@ -50,6 +50,7 @@ export function resolveServerStatus(input: ServerStatusInput): ServerStatusValue
 export interface InfoExtras extends InfoResponse {
     pid?: number;
     kernel?: string;
+    /** Daemon process age (seconds); kept as a derived alias of `uptimeMs`. */
     uptimeSec?: number;
     lastHeartbeat?: number;
     mdns?: string;
@@ -76,6 +77,8 @@ export interface ServerIdentity {
     kernel: string;
     uptimeSec: number | null;
     uptimeMs: number | null;
+    /** Host uptime in seconds — what the status page labels “uptime”. */
+    hostUptimeSec: number | null;
     pid: number | null;
     status: ServerStatusValue;
     wsConnected: boolean;
@@ -155,6 +158,7 @@ export function deriveServerIdentity({
     const uptimeMs = finite(extras.uptimeMs);
     const uptimeSec =
         uptimeMs != null ? Math.floor(uptimeMs / 1000) : typeof extras.uptimeSec === "number" ? extras.uptimeSec : null;
+    const hostUptimeMs = finite(extras.hostUptimeMs);
 
     return {
         name,
@@ -171,6 +175,7 @@ export function deriveServerIdentity({
         kernel: text(extras.kernel),
         uptimeSec,
         uptimeMs,
+        hostUptimeSec: hostUptimeMs != null ? Math.floor(hostUptimeMs / 1000) : null,
         pid: finite(extras.pid),
         status: resolvedStatus,
         wsConnected: wsState === "open",

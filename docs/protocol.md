@@ -93,7 +93,7 @@ Plugin obligations:
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}`; additive `cpu`, `mem`, `disk` (integer percent of the **most constrained** filesystem, each omitted when unknown), `cpuCores`, `loadAvg` |
+| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}`; `uptimeMs` is the **daemon process** age, `hostUptimeMs` the host uptime (both omitted when unknown); additive `cpu`, `mem`, `disk` (integer percent of the **most constrained** filesystem, each omitted when unknown), `cpuCores`, `loadAvg` |
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
@@ -123,6 +123,7 @@ figures sampled by the daemon itself:
 | Field | Notes |
 |---|---|
 | `sampledAt` | epoch ms; a sample is cached ~1 s and shared across callers |
+| `hostUptimeSec` | host uptime in whole seconds (`os.uptime()`), `null` when the OS has none. This is the figure a client shows as “uptime”; `/info.uptimeMs` stays the **daemon process** age, so a `pi2 update` restart does not reset it |
 | `cpuPercent` | integer 0–100, `null` on the first sample (it is a delta between two reads) |
 | `cpuCores` | logical core count |
 | `loadAvg` | 3-tuple `[1m, 5m, 15m]`, or `null` where the OS has no load average |

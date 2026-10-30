@@ -92,6 +92,7 @@ describe("sysinfo", () => {
             // `/test` does not exist: the probe must land on the root filesystem
             // instead of blanking the tile (the shipped bug).
             stat: fakeStat(oneFs),
+            uptime: () => 4321.6,
             readFile: async (path) => { reads++; return path === "/proc/stat" ? "cpu 10 0 0 10 0 0 0" : mem(); },
             statfs: async () => { stats++; return { bsize: 100, blocks: 10, bfree: 4, type: 0xef53 }; },
             cpus: () => cpus(10, 10),
@@ -103,6 +104,7 @@ describe("sysinfo", () => {
         const first = await sampler.sample();
         expect(first).toEqual({
             sampledAt: 1000,
+            hostUptimeSec: 4322,
             cpuPercent: null,
             cpuCores: 1,
             loadAvg: [1.23, 2.35, 3.46],
@@ -137,6 +139,39 @@ describe("sysinfo", () => {
             loadavg: () => [0, 0, 0],
         });
         await expect(sampler.sample()).resolves.toMatchObject({ memTotalBytes: 0, memUsedBytes: 0, memPercent: 0 });
+    });
+
+    it("reports a host uptime independently of the daemon's own age", async () => {
+        const result = await createSysinfo({
+            platform: "linux",
+            diskPath: "/",
+            sessionsPath: "/pi/sessions",
+            stat: fakeStat(oneFs),
+            statfs: async () => ({ bsize: 100, blocks: 10, bfree: 4 }),
+            uptime: () => 5 * 86_400 + 3 * 3_600,
+            cpus: () => cpus(1, 1),
+            totalmem: () => 1,
+            freemem: () => 0,
+            loadavg: () => [0, 0, 0],
+        }).sample();
+        expect(result.hostUptimeSec).toBe(442_800);
+    });
+
+    it("nulls a host uptime the OS cannot report", async () => {
+        const base = {
+            platform: "linux" as const,
+            diskPath: "/",
+            sessionsPath: "/pi/sessions",
+            stat: fakeStat(oneFs),
+            statfs: async () => ({ bsize: 100, blocks: 10, bfree: 4 }),
+            cpus: () => cpus(1, 1),
+            totalmem: () => 1,
+            freemem: () => 0,
+            loadavg: () => [0, 0, 0],
+        };
+        for (const uptime of [() => Number.NaN, () => -1, () => Number.POSITIVE_INFINITY, () => { throw new Error("no uptime"); }]) {
+            await expect(createSysinfo({ ...base, uptime }).sample()).resolves.toMatchObject({ hostUptimeSec: null });
+        }
     });
 
     it("reports a diskError instead of silent nulls when nothing can be sampled", async () => {

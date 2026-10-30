@@ -566,6 +566,7 @@
   "status.cores": "cores",
   "status.load": "load",
   "status.created": "Created",
+  "status.daemonUptime": "Daemon uptime",
   "status.deviceCount": "{n}",
   "status.devices": "Paired devices",
   "status.devicesError": "Failed to load paired devices",

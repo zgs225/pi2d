@@ -35,6 +35,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
 /** Deterministic fake sampler returned when no override is provided. */
 export const FAKE_SYSTEM_STATS: SystemStats = {
     sampledAt: 1_700_000_000_000,
+    // 5 days up, so the status tile and the daemon card differ on purpose.
+    hostUptimeSec: 432_000,
     cpuPercent: 42,
     cpuCores: 4,
     loadAvg: [1.5, 1.2, 0.9],

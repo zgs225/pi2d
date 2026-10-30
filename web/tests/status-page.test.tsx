@@ -64,6 +64,8 @@ const resourcesBody = {
     physicalMemoryBytes: 2048 * 1024 * 1024,
     system: {
         sampledAt: Date.now(),
+        // Host uptime, deliberately different from the daemon's own age in `infoBody`.
+        hostUptimeSec: 3 * 86_400,
         cpuPercent: 37,
         cpuCores: 8,
         loadAvg: [1.23, 0.98, 0.75],
@@ -264,7 +266,8 @@ describe("StatusPage", () => {
         expect(document.querySelector('.status-tile[data-res="disk"] .tile__meta')).toHaveTextContent("/var/lib/pi2");
         expect(document.querySelector('.status-tile[data-res="cpu"] .tile__meta')).toHaveTextContent("8");
         expect(document.querySelector('.status-tile[data-res="cpu"] .tile__meta')).toHaveTextContent("1.23");
-        expect(document.querySelector('.status-tile[data-res="uptime"] .tile__value')).toHaveTextContent("2h 5m");
+        // The tile shows the host, not the daemon process (`/info.uptimeMs` is 2h 5m).
+        expect(document.querySelector('.status-tile[data-res="uptime"] .tile__value')).toHaveTextContent("3d 0h 0m");
 
         const counts = document.querySelector(".status-counts");
         expect(counts).not.toBeNull();

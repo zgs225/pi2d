@@ -205,7 +205,10 @@ export function createApp(deps: AppDeps): Hono<Env> {
             hostname: osHostname(),
             os: `${osPlatform()} ${osRelease()}`,
             version: daemonVersion(),
+            // Process age of the daemon itself (`uptimeMs`), distinct from the host
+            // figure (`hostUptimeMs`) the status page shows as "uptime".
             uptimeMs: Math.max(0, now() - startedAt),
+            ...(typeof system?.hostUptimeSec === "number" ? { hostUptimeMs: system.hostUptimeSec * 1000 } : {}),
             pid: process.pid,
             port: config.port,
             capabilities: ["ws", "sse", "devices", "attention"],

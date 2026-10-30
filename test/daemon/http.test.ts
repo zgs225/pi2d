@@ -483,6 +483,8 @@ describe("HTTP API", () => {
             cpu: 42,
             mem: 25,
             disk: 25,
+            // Host uptime is additive and independent of `uptimeMs` (process age).
+            hostUptimeMs: 432_000_000,
         }));
     });
 

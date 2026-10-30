@@ -566,6 +566,7 @@
   "status.cores": "核心",
   "status.load": "负载",
   "status.created": "创建",
+  "status.daemonUptime": "守护进程运行时长",
   "status.deviceCount": "{n} 台",
   "status.devices": "已配对设备",
   "status.devicesError": "加载已配对设备失败",
