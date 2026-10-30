@@ -267,4 +267,83 @@ describe("workspace disk discovery", () => {
         discovery.invalidate();
         expect(discovery.discover()).toEqual([]);
     });
+
+    describe("display-title preview", () => {
+        function titleFile(body: string): { dir: string; file: string } {
+            const dir = writeSessionDir(root, encodedDirName(sandbox), [
+                { name: "2026-10-10T06-40-33-032Z_title.jsonl", cwd: sandbox, id: "title", body },
+            ]);
+            return { dir, file: join(dir, "2026-10-10T06-40-33-032Z_title.jsonl") };
+        }
+
+        it("prefers the latest session_info name and falls back to the first user message", () => {
+            const { file } = titleFile(
+                [
+                    JSON.stringify({ type: "session_info", name: "First name" }),
+                    JSON.stringify({
+                        type: "message",
+                        message: { role: "user", content: [{ type: "text", text: "hello\n  world   from me" }] },
+                    }),
+                    JSON.stringify({ type: "session_info", name: "Renamed session" }),
+                ].join("\n") + "\n",
+            );
+
+            const discovery = createDiscovery({ root });
+            // Listing stays header-only: no preview work on the hot path.
+            expect(discovery.listSessions(sandbox)[0]?.firstMessage).toBeUndefined();
+            expect(discovery.previewSession(file)).toEqual({
+                name: "Renamed session",
+                firstMessage: "hello world from me",
+            });
+        });
+
+        it("supports a plain-string user message and ignores assistant turns", () => {
+            const { file } = titleFile(
+                [
+                    JSON.stringify({ type: "message", message: { role: "assistant", content: "not me" } }),
+                    JSON.stringify({ type: "message", message: { role: "user", content: "plain string prompt" } }),
+                ].join("\n") + "\n",
+            );
+
+            expect(createDiscovery({ root }).previewSession(file)).toEqual({ firstMessage: "plain string prompt" });
+        });
+
+        it("finds a name written past the head window in the tail window", () => {
+            const filler = `{"type":"note","data":"${"x".repeat(200 * 1024)}"}`;
+            const { file } = titleFile(
+                [
+                    JSON.stringify({ type: "message", message: { role: "user", content: "start here" } }),
+                    filler,
+                    JSON.stringify({ type: "session_info", name: "Late name" }),
+                ].join("\n") + "\n",
+            );
+
+            expect(createDiscovery({ root }).previewSession(file)).toEqual({
+                name: "Late name",
+                firstMessage: "start here",
+            });
+        });
+
+        it("caches by (mtime, size) and refreshes on invalidate()", () => {
+            const header = `${sessionHeader(sandbox, "title")}\n`;
+            const { file } = titleFile(`${JSON.stringify({ type: "session_info", name: "Cached" })}\n`);
+            const modified = statSync(file).mtimeMs;
+            const discovery = createDiscovery({ root });
+            expect(discovery.previewSession(file, modified)).toEqual({ name: "Cached" });
+
+            // Same size, deliberately reused recorded mtime: a cache hit.
+            writeFileSync(file, `${header}${JSON.stringify({ type: "session_info", name: "Edited" })}\n`);
+            expect(discovery.previewSession(file, modified)).toEqual({ name: "Cached" });
+
+            discovery.invalidate();
+            expect(discovery.previewSession(file, modified)).toEqual({ name: "Edited" });
+        });
+
+        it("returns undefined for a file with no readable title", () => {
+            const { file } = titleFile("garbage that is not json\n");
+            const discovery = createDiscovery({ root });
+            expect(discovery.previewSession(file)).toBeUndefined();
+            expect(discovery.previewSession(join(sandbox, "missing.jsonl"))).toBeUndefined();
+        });
+    });
 });

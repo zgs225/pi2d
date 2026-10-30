@@ -266,6 +266,7 @@ class WorkspaceStore implements WorkspaceStoreHandle {
      * stays bounded even on a workspace with a long history. Rows are deduped by
      * session id (two encoded directories can resolve to the same cwd) and sorted
      * by file mtime, then header timestamp, then id for a deterministic order.
+     * Only the returned rows get a bounded display-title preview.
      */
     recentSessions(limit = 20): RecentSessionInfo[] {
         const capped = clampLimit(limit);
@@ -293,7 +294,15 @@ class WorkspaceStore implements WorkspaceStoreHandle {
                 b.timestamp - a.timestamp ||
                 a.sessionId.localeCompare(b.sessionId),
         );
-        return rows.slice(0, capped);
+        const selected = rows.slice(0, capped);
+        // Enrich only the rows the caller will render: previews are bounded but
+        // per-file reads, so never pay for candidates that are sliced away.
+        for (const row of selected) {
+            const preview = this.discovery.previewSession(row.sessionFile, row.modified);
+            if (preview?.name !== undefined) row.name = preview.name;
+            if (preview?.firstMessage !== undefined) row.firstMessage = preview.firstMessage;
+        }
+        return selected;
     }
 
     // ------------------------------------------------------------------

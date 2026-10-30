@@ -55,11 +55,17 @@ type Phrases = { unnamed: string; subagentUnnamed: string };
 
 function ActivityRow({ session, phrases }: { session: RecentSessionRow; phrases: Phrases }) {
     const { t } = useTranslation();
-    // A disk-only row has no live state; the session title contract then falls
-    // back to `(unnamed)` (never an id), and the dot is the hollow "exited".
-    const title = session.state
-        ? sessionTitle(session.state, phrases)
-        : { text: phrases.unnamed, provisional: true, spinner: false };
+    // A live row carries the authoritative name/first message. A disk-only row
+    // gets the daemon's bounded preview (latest `session_info` name → first user
+    // message); only a session with neither falls back to `(unnamed)`. Merge the
+    // two so a sparse live row still keeps the disk title.
+    const title = sessionTitle(
+        {
+            name: session.state?.name || session.name,
+            firstMessage: session.state?.firstMessage || session.firstMessage,
+        },
+        phrases,
+    );
     const dot = session.state ? sessionDot(session.state) : { status: "exited" as const };
     const label = session.state ? t(`state.${sessionStatusKey(session.state)}`) : t("state.exited");
 

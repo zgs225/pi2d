@@ -20,6 +20,10 @@ export interface RecentSessionRow {
     ts: number;
     /** Full state when a live instance answered for the workspace; null for disk-only rows. */
     state: SessionState | null;
+    /** Disk title: latest `session_info` name in the file, when the daemon saw one. */
+    name?: string;
+    /** Disk title fallback: the first user message (≤80 chars). */
+    firstMessage?: string;
 }
 
 function rec(value: unknown): Record<string, unknown> | undefined {
@@ -47,6 +51,8 @@ export function normalizeRecentSessions(payload: unknown): RecentSessionInfo[] {
         const sessionId = str(row?.sessionId);
         const workspaceId = str(row?.workspaceId);
         if (!row || !sessionId || !workspaceId) continue;
+        const name = str(row.name);
+        const firstMessage = str(row.firstMessage);
         rows.push({
             sessionId,
             workspaceId,
@@ -55,6 +61,8 @@ export function normalizeRecentSessions(payload: unknown): RecentSessionInfo[] {
             sessionFile: str(row.sessionFile) ?? "",
             timestamp: num(row.timestamp) ?? 0,
             modified: num(row.modified) ?? 0,
+            ...(name === undefined ? {} : { name }),
+            ...(firstMessage === undefined ? {} : { firstMessage }),
         });
     }
     return rows;
@@ -65,7 +73,9 @@ export function normalizeRecentSessions(payload: unknown): RecentSessionInfo[] {
  *
  * Disk rows are the base (they exist after a daemon restart, before any
  * workspace is spawned). A live row with the same id replaces the metadata:
- * it carries the authoritative name/first message/status. Sub-sessions are
+ * it carries the authoritative name/first message/status. Disk rows keep the
+ * daemon's bounded display preview (`name`/`firstMessage`) so a history row in
+ * a workspace with no running instance still renders a title. Sub-sessions are
  * dropped — the design's activity column is a list of workspace roots.
  */
 export function mergeRecentSessions(
@@ -105,6 +115,8 @@ export function mergeRecentSessions(
             workspaceName: nameById.get(workspaceId) ?? entry.disk?.workspaceName ?? "",
             ts,
             state: entry.live ?? null,
+            ...(entry.disk?.name === undefined ? {} : { name: entry.disk.name }),
+            ...(entry.disk?.firstMessage === undefined ? {} : { firstMessage: entry.disk.firstMessage }),
         });
     }
     rows.sort((a, b) => b.ts - a.ts || a.sessionId.localeCompare(b.sessionId));

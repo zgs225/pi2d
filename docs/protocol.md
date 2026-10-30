@@ -171,10 +171,14 @@ default; `secondary` rows belong behind a “show hidden” toggle. Lookups by
 
 Recent session row (`GET /api/v1/sessions/recent?limit=`): a **disk projection**, not
 session state. The daemon scans each known workspace's session directory, reads only
-session headers (id, timestamp, cwd), and sorts by file mtime. It never parses
-entries, never spawns an instance and never claims ownership of a live session. The
+session headers (id, timestamp, cwd), and sorts by file mtime. For the rows it returns
+(≤ `limit`) it also projects a bounded **display title** — the latest `session_info.name`
+and the first user message — by reading at most 128 KiB from the start plus 32 KiB from
+the end of each file, cached by (mtime, size); entries are never parsed into session
+state. It never spawns an instance and never claims ownership of a live session. The
 console layers live names/statuses over these rows from
-`GET /api/v1/workspaces/:id/sessions` when that workspace has a connected instance.
+`GET /api/v1/workspaces/:id/sessions` when that workspace has a connected instance,
+falling back to the disk title for history rows.
 
 | Field | Notes |
 |---|---|
@@ -182,6 +186,7 @@ console layers live names/statuses over these rows from
 | `workspaceId`, `workspaceName` | owning workspace, resolved from the daemon's registry/discovery |
 | `timestamp` | session start from the JSONL header (file-name fallback), epoch ms |
 | `modified` | file mtime, epoch ms — the recency sort key |
+| `name?`, `firstMessage?` | bounded display-title projection: latest `session_info.name`, first user message (flattened, ≤80 chars). Both absent when the preview windows contain neither. |
 
 The `limit` defaults to 20 and is clamped to 1–200. Rows are deduped by `sessionId`
 (two encoded directories can resolve to the same cwd) and returned newest first.

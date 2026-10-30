@@ -275,6 +275,45 @@ describe("WorkspacesPage", () => {
         expect(row?.querySelector(".dot")).toHaveClass("dot--busy");
     });
 
+    it("titles disk-only rows from the daemon's bounded display preview", async () => {
+        const items = [
+            workspace({ workspaceId: "ws-a", cwd: "/work/a", name: "Alpha" }),
+            workspace({ workspaceId: "ws-b", cwd: "/work/b", name: "Bravo" }),
+        ];
+        mockApi([
+            { path: "/api/v1/info", handler: () => ({ body: infoBody }) },
+            { path: "/api/v1/workspaces", handler: () => ({ body: items }) },
+            recentRoute([
+                diskSession({
+                    sessionId: "s-name",
+                    workspaceId: "ws-a",
+                    workspaceName: "Alpha",
+                    modified: 2_000,
+                    name: "Renamed session",
+                }),
+                diskSession({
+                    sessionId: "s-msg",
+                    workspaceId: "ws-b",
+                    workspaceName: "Bravo",
+                    modified: 1_000,
+                    firstMessage: "Please fix the recent list",
+                }),
+            ]),
+        ]);
+
+        await renderPage(routes(), "/workspaces", { paired: true });
+        await waitForCards(2);
+
+        const activity = screen.getByTestId("workspaces-activity");
+        expect(await within(activity).findByText("Renamed session")).toBeInTheDocument();
+        expect(within(activity).getByText("Please fix the recent list")).toBeInTheDocument();
+        // Neither row has a live instance; the title is data, not `(unnamed)`.
+        const rows = within(activity).getAllByTestId("workspace-activity-row");
+        expect(rows[0]?.querySelector(".ws-activity__name")).toHaveTextContent("Renamed session");
+        expect(rows[1]?.querySelector(".ws-activity__name")).toHaveTextContent("Please fix the recent list");
+        expect(within(activity).queryByText("(unnamed)")).toBeNull();
+    });
+
     it("opens the new-workspace dialog from the empty state", async () => {
         const fetchMock = mockApi([
             { path: "/api/v1/info", handler: () => ({ body: infoBody }) },

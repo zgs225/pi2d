@@ -321,9 +321,10 @@ export type WorkspaceVisibilityReason = "hidden" | "ghost" | "temp" | "outside-r
 /**
  * One disk-projected session row for the cross-workspace recent-activity feed.
  *
- * This is file metadata only (header id/timestamp + mtime); the daemon never
- * parses entries or owns session state (docs/protocol.md §3.1). Live names and
- * statuses are layered on by the client through `/workspaces/:id/sessions`.
+ * This is file metadata plus an optional bounded display title (latest
+ * `session_info` name / first user message); the daemon never parses entries
+ * into session state (docs/protocol.md §3.1). Live names and statuses are
+ * layered on by the client through `/workspaces/:id/sessions`.
  */
 export interface RecentSessionInfo {
     sessionId: string;
@@ -336,6 +337,13 @@ export interface RecentSessionInfo {
     timestamp: number;
     /** File mtime, epoch ms — the recency sort key. */
     modified: number;
+    /**
+     * Latest `session_info.name` from the session file's bounded preview
+     * windows. Display metadata only; absent when the file has no name yet.
+     */
+    name?: string;
+    /** First user message preview (flattened, ≤80 chars), when readable. */
+    firstMessage?: string;
 }
 
 export type DaemonCommandMethod =

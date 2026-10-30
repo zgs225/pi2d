@@ -156,6 +156,9 @@ describe("workspace store", () => {
             timestamp: Date.parse("2026-10-13T06:40:33.032Z"),
             modified: Date.parse("2026-10-13T06:40:33.032Z"),
             sessionFile: expect.stringContaining("g1"),
+            // The helper writes a user message "hi": the disk preview labels
+            // the row that has no live instance.
+            firstMessage: "hi",
         });
         // The default (no limit) still returns every discovered session, and an
         // out-of-range limit is clamped instead of exploding the header scan.

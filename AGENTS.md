@@ -43,8 +43,10 @@ Adding bulk to this file is a mistake, not a contribution.
 
 1. **`docs/protocol.md` is the contract.** Any wire change lands with the daemon, the web client
    and the pi2.nvim bridge in view; `fixtures/` are regenerated via `scripts/gen-expected.ts`.
-2. **The daemon is not an agent runtime.** No `pi` spawning, no JSONL session parsing, no session
-   state. Snapshots and mutations are relayed to the plugin, which stays the single authority.
+2. **The daemon is not an agent runtime.** No `pi` spawning, no session state, no entry parsing.
+   The one JSONL read is the recent feed's bounded display-title preview (`name` + first user
+   message, 128 KiB head + 32 KiB tail, cached); snapshots and mutations are relayed to the plugin,
+   which stays the single authority.
 3. **`dist/` and `web/dist/` are build output** — gitignored, never committed. They ship inside
    the npm tarball through `prepack` + the `files` allowlist.
 4. **Two lockfiles.** Root `pnpm-lock.yaml` and `web/pnpm-lock.yaml` are independent: use

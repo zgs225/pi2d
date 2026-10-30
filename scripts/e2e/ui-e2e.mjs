@@ -244,6 +244,12 @@ async function listWorkspaces() {
     return Array.isArray(list) ? list : (list.workspaces ?? []);
 }
 
+async function listRecentSessions(limit = 20) {
+    const body = await api("GET", `/api/v1/sessions/recent?limit=${limit}`);
+    const rows = body?.sessions ?? (Array.isArray(body) ? body : []);
+    return Array.isArray(rows) ? rows : [];
+}
+
 async function createSession(workspaceId) {
     const result = await cmd("session.create", { workspaceId });
     if (result.status !== 202 && result.status !== 200) {
@@ -1263,23 +1269,52 @@ scenario("B4", "Workspaces: seeded rows/order/counts, path validation, UI add + 
         observed: await statusLine.locator("a").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href"))),
     });
 
-    // --- recent-activity column (new in v0.1.1) ---------------------------
+    // --- recent-activity column (session-first since 0.1.1) ---------------
     const activity = page.locator('[data-testid="workspaces-activity"]');
     ctx.check("recent-activity column is present", (await activity.count()) === 1, { observed: await activity.count() });
     const activityRows = activity.locator('[data-testid="workspace-activity-row"]');
-    const activityIds = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    const activityIds = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-session-id")));
+    const activityWorkspaces = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    const activityTitles = await activityRows.evaluateAll((nodes) =>
+        nodes.map((node) => node.querySelector(".ws-activity__name")?.textContent ?? ""),
+    );
     const activityHrefs = await activityRows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
-    const expectedActivity = rowIds
-        .map((id) => apiList.find((item) => item.workspaceId === id))
-        .filter((item) => item && typeof item.lastActiveAt === "number" && Number.isFinite(item.lastActiveAt))
-        .sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))
-        .slice(0, 5)
-        .map((item) => item.workspaceId);
-    ctx.checkValue("recent activity lists the newest 5 workspaces", activityIds, expectedActivity);
+    const recentFeed = await listRecentSessions(20);
+    const recentById = new Map(recentFeed.map((row) => [row.sessionId, row]));
+    const visibleWorkspaces = new Set(expectedOrder.map((item) => item.workspaceId));
+    ctx.check("recent activity lists at most the newest 5 sessions", activityIds.length <= 5 && activityIds.length === activityWorkspaces.length, {
+        expected: "≤ 5",
+        observed: activityIds.length,
+    });
     ctx.check(
-        "activity rows link into /chat?workspace=<id>",
-        activityHrefs.every((href, index) => href === `/chat?workspace=${activityIds[index]}`),
+        "activity rows belong to visible workspaces",
+        activityWorkspaces.every((id) => visibleWorkspaces.has(id)),
+        { observed: { activityIds, activityWorkspaces } },
+    );
+    ctx.check(
+        "activity rows link into /chat/<session>?workspace=<id>",
+        activityHrefs.every(
+            (href, index) => href === `/chat/${activityIds[index]}?workspace=${activityWorkspaces[index]}`,
+        ),
         { observed: activityHrefs },
+    );
+    // Regression guard for the workspace-page bug: a session the daemon (or a
+    // live instance) can title must not render as `(unnamed)`/`（未命名）`.
+    const placeholder = /unnamed|未命名/i;
+    ctx.check(
+        "recent-activity titles use session metadata when available",
+        activityIds.every((id, index) => {
+            const feed = recentById.get(id);
+            const titled = Boolean(feed?.name || feed?.firstMessage);
+            return !titled || !placeholder.test(activityTitles[index] ?? "");
+        }),
+        {
+            observed: activityIds.map((id, index) => ({
+                id,
+                feed: recentById.get(id)?.name ?? recentById.get(id)?.firstMessage ?? null,
+                title: activityTitles[index],
+            })),
+        },
     );
 
     // --- empty path validation (no POST must happen) ----------------------

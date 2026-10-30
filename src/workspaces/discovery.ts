@@ -8,8 +8,12 @@
  * and the separator), so the authoritative cwd is the first JSONL line:
  *   {"type":"session","version":3,"id":"…","timestamp":"…","cwd":"/abs/path"}
  *
- * Scanning is header-only (one read of up to 64 KiB per directory) and cached
- * per directory by (mtime, file count). The rest of a session file is never read.
+ * Workspace/session *listing* is header-only (one read of up to 64 KiB per
+ * directory) and cached per directory by (mtime, file count). `previewSession()`
+ * is the one opt-in exception: it reads a bounded head/tail window for a display
+ * title (latest `session_info.name` + first user message) so the recent-activity
+ * feed can label a session that has no live instance. It never parses entries
+ * into session state and is cached by (mtime, size).
  */
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
@@ -18,6 +22,30 @@ import { sessionsRoot, workspaceIdForCwd } from "../core/paths.js";
 
 /** Maximum bytes read to obtain the first JSONL line. Headers are ~150 bytes. */
 export const HEADER_READ_LIMIT = 64 * 1024;
+
+/**
+ * Head window for a display title. The first user message and the auto-title
+ * `session_info` line both land in the first ~50 KiB of a real session (the
+ * system-prompt message is the bulk of it), so 128 KiB leaves generous room.
+ */
+export const PREVIEW_HEAD_LIMIT = 128 * 1024;
+
+/** Tail window where a later `session_info.name` (rename / re-title) may live. */
+export const PREVIEW_TAIL_LIMIT = 32 * 1024;
+
+/** `firstMessage` is flattened and cut exactly like pi2.nvim's `history.parse`. */
+export const PREVIEW_MESSAGE_CHARS = 80;
+
+/** Bound the preview cache; a recent feed touches a few dozen files at most. */
+const PREVIEW_CACHE_LIMIT = 512;
+
+/** Bounded display metadata read from a session file. Never session state. */
+export interface SessionPreview {
+    /** Latest non-empty `session_info.name`, when one is inside the windows. */
+    name?: string;
+    /** First user message, flattened to one line and cut to 80 characters. */
+    firstMessage?: string;
+}
 
 export interface DiscoveredWorkspace {
     workspaceId: string;
@@ -65,6 +93,13 @@ export interface Discovery {
     discover(): DiscoveredWorkspace[];
     /** Session files for a cwd, newest first (header-only, cheap). */
     listSessions(cwd: string, limit?: number): SessionFile[];
+    /**
+     * Opt-in display title for one session file: the latest `session_info`
+     * name and the first user message. Reads at most `PREVIEW_HEAD_LIMIT` from
+     * the start plus `PREVIEW_TAIL_LIMIT` from the end, and caches by
+     * (mtime, size); `undefined` means the windows contain no usable title.
+     */
+    previewSession(file: string, modified?: number): SessionPreview | undefined;
     /** Drop one directory's cache entry, or the whole cache when omitted. */
     invalidate(dir?: string): void;
     /** The encoded directory used for a cwd, when it has been discovered. */
@@ -91,6 +126,12 @@ interface SessionHeader {
     timestamp?: string;
 }
 
+interface PreviewCacheEntry {
+    mtimeMs: number;
+    size: number;
+    preview: SessionPreview | undefined;
+}
+
 export function isSessionDirName(name: string): boolean {
     return name.length > 4 && name.startsWith("--") && name.endsWith("--");
 }
@@ -99,6 +140,7 @@ class DiskDiscovery implements Discovery {
     private readonly root: string;
     private readonly logger: DiscoveryLogger | undefined;
     private readonly cache = new Map<string, CacheEntry>();
+    private readonly previews = new Map<string, PreviewCacheEntry>();
 
     constructor(options: DiscoveryOptions = {}) {
         this.root = options.root ?? sessionsRoot();
@@ -156,9 +198,45 @@ class DiskDiscovery implements Discovery {
         return sessions;
     }
 
+    previewSession(file: string, modified?: number): SessionPreview | undefined {
+        let size: number;
+        let mtimeMs: number;
+        try {
+            const stat = statSync(file);
+            size = stat.size;
+            mtimeMs = modified ?? stat.mtimeMs;
+        } catch {
+            return undefined;
+        }
+
+        const cached = this.previews.get(file);
+        if (cached !== undefined && cached.mtimeMs === mtimeMs && cached.size === size) {
+            // Refresh insertion order so the LRU cap drops genuinely cold files.
+            this.previews.delete(file);
+            this.previews.set(file, cached);
+            return cached.preview;
+        }
+
+        const preview = readSessionPreview(file, size);
+        this.previews.set(file, { mtimeMs, size, preview });
+        if (this.previews.size > PREVIEW_CACHE_LIMIT) {
+            const oldest = this.previews.keys().next().value;
+            if (oldest !== undefined) this.previews.delete(oldest);
+        }
+        return preview;
+    }
+
     invalidate(dir?: string): void {
-        if (dir === undefined) this.cache.clear();
-        else this.cache.delete(dir);
+        if (dir === undefined) {
+            this.cache.clear();
+            this.previews.clear();
+        } else {
+            this.cache.delete(dir);
+            const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+            for (const file of this.previews.keys()) {
+                if (file.startsWith(prefix)) this.previews.delete(file);
+            }
+        }
     }
 
     dirForCwd(cwd: string): string | undefined {
@@ -302,6 +380,131 @@ function readSessionHeader(file: string): SessionHeader | undefined {
             }
         }
     }
+}
+
+/**
+ * Bounded display-title projection for one session file.
+ *
+ * Reads the head window (first user message + any early `session_info` name)
+ * and, for longer files, the tail window (a later rename / auto-title). Lines
+ * are JSON-decoded only when a cheap substring prefilter hits, so multi-MB
+ * message or tool-output lines are never decoded. A partial trailing line (the
+ * window cut a line in half) fails the decode and is ignored; the tail window
+ * also drops its leading partial line before parsing.
+ */
+function readSessionPreview(file: string, size: number): SessionPreview | undefined {
+    let fd: number | undefined;
+    try {
+        fd = openSync(file, "r");
+        const headBytes = Math.min(size, PREVIEW_HEAD_LIMIT);
+        if (headBytes <= 0) return undefined;
+        const head = Buffer.allocUnsafe(headBytes);
+        const headRead = readSync(fd, head, 0, headBytes, 0);
+        if (headRead <= 0) return undefined;
+
+        const found = parsePreviewWindow(head.toString("utf8", 0, headRead), true);
+        let name = found.name;
+        let firstMessage = found.firstMessage;
+
+        if (size > headRead) {
+            const tailBytes = Math.min(size - headRead, PREVIEW_TAIL_LIMIT);
+            if (tailBytes > 0) {
+                const tail = Buffer.allocUnsafe(tailBytes);
+                const tailRead = readSync(fd, tail, 0, tailBytes, size - tailBytes);
+                if (tailRead > 0) {
+                    const text = tail.toString("utf8", 0, tailRead);
+                    // The first line is probably a partial one: drop it.
+                    const newline = text.indexOf("\n");
+                    const tailFound = parsePreviewWindow(newline >= 0 ? text.slice(newline + 1) : "", false);
+                    if (tailFound.name !== undefined) name = tailFound.name;
+                }
+            }
+        }
+
+        if (name === undefined && firstMessage === undefined) return undefined;
+        return {
+            ...(name === undefined ? {} : { name }),
+            ...(firstMessage === undefined ? {} : { firstMessage }),
+        };
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) {
+            try {
+                closeSync(fd);
+            } catch {
+                // ignore
+            }
+        }
+    }
+}
+
+/** Parse one bounded window of JSONL lines into a display title. */
+function parsePreviewWindow(text: string, findFirstMessage: boolean): SessionPreview {
+    let name: string | undefined;
+    let firstMessage: string | undefined;
+    for (const rawLine of text.split("\n")) {
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        if (line.length === 0) continue;
+
+        if (line.includes('"type":"session_info"')) {
+            const entry = parseJsonLine(line);
+            if (entry?.type === "session_info") {
+                const candidate = typeof entry.name === "string" ? entry.name.trim() : "";
+                if (candidate !== "") name = candidate;
+            }
+        }
+
+        if (findFirstMessage && firstMessage === undefined && line.includes('"type":"message"')) {
+            const entry = parseJsonLine(line);
+            const message = recordField(entry, "message");
+            if (entry?.type === "message" && message?.role === "user") {
+                const messageText = userMessageText(message.content);
+                if (messageText !== "") firstMessage = messageText;
+            }
+        }
+    }
+    return {
+        ...(name === undefined ? {} : { name }),
+        ...(firstMessage === undefined ? {} : { firstMessage }),
+    };
+}
+
+function parseJsonLine(line: string): Record<string, unknown> | undefined {
+    try {
+        const parsed: unknown = JSON.parse(line);
+        return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function recordField(value: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
+    const field = value?.[key];
+    return field !== null && typeof field === "object" && !Array.isArray(field)
+        ? (field as Record<string, unknown>)
+        : undefined;
+}
+
+/** First text part of a pi user message, flattened and cut for a row label. */
+function userMessageText(content: unknown): string {
+    let text = "";
+    if (typeof content === "string") {
+        text = content;
+    } else if (Array.isArray(content)) {
+        for (const part of content) {
+            if (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text") {
+                const value = (part as { text?: unknown }).text;
+                if (typeof value === "string") {
+                    text = value;
+                    break;
+                }
+            }
+        }
+    }
+    return text.replace(/\s+/g, " ").trim().slice(0, PREVIEW_MESSAGE_CHARS);
 }
 
 /** `<YYYY-MM-DDTHH-MM-SS-mmmZ>_<id>.jsonl` → `{ id, timestamp }`. */
