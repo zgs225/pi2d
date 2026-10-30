@@ -47,11 +47,18 @@ points `~/.local/lib/pi2d/current` at it, writes an install receipt and symlinks
 `~/.local/bin/pi2`. After that, `pi2 update` upgrades it in place (verified download, SLSA
 provenance check, atomic `current` switch, one-step rollback).
 
-To uninstall:
+To uninstall, first remove the daemon's local state (runtime, service unit, and — with flags —
+data/state/config), then the binaries:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh -s -- --uninstall
+pi2 uninstall --dry-run                    # what would be removed
+pi2 uninstall --purge --purge-config --yes  # daemon state, logs, env file (curl channel: also the tree)
 ```
+
+On the npm / Homebrew / AUR channels the binary tree belongs to the package manager:
+`npm rm -g @yuez/pi2d`, `brew uninstall pi2d`, `sudo pacman -R pi2d-bin`. See
+[Complete removal](docs/install.md#uninstall) for the full table of paths and the two things
+no CLI can clean (browser site data, the plugin-private copy).
 
 ### Channel C: System packages (Homebrew, AUR)
 
@@ -127,6 +134,7 @@ pi2 install-service --write   # render and write user service file
 pi2 service status            # unit, enabled, active, linger (--json for machines)
 pi2 service enable            # daemon-reload + enable --now (start|stop|disable too)
 pi2 uninstall-service --write # remove user service file
+pi2 uninstall [--dry-run] [--yes] [--purge]  # remove local state (all channels)
 pi2 status                 # daemon status, active instances, and health
 pi2 doctor                 # verify node/runtime, nvim, pi, curl, sockets, protocol
 pi2 --version              # print version

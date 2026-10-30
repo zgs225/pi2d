@@ -225,3 +225,25 @@ export function channelUpgradeCommand(installer: string): string {
             return "npm i -g @yuez/pi2d@latest   # or: brew upgrade pi2d";
     }
 }
+
+/**
+ * The command that removes the *binary tree* for a channel, for `pi2 uninstall`.
+ *
+ * `pi2 uninstall` owns the state (runtime/data/state/config) and never touches a
+ * tree a package manager tracks — except the curl layout, which is the one pi2
+ * wrote itself and can delete.
+ */
+export function channelUninstallCommand(installer: string): string {
+    switch (installer) {
+        case "brew":
+            return "brew uninstall pi2d";
+        case "aur":
+            return "sudo pacman -R pi2d-bin";
+        case "npm":
+            return "npm rm -g @yuez/pi2d";
+        case "curl":
+            return `curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/main/scripts/install.sh | sh -s -- --uninstall`;
+        default:
+            return "npm rm -g @yuez/pi2d   # or: brew uninstall pi2d";
+    }
+}

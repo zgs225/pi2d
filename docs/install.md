@@ -357,7 +357,57 @@ systemctl --user restart pi2.service
   yay -Syu pi2d-bin
   ```
 
-### Uninstall per channel
+### Uninstall
+
+Removal has two layers: the daemon's **local state** (the same for every channel) and
+the **binaries** (owned by the channel that installed them).
+
+#### Step 1 — remove the daemon's local state: `pi2 uninstall`
+
+```bash
+pi2 uninstall --dry-run                      # print the plan, change nothing
+pi2 uninstall                                # interactive confirmation
+pi2 uninstall --yes                          # scripts / no TTY
+pi2 uninstall --purge --purge-config --yes   # state and env file too
+```
+
+The command is channel-agnostic and runs in this order:
+
+1. `pi2 service disable` + remove the unit file — unless `--keep-service`
+2. stop a running daemon (`pi2 stop`)
+3. delete the runtime directory — sockets, `cli.token`, `daemon.lock`
+4. with `--purge`: delete the data directory (`devices.json`, `workspaces.json`) and the
+   state directory (instance logs, `host-init/`, the update cache)
+5. with `--purge-config`: delete `~/.config/pi2/env`
+6. on the **curl channel only**, with `--purge`: delete `<prefix>` (`~/.local/lib/pi2d`)
+   and the `~/.local/bin/pi2` symlink. This runs last because the running binary lives
+   inside that tree.
+
+| What | Default location (Linux) | Removed by | Why it is not always removed |
+|---|---|---|---|
+| Runtime | `$XDG_RUNTIME_DIR/pi2` | always | throwaway: sockets, lock, CLI token |
+| Data | `~/.local/share/pi2` | `--purge` | paired devices, workspace trust and aliases |
+| State | `~/.local/state/pi2` | `--purge` | instance logs, generated host-init, update cache |
+| Config | `~/.config/pi2/env` | `--purge-config` | user-authored; may hold tokens for other tools |
+| Service | `~/.config/systemd/user/pi2.service` (launchd plist on macOS) | default, or keep with `--keep-service` | — |
+| Install tree | `~/.local/lib/pi2d` | `--purge` on the curl channel | npm/brew/AUR own their trees |
+
+`pi2 uninstall` never deletes a tree a package manager tracks. Instead it prints the
+command that does, plus the two things no CLI can clean for you:
+
+- the **browser's site data** for the console (it caches the paired device token in
+  `localStorage`);
+- the **plugin-private daemon copy** made by `:PiWebInstall` under Neovim's
+  `stdpath("data")/pi2d`.
+
+Without `--purge` the command also prints the exact `rm -rf` fallback for the directories
+it kept, so a full wipe never requires knowing the layout.
+
+> Removing the state is safe to redo: a reinstall recreates the runtime directory, and
+> `--purge` is the only thing that makes a reinstall forget paired devices and workspace
+> trust.
+
+#### Step 2 — remove the binaries (per channel)
 
 - **Channel A (npm / pnpm / bun)**:
   ```bash
@@ -365,7 +415,8 @@ systemctl --user restart pi2.service
   # or: pnpm rm -g @yuez/pi2d / bun rm -g @yuez/pi2d
   ```
 
-- **Channel B (curl installer)**:
+- **Channel B (curl installer)** — after `pi2 uninstall --purge`, or instead of it when the
+  state does not matter:
   ```bash
   curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh -s -- --uninstall
   ```
@@ -381,9 +432,18 @@ systemctl --user restart pi2.service
   sudo pacman -R pi2d-bin
   ```
 
-If you configured a user service, remember to remove it before uninstalling the binary:
+If you only want the unit gone and the daemon kept running, `pi2 uninstall-service --write`
+removes the file alone (and prints the disable commands).
+
+#### Complete removal, copy-paste
+
 ```bash
-pi2 uninstall-service --write
+# curl installer
+pi2 uninstall --purge --purge-config --yes
+# npm
+pi2 uninstall --purge --purge-config --yes && npm rm -g @yuez/pi2d
+# assert nothing is left behind
+pi2 config --json | grep -E 'runtimeDir|dataDir|stateDir'   # all should be gone
 ```
 
 ---

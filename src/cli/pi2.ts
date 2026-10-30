@@ -10,6 +10,7 @@
  *   pi2 pairing            create a pairing code for another device
  *   pi2 install-service    render/install a systemd user unit or LaunchAgent
  *   pi2 uninstall-service  remove it again
+ *   pi2 uninstall          remove the daemon's local state (all channels)
  *   pi2 service …          status/start/stop/enable/disable that unit
  *
  * Everything is discovered from the runtime dir: `daemon.json` carries the
@@ -50,6 +51,7 @@ import { diagnose, formatReport, reportToJson, type DoctorReport } from "./docto
 import { runStop, STOP_USAGE, type StopOptions } from "./stop.js";
 import { runConfig, CONFIG_USAGE, type RunConfigOptions } from "./config.js";
 import { runUpdate, UPDATE_USAGE } from "./update.js";
+import { runUninstall, UNINSTALL_USAGE, type UninstallOptions } from "./uninstall.js";
 import {
     parseServiceArgs,
     runServiceCommand,
@@ -86,6 +88,7 @@ Usage:
   pi2 pairing [--base <url>] [--json]   create a pairing code (URL + code + QR)
   pi2 install-service [--dry-run|--write]    systemd user unit / LaunchAgent
   pi2 uninstall-service [--dry-run|--write]  remove the unit
+  pi2 uninstall [--dry-run] [--yes] [--purge]  remove the daemon's local state
   pi2 service status|start|stop|enable|disable  control that unit (status [--json])
   pi2 update [--check|--dry-run]     upgrade a standalone (curl installer) pi2 in place
   pi2 --version | --help
@@ -749,6 +752,8 @@ export interface Pi2Options {
     serviceExists?: (path: string) => boolean;
     serviceUid?: number;
     serviceUser?: string;
+    /** Injected `pi2 uninstall` runner (defaults to `runUninstall`). */
+    uninstall?: (options: UninstallOptions) => Promise<number>;
 }
 
 export async function main(argv: readonly string[], options: Pi2Options = {}): Promise<number> {
@@ -895,6 +900,47 @@ export async function main(argv: readonly string[], options: Pi2Options = {}): P
                     ...(options.removeFile === undefined ? {} : { removeFile: options.removeFile }),
                 };
                 return command === "install-service" ? runInstallService(serviceOptions) : runUninstallService(serviceOptions);
+            }
+            case "uninstall": {
+                let parsed;
+                try {
+                    parsed = parseArgs(rest, {
+                        booleans: [
+                            "--dry-run",
+                            "--yes",
+                            "--purge",
+                            "--purge-config",
+                            "--keep-service",
+                            "--keep-install",
+                            "--help",
+                        ],
+                        aliases: { "-y": "--yes", "-h": "--help" },
+                    });
+                } catch (error) {
+                    if (error instanceof UsageError) throw new UsageError(error.message, UNINSTALL_USAGE);
+                    throw error;
+                }
+                if (boolFlag(parsed.flags, "--help")) {
+                    out(UNINSTALL_USAGE);
+                    return 0;
+                }
+                if (parsed.positionals.length > 0) {
+                    throw new UsageError(`unexpected argument "${parsed.positionals[0]}"`, UNINSTALL_USAGE);
+                }
+                return await (options.uninstall ?? runUninstall)({
+                    dryRun: boolFlag(parsed.flags, "--dry-run"),
+                    yes: boolFlag(parsed.flags, "--yes"),
+                    purge: boolFlag(parsed.flags, "--purge"),
+                    purgeConfig: boolFlag(parsed.flags, "--purge-config"),
+                    keepService: boolFlag(parsed.flags, "--keep-service"),
+                    keepInstall: boolFlag(parsed.flags, "--keep-install"),
+                    print: out,
+                    warn: err,
+                    ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+                    ...(options.platform === undefined ? {} : { platform: options.platform }),
+                    ...(options.servicePaths === undefined ? {} : { servicePaths: options.servicePaths }),
+                    ...(options.isTTY === undefined ? {} : { isTTY: options.isTTY }),
+                });
             }
             case "update": {
                 let parsed;

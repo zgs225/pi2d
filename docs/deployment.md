@@ -564,6 +564,12 @@ too). For a login-less service to keep running on Linux enable linger
 (`loginctl enable-linger $USER`, `pi2 doctor` warns when it is off;
 `pi2 service status --json` reports `linger`).
 
+`pi2 uninstall` chains the same steps plus the rest of the daemon's files:
+disable + remove the unit, stop the daemon, delete the runtime directory, and
+with `--purge` / `--purge-config` the data, state and env file as well. Use it
+instead of this command when the goal is a clean machine, not just a missing
+unit — see [install.md](install.md#uninstall) for the full table of paths.
+
 ## 10. Logs and health
 
 - `pi2 daemon` logs JSONL to stderr: `systemctl --user status pi2` /
