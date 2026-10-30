@@ -93,7 +93,7 @@ Plugin obligations:
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}`; additive `cpu`, `mem`, `disk` (integer percent, each omitted when unknown), `cpuCores`, `loadAvg` |
+| `GET /api/v1/info` | `{v, daemonId, machineId, platform, hostname, os, version, uptimeMs, pid, port, capabilities, limits}`; additive `cpu`, `mem`, `disk` (integer percent of the **most constrained** filesystem, each omitted when unknown), `cpuCores`, `loadAvg` |
 | `GET /api/v1/health` | `{ok, items:[{name, ok, detail}]}` |
 | `GET /api/v1/workspaces` | `WorkspaceInfo[]` (registry + disk index + instance state) |
 | `GET /api/v1/workspaces/:id/sessions` | relayed `workspace.query{kind:"sessions"}` (row fields below) |
@@ -127,8 +127,15 @@ figures sampled by the daemon itself:
 | `cpuCores` | logical core count |
 | `loadAvg` | 3-tuple `[1m, 5m, 15m]`, or `null` where the OS has no load average |
 | `memUsedBytes`, `memTotalBytes`, `memPercent` | **host** memory; `memPercent` is an integer. `totalRssBytes` stays the soft-limit input — it is instance RSS, not a host figure |
-| `diskPath` | the filesystem the sample describes: the daemon's state dir |
-| `diskUsedBytes`, `diskTotalBytes`, `diskPercent` | `diskPercent` integer, nullable; the byte counts are `null` when the stat fails |
+| `diskPath` | mount point of the most constrained filesystem (`disks[0]`), e.g. `/` or `/home`; the legacy scalar fields below alias that row |
+| `disks` | `DiskUsage[]`, at most 4, **most constrained first**. One row per distinct filesystem (`st_dev`) among the daemon's own write targets: `/` (the home volume on macOS), the pi session store and the visible (non-`secondary`) workspace roots. Not a mount-table dump — an unrelated or hung network mount is never touched |
+| `disks[].mountPoint`, `disks[].fsType?`, `disks[].totalBytes`, `disks[].usedBytes`, `disks[].percent` | `mountPoint` is the filesystem boundary (never the sampled path), `fsType` a best-effort label (`ext4`, `btrfs`, …) omitted when unknown, `percent` an integer 0–100 |
+| `diskUsedBytes`, `diskTotalBytes`, `diskPercent` | the worst row, for clients that predate `disks`; `null` when nothing could be sampled |
+| `diskError` | present **only** when `disks` is empty — `"<path>: <code>"`, so a failed sample is distinguishable from a full disk instead of silently rendering `—` |
+
+A candidate path that does not exist yet (the state dir is created lazily) no longer
+blanks the sample: the probe walks up to the nearest existing ancestor and then to the
+filesystem boundary, so `diskPercent` describes the volume, not a directory.
 
 `GET /api/v1/models` no longer requires `workspaceId`. With one, the read is
 relayed as before and may spawn that workspace's instance — the chat picker's

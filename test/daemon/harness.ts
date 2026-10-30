@@ -45,6 +45,9 @@ export const FAKE_SYSTEM_STATS: SystemStats = {
     diskUsedBytes: 50 * 1024 ** 3,
     diskTotalBytes: 200 * 1024 ** 3,
     diskPercent: 25,
+    disks: [
+        { mountPoint: "/tmp/pi2-test", fsType: "ext4", usedBytes: 50 * 1024 ** 3, totalBytes: 200 * 1024 ** 3, percent: 25 },
+    ],
 };
 
 export function makeFakeSysinfoSampler(stats: Partial<SystemStats> = {}): SysinfoSampler {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as os from "node:os";
 import { makeSessionState, makeWorkspaceInfo } from "./fakes.js";
-import { createHarness, TEST_LIMITS, type Harness } from "./harness.js";
+import { createHarness, makeFakeSysinfoSampler, TEST_LIMITS, type Harness } from "./harness.js";
 import { DaemonError } from "../../src/daemon/errors.js";
 import { ERROR_CODES } from "../../src/protocol/errors.js";
 import { WorkspaceError } from "../../src/workspaces/errors.js";
@@ -484,6 +484,34 @@ describe("HTTP API", () => {
             mem: 25,
             disk: 25,
         }));
+    });
+
+    it("relays the per-filesystem disk list on resources", async () => {
+        const custom = await createHarness({
+            sysinfo: makeFakeSysinfoSampler({
+                disks: [
+                    { mountPoint: "/home", fsType: "btrfs", usedBytes: 950, totalBytes: 1000, percent: 95 },
+                    { mountPoint: "/", fsType: "ext4", usedBytes: 500, totalBytes: 1000, percent: 50 },
+                ],
+                diskPath: "/home",
+                diskPercent: 95,
+            }),
+        });
+        try {
+            const response = await fetch(`${custom.url}/api/v1/resources`, {
+                headers: { Authorization: `Bearer ${custom.createToken()}` },
+            });
+            expect(response.status).toBe(200);
+            const system = (await response.json()).system;
+            expect(system.disks).toEqual([
+                { mountPoint: "/home", fsType: "btrfs", usedBytes: 950, totalBytes: 1000, percent: 95 },
+                { mountPoint: "/", fsType: "ext4", usedBytes: 500, totalBytes: 1000, percent: 50 },
+            ]);
+            // The /info scalar stays the worst row, so old clients keep working.
+            expect(system.diskPercent).toBe(95);
+        } finally {
+            await custom.cleanup();
+        }
     });
 
     it("resolves bare models without spawning when no instance is ready", async () => {

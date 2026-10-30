@@ -104,6 +104,25 @@
   gap: 4px;
   min-width: 0;
 }
+/* Multi-filesystem disk tile: one quiet row per mount, worst first. */
+.status-tile .disk-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+.status-tile .disk-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.status-tile .disk-row__label { min-width: 0; }
+.status-tile .disk-row__pct { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+.status-tile .disk-row__pct.is-warn { color: var(--warn); }
+.status-tile .disk-row__pct.is-err { color: var(--err); }
 
 /* 3px meter: a quiet hairline rather than a progress bar */
 .meter {

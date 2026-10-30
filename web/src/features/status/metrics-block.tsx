@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import { Icon } from "@/components/icons";
 import { RelativeTime } from "@/components/shared/relative-time";
-import type { ResourcesResponse } from "@/lib/api";
+import type { DiskUsage, ResourcesResponse } from "@/lib/api";
 import { formatBytes, formatUptime, type ServerIdentity } from "@/features/status/server";
 
 import { ErrorBlock } from "./card-parts";
@@ -34,6 +34,53 @@ function readable(pct: number | null): string {
     return pct == null ? "—" : `${Math.round(pct)}%`;
 }
 
+function diskTone(pct: number): string {
+    return pct > 90 ? "is-err" : pct > 80 ? "is-warn" : "";
+}
+
+/**
+ * Disk tile meta line. One filesystem reads `mountPoint · used / total`; several
+ * become a compact worst-first stack (the daemon caps the list at 4), because a
+ * single headline percent would hide the volume that is actually full.
+ */
+function DiskMeta({ disks, diskError, diskPath }: { disks: DiskUsage[]; diskError?: string; diskPath?: string }) {
+    if (disks.length === 0) {
+        const reason = diskError ?? diskPath ?? "—";
+        return (
+            <span className="faint truncate" title={reason}>
+                {reason}
+            </span>
+        );
+    }
+
+    const detail = (disk: DiskUsage) =>
+        [disk.mountPoint, disk.fsType, `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)}`]
+            .filter(Boolean)
+            .join(" · ");
+
+    if (disks.length === 1) {
+        const disk = disks[0]!;
+        return (
+            <span className="faint truncate" title={detail(disk)}>
+                {disk.mountPoint} · {formatBytes(disk.usedBytes)} / {formatBytes(disk.totalBytes)}
+            </span>
+        );
+    }
+
+    return (
+        <div className="disk-rows">
+            {disks.map((disk) => (
+                <div className="disk-row" key={disk.mountPoint}>
+                    <span className="disk-row__label truncate" title={detail(disk)}>
+                        {disk.mountPoint}
+                    </span>
+                    <b className={`disk-row__pct ${diskTone(disk.percent)}`}>{readable(percent(disk.percent))}</b>
+                </div>
+            ))}
+        </div>
+    );
+}
+
 export interface MetricsBlockProps {
     server: ServerIdentity;
     resources: ResourcesResponse | undefined;
@@ -62,17 +109,26 @@ export function MetricsBlock({
 }: MetricsBlockProps) {
     const { t } = useTranslation();
     const system = resources?.system;
+    const disks = system?.disks ?? [];
     const cpu = percent(system?.cpuPercent ?? server.cpu);
     const mem = percent(system?.memPercent ?? server.mem);
-    const disk = percent(system?.diskPercent ?? server.disk);
+    // `disks` is worst-first, so `[0]` is the number worth showing; the scalars are
+    // the same row on new daemons and the only source on old ones.
+    const disk = percent(disks[0]?.percent ?? system?.diskPercent ?? server.disk);
     const live = t("status.live", { defaultValue: "Live" });
     const cpuMeta = system
         ? `${system.cpuCores} ${t("status.cores")}${system.loadAvg ? ` · ${t("status.load")} ${system.loadAvg[0].toFixed(2)}` : ""}`
         : live;
     const memMeta = system ? `${formatBytes(system.memUsedBytes)} / ${formatBytes(system.memTotalBytes)}` : live;
     const diskMeta = system ? (
-        <span className="faint truncate" title={system.diskPath}>{system.diskPath}</span>
-    ) : live;
+        <DiskMeta
+            disks={disks}
+            {...(system.diskError === undefined ? {} : { diskError: system.diskError })}
+            {...(system.diskPath === undefined ? {} : { diskPath: system.diskPath })}
+        />
+    ) : (
+        live
+    );
 
     const counts: Array<[string, string]> = [
         [t("status.workspaces"), String(workspaceCount)],

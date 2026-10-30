@@ -145,7 +145,18 @@ export async function wireDaemon(options: WireOptions = {}): Promise<WiredDaemon
         machineId: options.machineId ?? machineIdFor(env.HOSTNAME ?? process.env.HOSTNAME ?? "localhost"),
         startedAt,
         now,
-        sysinfo: createSysinfo({ now }),
+        sysinfo: createSysinfo({
+            now,
+            // Only the filesystems pi2d actually writes to: root, the pi session
+            // store (built in) and the visible workspace roots. Hidden/secondary
+            // rows are excluded so a stale ghost dir never adds a disk row.
+            diskPaths: () =>
+                (workspaceStore?.list() ?? [])
+                    .filter((workspace) => workspace.exists && workspace.visibility !== "secondary")
+                    .sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))
+                    .slice(0, 8)
+                    .map((workspace) => workspace.cwd),
+        }),
         ...(options.server?.heartbeatMs === undefined ? {} : { heartbeatMs: options.server.heartbeatMs }),
         ...(options.server?.ws === undefined ? {} : { ws: options.server.ws }),
     };

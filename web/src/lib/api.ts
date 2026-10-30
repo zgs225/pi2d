@@ -302,6 +302,17 @@ export interface ModelsResponse {
     pendingReason?: "fetching" | "no-instance" | "no-live-session";
 }
 
+/** One sampled filesystem (daemon ≥ 0.1.8; older daemons only send the scalars). */
+export interface DiskUsage {
+    /** Filesystem boundary, e.g. `/`, `/home`, `/mnt/data`. */
+    mountPoint: string;
+    /** Best-effort type label (`ext4`, `btrfs`, …); absent when unknown. */
+    fsType?: string;
+    totalBytes: number;
+    usedBytes: number;
+    percent: number;
+}
+
 export interface SystemStats {
     sampledAt: number;
     cpuPercent: number | null;
@@ -314,6 +325,10 @@ export interface SystemStats {
     diskUsedBytes: number | null;
     diskTotalBytes: number | null;
     diskPercent: number | null;
+    /** Most constrained first, at most 4 rows; absent on daemons < 0.1.8. */
+    disks?: DiskUsage[];
+    /** Present only when `disks` is empty — the sample failed, distinct from a full disk. */
+    diskError?: string;
 }
 
 export interface ResourcesResponse {
