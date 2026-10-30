@@ -355,6 +355,15 @@ function matchIndex(index: PoolIndex, candidate: Entry, isTaken: (at: number) =>
  * then by `(role, text)` when the ids differ (the snapshot carries synthetic
  * `m<N>` ids while the pages carry pi's raw entry ids). The historical position
  * is kept so the transcript never re-orders, and each message renders once.
+ *
+ * The two inputs are windows over the same transcript, not a page plus a tail:
+ * the plugin's snapshot carries the whole (bounded) session, while the first
+ * REST page is only the newest entries. A live entry without a counterpart is
+ * therefore inserted where its neighbours put it — before the history entry of
+ * the next match, or appended only when it follows every match. Appending all
+ * unmatched entries instead would move messages older than the page to the end
+ * of the stream, so the transcript would stop on an old message and the newest
+ * ones (already spliced into the page) would sit far above.
  */
 export function mergeEntries(history: Entry[], live: Entry[]): Entry[] {
     if (!history.length) return live;
@@ -365,18 +374,30 @@ export function mergeEntries(history: Entry[], live: Entry[]): Entry[] {
     const historyIndex = indexPool(history);
     const claimed = new Set<number>();
     const replaces = new Map<number, Entry>();
+    /** Unmatched live entries keyed by the history index they precede (0..history.length). */
+    const inserts = new Map<number, Entry[]>();
+    let anchor = 0;
     for (const entry of live) {
         const match = matchIndex(historyIndex, entry, (at) => claimed.has(at));
-        if (match < 0) continue;
+        if (match < 0) {
+            const bucket = inserts.get(anchor);
+            if (bucket) bucket.push(entry);
+            else inserts.set(anchor, [entry]);
+            continue;
+        }
         claimed.add(match);
         replaces.set(match, entry);
+        anchor = Math.max(anchor, match + 1);
     }
 
-    const merged: Entry[] = history.map((entry, index) => replaces.get(index) ?? entry);
-    const rendered = new Set<Entry>(replaces.values());
-    for (const entry of live) {
-        if (!rendered.has(entry)) merged.push(entry);
-    }
+    const merged: Entry[] = [];
+    history.forEach((entry, index) => {
+        const bucket = inserts.get(index);
+        if (bucket) merged.push(...bucket);
+        merged.push(replaces.get(index) ?? entry);
+    });
+    const trailing = inserts.get(history.length);
+    if (trailing) merged.push(...trailing);
     return merged;
 }
 

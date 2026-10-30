@@ -148,6 +148,30 @@ describe("history entry projection", () => {
         expect(merged[0]?.ts).toBe(TS);
     });
 
+    it("inserts live entries older than the history window before it, never after the newest page", () => {
+        // The plugin's snapshot carries the whole transcript; the first REST page is
+        // only the newest window. The live entries that precede that window are
+        // older than every history entry, so appending them would end the
+        // transcript on an old message and hide everything after it.
+        const history = projectEntries([
+            { type: "message", id: "h3", message: { role: "user", content: "third", timestamp: TS + 4 } },
+            {
+                type: "message",
+                id: "h4",
+                message: { role: "assistant", timestamp: TS + 5, content: [{ type: "text", text: "fourth" }] },
+            },
+        ]);
+        const live = [
+            entryFixture({ id: "m1", role: "user", ts: TS, blocks: [{ type: "text", text: "first" }] }),
+            entryFixture({ id: "m2", role: "assistant", ts: TS + 1, blocks: [{ type: "text", text: "second" }] }),
+            entryFixture({ id: "m3", role: "user", ts: TS + 4, blocks: [{ type: "text", text: "third" }] }),
+            entryFixture({ id: "m4", role: "assistant", ts: TS + 5, blocks: [{ type: "text", text: "fourth" }] }),
+        ];
+
+        const merged = mergeEntries(history, live);
+        expect(merged.map((entry) => entry.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    });
+
     it("keeps live-only entries and drops raw duplicates when prepending a page", () => {
         const live = [
             entryFixture({ id: "m1", role: "user", ts: TS, blocks: [{ type: "text", text: "hello" }] }),
