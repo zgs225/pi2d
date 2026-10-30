@@ -22,21 +22,10 @@ Requirements: **Node >= 20** (for the npm channel; the curl installer and system
 
 > **Status.** The daemon CLI, the web console and the standalone installer are ready today (`npm i -g @yuez/pi2d` and `install.sh` work today). `:PiWeb` and `:PiWebInstall` land with the next pi2.nvim release, so today the flow is `pi2 daemon` + `pi2 open` (or running the daemon as a user service).
 
-### Channel A: Global package manager (Node >= 20)
+### Recommended: the standalone installer (the self-updating channel)
 
-If your machine has Node >= 20:
-
-```bash
-npm i -g @yuez/pi2d
-# or:
-pnpm add -g @yuez/pi2d
-bun add -g @yuez/pi2d
-mise use -g npm:@yuez/pi2d
-```
-
-### Channel B: Standalone curl installer (no Node required)
-
-For machines without Node, with an older distro Node (e.g. Debian 12 ships 18), or where you want a self-contained installation with no global npm or root access:
+One self-contained binary, no Node, no root — the only channel that updates itself with
+`pi2 update`. Also the right choice for an older distro Node (Debian 12 ships 18) or musl systems:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh
@@ -46,6 +35,19 @@ Installs the precompiled binary and web console into `~/.local/lib/pi2d/versions
 points `~/.local/lib/pi2d/current` at it, writes an install receipt and symlinks the executable to
 `~/.local/bin/pi2`. After that, `pi2 update` upgrades it in place (verified download, SLSA
 provenance check, atomic `current` switch, one-step rollback).
+
+### Or: a package manager (it owns the upgrade)
+
+If you prefer npm-style installs (Node >= 20). Upgrades belong to that package manager —
+`pi2 update` refuses npm trees and prints `npm i -g @yuez/pi2d@latest`:
+
+```bash
+npm i -g @yuez/pi2d
+# or:
+pnpm add -g @yuez/pi2d
+bun add -g @yuez/pi2d
+mise use -g npm:@yuez/pi2d
+```
 
 To uninstall, first remove the daemon's local state (runtime, service unit, and — with flags —
 data/state/config), then the binaries:
@@ -60,7 +62,7 @@ On the npm / Homebrew / AUR channels the binary tree belongs to the package mana
 [Complete removal](docs/install.md#uninstall) for the full table of paths and the two things
 no CLI can clean (browser site data, the plugin-private copy).
 
-### Channel C: System packages (Homebrew, AUR)
+### Or: Homebrew / AUR (they own the upgrade)
 
 *(Available once the release that publishes binaries has shipped)*:
 
@@ -69,7 +71,7 @@ no CLI can clean (browser site data, the plugin-private copy).
   brew install zgs225/tap/pi2d
   ```
 - **Arch Linux / Manjaro / EndeavourOS (AUR `pi2d-bin`):**
-  *(AUR account registration is temporarily closed upstream — until it reopens, Arch users install with the [curl installer](#channel-b-standalone-curl-installer-no-node-required) above)*:
+  *(AUR account registration is temporarily closed upstream — until it reopens, Arch users install with the [standalone installer](#standalone) above)*:
   ```bash
   paru -S pi2d-bin   # or: yay -S pi2d-bin
   ```

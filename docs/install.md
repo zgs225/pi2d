@@ -10,50 +10,37 @@ This document is the canonical reference for installing, running, configuring, u
 
 Find your situation in the table below to choose the right installation command and run model:
 
+Only the **standalone channel** updates itself (`pi2 update`). npm, Homebrew and the AUR stay
+available, but the package manager that installed `pi2` owns its upgrades — `pi2 update` refuses
+them and prints the command that does ([ADR 0004](adr/0004-one-self-updating-channel.md)).
+
 | Situation | Recommended Command | What it gives you |
 |---|---|---|
-| **I have Node 20+** | `npm i -g @yuez/pi2d`<br>*(or `pnpm add -g`, `bun add -g`, `mise use -g npm:@yuez/pi2d`)* | The `pi2` CLI running directly on your existing Node.js environment, updated via standard package manager commands. |
-| **no Node / old Node** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` | Standalone compiled binary in `~/.local/lib/pi2d` symlinked to `~/.local/bin/pi2`, upgraded in place with `pi2 update`. Requires zero Node/npm dependencies and no root access. |
-| **macOS** | `brew install zgs225/tap/pi2d`<br>*(or the curl installer)* | Native Homebrew formula. Places `pi2` in `$(brew --prefix)/bin` and web assets in `$(brew --prefix)/share/pi2d/web/dist`. |
-| **Arch / EndeavourOS / Manjaro** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(AUR `pi2d-bin` once AUR registration reopens)* | Standalone binary in `~/.local/lib/pi2d` + `~/.local/bin/pi2`. Package-manager channels are paused: the AUR is not accepting accounts, so the curl installer is the working path today. |
-| **NixOS** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh`<br>*(or dev checkout)* | Standalone binary in user home (`~/.local/bin/pi2`). Bun's `-musl` binaries are dynamically linked against the musl loader, so running a prebuilt binary on NixOS needs `nix-ld` (or an FHS env / `steam-run`-style wrapper). |
+| **Most machines (recommended)** | `curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh \| sh` | One self-contained binary plus the web UI in `~/.local/lib/pi2d/versions/<version>` (receipt, `current` symlink, `~/.local/bin/pi2`), upgraded in place with `pi2 update`. No Node, no npm, no root. |
+| **I prefer npm / pnpm / bun / mise** | `npm i -g @yuez/pi2d`<br>*(or `pnpm add -g`, `bun add -g`, `mise use -g npm:@yuez/pi2d`)* | The `pi2` CLI on your existing Node.js environment. **The package manager owns upgrades**: `npm i -g @yuez/pi2d@latest`. |
+| **no Node / old Node (Debian 12, Alpine, NixOS)** | the curl installer *(above)* | Same artifact as the recommended row: zero runtime dependencies, `-musl` builds for musl distros. On NixOS Bun's `-musl` binaries need `nix-ld` (or an FHS env). |
+| **macOS** | `brew install zgs225/tap/pi2d`<br>*(or the curl installer)* | Native Homebrew formula (`pi2` in `$(brew --prefix)/bin`). **Homebrew owns upgrades**: `brew upgrade pi2d`. |
+| **Arch / EndeavourOS / Manjaro** | the curl installer *(AUR `pi2d-bin` once registration reopens)* | AUR registration is paused upstream, so the curl installer is the working path today; `paru -Syu pi2d-bin` takes over once the package lands. |
 | **I want it to survive reboot and logout** | `pi2 install-service --write`<br>`systemctl --user enable --now pi2.service`<br>`loginctl enable-linger $USER` | Background systemd user service (or launchd on macOS) that starts at boot and stays alive when SSH sessions disconnect. |
-| **I only want to try it** | Install via curl or npm, then run:<br>`pi2 daemon` | Foreground daemon in your current terminal. Logs stream to stdout/stderr. Stop anytime with `Ctrl-C` or `pi2 stop`. |
+| **I only want to try it** | the curl installer, then `pi2 daemon` | Foreground daemon in your current terminal; stop with `Ctrl-C` or `pi2 stop`. |
 | **I develop pi2d itself** | `git clone https://github.com/zgs225/pi2d.git`<br>`pnpm install && pnpm --dir web install` | Source checkout with hot-reloading backend (`pnpm dev`) and Vite dev server (`pnpm --dir web dev`). |
 
 ---
 
 ## Install channels
 
-`pi2d` distributes through four primary channels:
+`pi2d` ships one **self-updating** channel (the standalone artifact below) and three
+**package-manager-owned** distributions. Whoever wrote the files owns the upgrade:
+`scripts/install.sh` + `pi2 update` maintain the standalone tree, and npm / Homebrew / the AUR
+maintain theirs.
 
-### Channel A: Global package manager (Node >= 20)
+<a id="standalone"></a>
+### Standalone installer — the self-updating channel
 
-Best when your workstation or server already has Node.js (version 20 or later) installed.
-
-```bash
-# npm
-npm i -g @yuez/pi2d
-
-# pnpm
-pnpm add -g @yuez/pi2d
-
-# bun
-bun add -g @yuez/pi2d
-
-# mise
-mise use -g npm:@yuez/pi2d
-```
-
-**Where files land**:
-- Executable binary: `$(npm config get prefix)/bin/pi2`
-- Node package & web assets: `$(npm config get prefix)/lib/node_modules/@yuez/pi2d/` (with web assets in `web/dist/`)
-
----
-
-### Channel B: Standalone curl installer (no Node required)
-
-Best for systems with no Node runtime, machines with older distributions (such as Debian 12 shipping Node 18), or environments where you do not want to manage global npm packages.
+This is the recommended channel and the only one the project maintains end to end: one
+self-contained binary, no Node runtime, no root, and `pi2 update` upgrades it in place. It is the
+right choice for machines without Node, distributions with an older Node (Debian 12 ships 18),
+musl systems and servers.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh
@@ -102,7 +89,33 @@ PI2_VERSION=0.1.6 PI2_BIN_DIR=/usr/local/bin PI2_INSTALL_DIR=/usr/local/lib/pi2d
 
 ---
 
-### Channel C: System packages (Homebrew & AUR)
+<a id="package-managers"></a>
+### Package managers (npm / pnpm / bun / mise) — they own the upgrade
+
+Best when your workstation or server already has Node.js (version 20 or later) installed.
+
+```bash
+# npm
+npm i -g @yuez/pi2d
+
+# pnpm
+pnpm add -g @yuez/pi2d
+
+# bun
+bun add -g @yuez/pi2d
+
+# mise
+mise use -g npm:@yuez/pi2d
+```
+
+**Where files land**:
+- Executable binary: `$(npm config get prefix)/bin/pi2`
+- Node package & web assets: `$(npm config get prefix)/lib/node_modules/@yuez/pi2d/` (with web assets in `web/dist/`)
+
+---
+
+<a id="brew-aur"></a>
+### Homebrew & AUR — they own the upgrade
 
 *(Note: These channels are available once the release publishing compiled binaries has shipped).*
 
@@ -115,7 +128,7 @@ brew install zgs225/tap/pi2d
 
 #### Arch Linux / Manjaro / EndeavourOS (AUR)
 
-> **AUR registration paused**: New user registration on the AUR is temporarily closed upstream (HTTP 503: "Registration on the AUR is paused while we deal with a wave of automated account creation..."). Until registration reopens and `pi2d-bin` can be submitted, the AUR channel is unavailable. Use **[Channel B: Standalone curl installer](#channel-b-standalone-curl-installer-no-node-required)** instead — it works on Arch today and `pi2 update`s with the same command.
+> **AUR registration paused**: New user registration on the AUR is temporarily closed upstream (HTTP 503: "Registration on the AUR is paused while we deal with a wave of automated account creation..."). Until registration reopens and `pi2d-bin` can be submitted, the AUR channel is unavailable. Use **[the standalone installer](#standalone)** instead — it works on Arch today and `pi2 update`s with the same command.
 
 ```bash
 # (When AUR registration reopens)
@@ -311,51 +324,39 @@ systemctl --user restart pi2.service
 
 ### Upgrade per channel
 
-- **Channel A (npm / pnpm / bun / mise)**:
-  ```bash
-  npm i -g @yuez/pi2d@latest
-  # or:
-  pnpm add -g @yuez/pi2d@latest
-  bun add -g @yuez/pi2d@latest
-  mise use -g npm:@yuez/pi2d@latest
-  ```
+**Standalone installer — the self-updating channel:**
 
-- **Channel B (Standalone curl installer)**:
-  ```bash
-  pi2 update
-  ```
-  It downloads the release asset for this platform, checks it against the release's
-  `SHA256SUMS`, verifies its SLSA build provenance with `gh attestation verify` when the
-  GitHub CLI is installed, runs the new binary once, then switches
-  `~/.local/lib/pi2d/current` and rewrites the install receipt. The previous version is kept
-  for one-step rollback.
+```bash
+pi2 update
+```
 
-  | Command | What it does |
-  |---|---|
-  | `pi2 update` | Upgrade to the latest release, then print the command to restart the daemon |
-  | `pi2 update --check` | Report the latest version and exit (24 h cached, one GitHub API call at most) |
-  | `pi2 update --dry-run` | Print the asset, URL and prefix it would use, change nothing |
-  | `pi2 update --version 0.1.6` | Pin a version (a downgrade also needs `--force`) |
-  | `pi2 update --force` | Reinstall even when already on that version |
-  | `pi2 update --require-attestation` | Fail unless the SLSA provenance verifies |
-  | `pi2 update --skip-attestation` | Never call `gh` (offline machines, no GitHub CLI) |
-  | `pi2 update --json` | Machine-readable result (stdout is pure JSON; progress goes to stderr) |
+It downloads the release asset for this platform, checks it against the release's
+`SHA256SUMS`, verifies its SLSA build provenance with `gh attestation verify` when the GitHub
+CLI is installed, runs the new binary once, then switches `~/.local/lib/pi2d/current` and
+rewrites the install receipt. The previous version is kept for one-step rollback.
 
-  Setting `PI2_BASE_URL` points the download at a mirror (`PI2_UPDATE_CACHE_TTL` changes the
-  version-lookup cache, default 86400 s). Re-running the installer still works and stays the
-  recovery path when the tree is damaged.
+| Command | What it does |
+|---|---|
+| `pi2 update` | Upgrade to the latest release, then print the command to restart the daemon |
+| `pi2 update --check` | Report the latest version and exit (24 h cached, one GitHub API call at most) |
+| `pi2 update --dry-run` | Print the asset, URL and prefix it would use, change nothing |
+| `pi2 update --version 0.1.6` | Pin a version (a downgrade also needs `--force`) |
+| `pi2 update --force` | Reinstall even when already on that version |
+| `pi2 update --require-attestation` | Fail unless the SLSA provenance verifies |
+| `pi2 update --skip-attestation` | Never call `gh` (offline machines, no GitHub CLI) |
+| `pi2 update --json` | Machine-readable result (stdout is pure JSON; progress goes to stderr) |
 
-- **Channel C (Homebrew)**:
-  ```bash
-  brew update && brew upgrade pi2d
-  ```
+`PI2_BASE_URL` points the download at a mirror (`PI2_UPDATE_CACHE_TTL` changes the
+version-lookup cache, default 86400 s). Re-running the installer still works and stays the
+recovery path when the tree is damaged.
 
-- **Channel C (Arch AUR — when reopened)**:
-  ```bash
-  paru -Syu pi2d-bin
-  # or:
-  yay -Syu pi2d-bin
-  ```
+**Package managers — they own the upgrade** (`pi2 update` refuses with the command below):
+
+```bash
+npm i -g @yuez/pi2d@latest      # or: pnpm add -g / bun add -g / mise use -g npm:@yuez/pi2d@latest
+brew update && brew upgrade pi2d
+paru -Syu pi2d-bin               # AUR, when registration reopens
+```
 
 ### Uninstall
 
@@ -409,25 +410,25 @@ it kept, so a full wipe never requires knowing the layout.
 
 #### Step 2 — remove the binaries (per channel)
 
-- **Channel A (npm / pnpm / bun)**:
+- **npm / pnpm / bun**:
   ```bash
   npm rm -g @yuez/pi2d
   # or: pnpm rm -g @yuez/pi2d / bun rm -g @yuez/pi2d
   ```
 
-- **Channel B (curl installer)** — after `pi2 uninstall --purge`, or instead of it when the
+- **Standalone installer** — after `pi2 uninstall --purge`, or instead of it when the
   state does not matter:
   ```bash
   curl -fsSL https://raw.githubusercontent.com/zgs225/pi2d/main/scripts/install.sh | sh -s -- --uninstall
   ```
   *(Or manually delete `rm -rf ~/.local/lib/pi2d ~/.local/bin/pi2`)*.
 
-- **Channel C (Homebrew)**:
+- **Homebrew**:
   ```bash
   brew uninstall pi2d
   ```
 
-- **Channel C (Arch AUR — when reopened)**:
+- **Arch AUR (when registration reopens)**:
   ```bash
   sudo pacman -R pi2d-bin
   ```

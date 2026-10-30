@@ -1,6 +1,7 @@
 # ADR 0002 — Installation and run model: CLI first, service-owned daemon, plugin attaches
 
-- Status: accepted (implementing)
+- Status: accepted (implementing), partially superseded by [ADR 0004](0004-one-self-updating-channel.md)
+  (the plugin no longer installs; the standalone artifact is the one self-updating channel)
 - Date: 2026-10-28
 - Supersedes: the implicit "the plugin installs and spawns the daemon" default in
   `README.md` §Install and the resolution table (explicit path → `PATH` → plugin
@@ -107,6 +108,10 @@ Using `npx @yuez/pi2d@latest` or `npx` auto-execution is explicitly rejected:
 The plugin's `:PiWebInstall` becomes an explicit convenience command that prompts for
 confirmation before installing `@yuez/pi2d@latest` (an optional `<version>` argument
 pins one) into `<stdpath("data")>/pi2d`. It never runs `npx`.
+
+> **Amended by [ADR 0004](0004-one-self-updating-channel.md)**: `:PiWebInstall` no longer installs
+> anything. The npm package keeps publishing, but the package manager owns its upgrades; the
+> plugin prints commands and delegates to `pi2 update` (standalone channel only).
 
 ### 2.2 Run: the daemon owns its own lifecycle
 
