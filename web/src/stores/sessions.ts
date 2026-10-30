@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { acknowledge, forget, move, suppressAcknowledged } from "@/features/chat/acknowledged";
 import type { SessionState } from "@/lib/protocol";
 
 export interface SessionsStore {
@@ -41,7 +42,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
     setSessions: (workspaceId, sessions) =>
         set((state) => ({
-            byWorkspace: { ...state.byWorkspace, [workspaceId]: sessions },
+            byWorkspace: { ...state.byWorkspace, [workspaceId]: sessions.map(suppressAcknowledged) },
             status: "idle",
             error: null,
         })),
@@ -51,7 +52,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
             const list = state.byWorkspace[session.workspaceId] ?? [];
             const index = list.findIndex((s) => s.sessionId === session.sessionId);
             if (index === -1) {
-                return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: [...list, session] } };
+                return {
+                    byWorkspace: {
+                        ...state.byWorkspace,
+                        [session.workspaceId]: [...list, suppressAcknowledged(session)],
+                    },
+                };
             }
             // Tree metadata is list metadata: a live update (`pi2:session`,
             // reducer events, a rename) carries no `parentId`/`visible`/`task`/
@@ -69,7 +75,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
                 createdAt: session.createdAt !== undefined ? session.createdAt : previous.createdAt,
                 lastActiveAt: session.lastActiveAt !== undefined ? session.lastActiveAt : previous.lastActiveAt,
             };
-            const next = list.map((s, i) => (i === index ? merged : s));
+            const next = list.map((s, i) => (i === index ? suppressAcknowledged(merged) : s));
             return { byWorkspace: { ...state.byWorkspace, [session.workspaceId]: next } };
         }),
 
@@ -108,6 +114,9 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
                 byWorkspace[workspaceId] = next;
             }
             if (!moved) return state;
+            // An acknowledgement given on a `tmp-N` row belongs to the real id
+            // once the plugin reports it; keep it across the migration.
+            move(from, to);
             return {
                 byWorkspace,
                 selectedSessionId: state.selectedSessionId === from ? to : state.selectedSessionId,
@@ -116,6 +125,7 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
     removeSession: (sessionId) =>
         set((state) => {
+            forget(sessionId);
             const byWorkspace: Record<string, SessionState[]> = {};
             for (const [workspaceId, list] of Object.entries(state.byWorkspace)) {
                 byWorkspace[workspaceId] = list
@@ -129,7 +139,12 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
 
     selectSession: (selectedSessionId) => set({ selectedSessionId }),
 
-    markSeen: (sessionId) =>
+    markSeen: (sessionId) => {
+        // Remember *which* notification this is before clearing it: the plugin
+        // keeps raising `done`/`error` until nvim's TabEnter, so a later snapshot
+        // (reload / reconnect) must not revive a blink the user already consumed.
+        const current = get().getSession(sessionId);
+        if (current) acknowledge(current);
         set((state) => {
             let changed = false;
             const byWorkspace: Record<string, SessionState[]> = {};
@@ -147,7 +162,8 @@ export const useSessionsStore = create<SessionsStore>((set, get) => ({
             }
             // Nothing to consume: keep the state object so zustand skips the render.
             return changed ? { byWorkspace } : state;
-        }),
+        });
+    },
 
     listFor: (workspaceId) => get().byWorkspace[workspaceId] ?? [],
 

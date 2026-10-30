@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { SEEN_STORAGE_KEY } from "@/features/chat/acknowledged";
 import { emptySessionState, normalizeSnapshotState } from "@/features/chat/session-state";
 import { useSessionsStore } from "@/stores/sessions";
-import { sessionFixture } from "./chat-fixtures";
+import { entryFixture, sessionFixture } from "./chat-fixtures";
 
 function state() {
     return useSessionsStore.getState();
@@ -306,5 +307,102 @@ describe("sessions store — markSeen", () => {
         expect(state().getSession("s1")?.flags.done).toBe(true);
 
         unsub();
+    });
+});
+
+describe("sessions store — an acknowledged notification never replays", () => {
+    const entries = (...ids: string[]) => ids.map((id) => entryFixture({ id }));
+
+    it("keeps done cleared when a reload's snapshot replays the same notification", () => {
+        const transcript = entries("e1", "e2");
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true }, entries: transcript }),
+        ]);
+        state().markSeen("s1");
+        expect(state().getSession("s1")?.flags.done).toBe(false);
+        // The occurrence the browser acknowledged is the transcript tail.
+        expect(JSON.parse(localStorage.getItem(SEEN_STORAGE_KEY) ?? "{}")).toEqual({ s1: "e2" });
+
+        // Page reload: the store is empty, but the plugin still raises `done`
+        // until nvim's TabEnter, so the snapshot carries it again.
+        state().reset();
+        state().upsertSession(
+            normalizeSnapshotState("s1", "w1", {
+                state: { status: "idle", flags: { attention: false, done: true, error: false }, entries: transcript },
+            }),
+        );
+        expect(state().getSession("s1")?.flags.done).toBe(false);
+
+        // A reconnect replays it too, through the cached-row merge.
+        state().upsertSession({
+            ...emptySessionState({ sessionId: "s1", workspaceId: "w1" }),
+            flags: { attention: false, done: true, error: false },
+            entries: transcript,
+        });
+        expect(state().getSession("s1")?.flags.done).toBe(false);
+    });
+
+    it("blinks again once the next turn appends an entry", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true }, entries: entries("e1") }),
+        ]);
+        state().markSeen("s1");
+
+        state().upsertSession({
+            ...emptySessionState({ sessionId: "s1", workspaceId: "w1" }),
+            status: "idle",
+            flags: { attention: false, done: true, error: false },
+            entries: entries("e1", "e2"),
+        });
+        expect(state().getSession("s1")?.flags.done).toBe(true);
+    });
+
+    it("re-arms an acknowledged error the same way", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { error: true }, entries: entries("e1") }),
+        ]);
+        state().markSeen("s1");
+
+        state().reset();
+        state().upsertSession({
+            ...emptySessionState({ sessionId: "s1", workspaceId: "w1" }),
+            status: "idle",
+            flags: { attention: false, done: false, error: true },
+            entries: entries("e1"),
+        });
+        expect(state().getSession("s1")?.flags.error).toBe(false);
+
+        state().upsertSession({
+            ...emptySessionState({ sessionId: "s1", workspaceId: "w1" }),
+            status: "idle",
+            flags: { attention: false, done: false, error: true },
+            entries: entries("e1", "e2"),
+        });
+        expect(state().getSession("s1")?.flags.error).toBe(true);
+    });
+
+    it("carries the acknowledgement across the tmp-N → real-id migration", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "tmp-1", workspaceId: "w1", flags: { done: true }, entries: entries("e1") }),
+        ]);
+        state().markSeen("tmp-1");
+        state().renameSessionId("tmp-1", "real-1");
+
+        state().reset();
+        state().upsertSession(
+            normalizeSnapshotState("real-1", "w1", {
+                state: { status: "idle", flags: { attention: false, done: true, error: false }, entries: entries("e1") },
+            }),
+        );
+        expect(state().getSession("real-1")?.flags.done).toBe(false);
+    });
+
+    it("forgets the acknowledgement when the session is removed", () => {
+        state().setSessions("w1", [
+            fixture({ sessionId: "s1", workspaceId: "w1", flags: { done: true }, entries: entries("e1") }),
+        ]);
+        state().markSeen("s1");
+        state().removeSession("s1");
+        expect(JSON.parse(localStorage.getItem(SEEN_STORAGE_KEY) ?? "{}")).not.toHaveProperty("s1");
     });
 });

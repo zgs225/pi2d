@@ -122,6 +122,17 @@ so the session you open stops being green or red — which is why a viewed child
 failure is solid while an unviewed one blinks. The canonical reducer (`src/protocol/reducer.ts`)
 and `fixtures/` are deliberately untouched: this is a client-side view concern.
 
+The acknowledgement is **durable**, because the plugin keeps raising the flag until nvim's own
+`TabEnter`: an in-memory-only `markSeen` meant the next snapshot (a page reload, or a reconnect's
+resync) replayed `done: true` and the green blink returned for a notification the user had
+already seen. `web/src/features/chat/acknowledged.ts` persists it in `localStorage`
+(`pi2-seen-sessions`, per browser) under the **occurrence** it was given for — the id of the
+transcript's newest entry. A replayed snapshot is the same occurrence (same trailing entry id),
+so the store clears the flag on ingress; the next completed turn appends entries first, so its
+token differs and that new notification blinks again. A notification for a state with no entries
+cannot be scoped and is never suppressed. `removeSession` forgets the row and the `tmp-N` →
+real-id migration moves it.
+
 ## One clock for every dot
 
 No dot animates itself. `web/src/lib/blink.ts` owns a single ref-counted 500ms interval that
