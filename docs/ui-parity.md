@@ -233,6 +233,11 @@ state (`/sessions`) and the WS snapshot — so no web code calls them.
 | 19 子代理状态线并入 telemetry | `telemetry.tsx`（`.telemetry--sub`，标题只留身份） |
 | 20 移动端顶栏胶囊 + 页面 sheet、删除底栏 | `components/shared/{page-pill,page-sheet}.tsx`、`app.css`；`.tabbar` 与 `--tabbar-h` 已删除 |
 
+`WorkspaceSwitch`（CHG-02）的排序与搜索契约落在 `features/chat/workspace-order.ts`：行按
+**最近使用**排序（浏览器本地 `pi2-workspace-recency` 时间戳优先，其次 daemon 的 `lastActiveAt`，
+再按名称 / id）；顶部搜索框按名称、别名、cwd、目录名、id 过滤（空格分词，全部命中）；
+行是 `role=option` + `aria-selected`，Enter 取首个匹配，Esc 关闭并把焦点还给触发器。
+
 ### 9.1 与原型的有意偏差（数据模型所致）
 
 | 原型 | pi2d 现实 | 我们的处理 |

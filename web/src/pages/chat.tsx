@@ -51,6 +51,7 @@ import { SessionTree } from "@/features/chat/session-tree";
 import { SubagentView } from "@/features/chat/subagent-view";
 import { useChatStore, type TrayTab } from "@/features/chat/store";
 import { Telemetry } from "@/features/chat/telemetry";
+import { markWorkspaceUsed } from "@/features/chat/workspace-order";
 
 import "@/styles/pages/chat.css";
 
@@ -106,6 +107,11 @@ function ChatExperience({ sessionId }: { sessionId?: string }) {
         workspaces[0]?.workspaceId;
 
     const sessionsQuery = useChatSessions(workspaceId, paired);
+    // "Recently used" for the workspace picker: whichever workspace is active
+    // (deep link, picker pick, default choice) gets a browser-local stamp.
+    useEffect(() => {
+        if (workspaceId) markWorkspaceUsed(workspaceId);
+    }, [workspaceId]);
     const sessions = sessionsQuery.sessions;
     const sessionIds = useMemo(() => sessions.map((session) => session.sessionId), [sessions]);
     useChatSocket(workspaceId, sessionIds, paired);

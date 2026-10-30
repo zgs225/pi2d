@@ -1405,7 +1405,7 @@ scenario("B5", "Chat tree: workspace picker, New session → /chat/<sid>, rename
     await page.goto(`${BASE}/chat?workspace=${encodeURIComponent(state.ws1)}`, { waitUntil: "domcontentloaded" });
     await page.locator(".tree-pane .pane-head").waitFor({ state: "visible", timeout: 20000 });
 
-    // v0.1.1: the workspace picker is a button + `menuitemradio` menu (no <select>).
+    // v0.1.1: the workspace picker is a button + searchable `listbox` (no <select>).
     const wsSwitch = page.locator('[data-testid="ws-switch"]');
     const wsMenu = page.locator('[data-testid="ws-menu"]');
     ctx.check("workspace switch is present", (await wsSwitch.count()) === 1, { observed: await wsSwitch.count() });
@@ -1415,13 +1415,40 @@ scenario("B5", "Chat tree: workspace picker, New session → /chat/<sid>, rename
         .locator("[data-workspace-id]")
         .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
     const checkedWorkspaces = await wsMenu
-        .locator('[data-workspace-id][aria-checked="true"]')
+        .locator('[data-workspace-id][aria-selected="true"]')
         .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
     ctx.checkValue("the workspace menu marks W1 as current", checkedWorkspaces, [state.ws1]);
     ctx.check("workspace menu lists every workspace", options.length >= 2 && options.includes(state.ws2), {
         expected: [state.ws1, state.ws2],
         observed: options,
     });
+
+    // The picker is searchable: one row per match, and a blank query restores all.
+    const search = page.locator('[data-testid="ws-menu-search"]');
+    await search.fill("ws2");
+    const filtered = await wsMenu
+        .locator("[data-workspace-id]")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-workspace-id")));
+    ctx.checkValue("the workspace search filters to W2", filtered, [state.ws2]);
+    await search.fill("no-such-workspace-xyz");
+    const noMatch = await waitFor(
+        async () => ((await wsMenu.locator("[data-testid='ws-menu-empty']").count()) > 0 ? true : null),
+        6000,
+    );
+    ctx.check("the workspace search reports an empty result", Boolean(noMatch), {
+        observed: await wsMenu.locator("[data-workspace-id]").count(),
+    });
+    await page.locator('[data-testid="ws-menu"] .ws-menu__input').fill("");
+    const restored = await waitFor(
+        async () =>
+            (await wsMenu.locator("[data-workspace-id]").count()) === options.length ? true : null,
+        6000,
+    );
+    ctx.check("clearing the search restores every workspace", Boolean(restored), {
+        expected: options.length,
+        observed: await wsMenu.locator("[data-workspace-id]").count(),
+    });
+
     await wsSwitch.click();
     const menuClosed = await waitFor(async () => ((await wsMenu.isVisible()) ? null : true), 6000);
     ctx.check("the workspace menu closes on a second click", Boolean(menuClosed), { observed: await wsMenu.isVisible() });
